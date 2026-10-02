@@ -59,7 +59,6 @@ class TradingAuthority:
         if intent.leverage>intent.instrument.max_leverage:return {"allowed":False,"reason":"LEVERAGE_INSTRUMENT_LIMIT"}
         open_orders=self.db.query("SELECT client_order_id FROM orders WHERE symbol=? AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED')",(intent.instrument.symbol,))
         if open_orders:return {"allowed":False,"reason":"DUPLICATE_OPEN_ORDER"}
-        today=datetime.now(timezone.utc).date().isoformat()
         count=self.db.one("SELECT COUNT(*) AS n FROM orders WHERE created_at>=strftime('%s','now','start of day')")
         if count and int(count["n"])>=self.config.execution_max_orders_per_day:return {"allowed":False,"reason":"DAILY_ORDER_LIMIT"}
         recent=self.db.query("""SELECT created_at FROM orders WHERE symbol=? AND direction=? ORDER BY created_at DESC LIMIT 1""",
