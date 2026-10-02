@@ -1,0 +1,22 @@
+configuration:
+  kraken_api_key:
+    name: Kraken API key
+    description: API key used for account access and, when explicitly enabled, trading.
+  kraken_api_secret:
+    name: Kraken API secret
+    description: Secret used only for signed Kraken requests.
+  kraken_enabled:
+    name: Kraken connectivity
+    description: Enable Kraken connectivity and dynamic market discovery.
+  live_enabled:
+    name: Live trading
+    description: Permit real execution only after all immutable and runtime gates pass.
+  kill_switch:
+    name: Kill switch
+    description: Global stop for new orders.
+  gemini_api_key:
+    name: Gemini API key
+    description: Gemini key used for structured analysis only.
+  gemini_enabled:
+    name: Gemini enrichment
+    description: Enable news and research enrichment by Gemini.
