@@ -1,6 +1,7 @@
 from __future__ import annotations
-from pydantic import BaseModel,Field
-import hashlib,json
+from pydantic import BaseModel, Field
+import hashlib
+import json
 from typing import Any
 class GeminiResult(BaseModel):
     relevance:float=Field(ge=0,le=1); sentiment:float=Field(ge=-1,le=1)
