@@ -12,6 +12,7 @@ dependencies = [
   "pydantic==2.13.5",
   "PyYAML==6.0.3",
   "websocket-client==1.9.0",
+  "defusedxml==0.7.1",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +52,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
-ignore = ["E501"]
+ignore = ["E501", "E701", "E702"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
