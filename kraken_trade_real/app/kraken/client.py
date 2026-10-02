@@ -40,15 +40,15 @@ class HTTP:
             method=method,
         )
         try:
-            with urlopen(req, timeout=self.timeout):  # nosec B310
-                response = _
+            with urlopen(req, timeout=self.timeout) as response:  # nosec B310
+                payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             raise KrakenError(f"HTTP_{exc.code}") from exc
         except URLError as exc:
             raise KrakenAmbiguous(f"NETWORK:{exc.reason}") from exc
-        if not isinstance(response, dict):
+        if not isinstance(payload, dict):
             raise KrakenError("INVALID_JSON_ROOT")
-        return response
+        return payload
 
 
 class KrakenGateway:
