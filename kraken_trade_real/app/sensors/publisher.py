@@ -47,7 +47,8 @@ class SensorPublisher:
                open_positions: int=0, news_status: str="UNKNOWN",
                gemini_status: str="UNKNOWN", model_version: str="baseline-v1",
                calibration_brier: Any=0, calibration_ece: Any=0,
-               breaker_active: bool=False) -> dict[str,Any]:
+               breaker_active: bool=False, tax_status: str="DISABLED", tax_estimated_27_5_eur: Any=0,
+               tax_incomplete_events: int=0, tax_year: int=0) -> dict[str,Any]:
         return {
             "sensor.kraken_trade_status":{"state":status,"attributes":{"stage":stage}},
             "sensor.kraken_trade_stage":{"state":stage},
@@ -70,4 +71,8 @@ class SensorPublisher:
             "sensor.kraken_trade_calibration_brier":{"state":str(calibration_brier)},
             "sensor.kraken_trade_calibration_ece":{"state":str(calibration_ece)},
             "sensor.kraken_trade_circuit_breaker":{"state":"ON" if breaker_active else "OFF"},
+            "sensor.kraken_trade_tax_status":{"state":tax_status},
+            "sensor.kraken_trade_tax_estimated_27_5_eur":{"state":str(tax_estimated_27_5_eur),"unit_of_measurement":"EUR"},
+            "sensor.kraken_trade_tax_incomplete_events":{"state":str(tax_incomplete_events)},
+            "sensor.kraken_trade_tax_year":{"state":str(tax_year)},
         }
