@@ -68,8 +68,8 @@ class TradingRuntime:
             )
             self._publish_runtime_status()
             try:
-                statuses = self.gateway.public_status()
-                self.audit.emit("STARTUP_KRAKEN_STATUS_OK","INFO",status_summary=str(statuses)[:500])
+                status = self.gateway.public_status()
+                self.audit.emit("STARTUP_KRAKEN_STATUS_OK","INFO",status_summary=str(status)[:500])
             except Exception as exc:
                 self.audit.emit(
                     "STARTUP_KRAKEN_STATUS_DEGRADED",
