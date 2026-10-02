@@ -53,3 +53,24 @@ def test_non_eur_kraken_trade_is_incomplete():
          "price": "60000", "cost": "600", "fee": "1"},
     )
     assert event.complete is False
+
+
+def test_e1kv_keeps_gains_and_losses_separate():
+    ledger = AustrianTaxLedger(provider_tax_classification="FOREIGN")
+    gain = ledger.build_event(
+        event_id="g", timestamp=ts(2025), venue="kraken", product_type="SPOT",
+        asset="BTC", quote_asset="EUR", event_type="DISPOSAL", quantity=Decimal("1"),
+        realized_gain_eur=Decimal("300"),
+    )
+    loss = ledger.build_event(
+        event_id="l", timestamp=ts(2025), venue="kraken", product_type="SPOT",
+        asset="ETH", quote_asset="EUR", event_type="DISPOSAL", quantity=Decimal("1"),
+        realized_gain_eur=Decimal("-100"),
+    )
+    summary = ledger.summarize(2025, [gain, loss])
+    assert summary["crypto_realized_gains_eur"] == "300"
+    assert summary["crypto_realized_losses_eur"] == "100"
+    assert summary["crypto_realized_net_result_eur"] == "200"
+    prep = ledger.e1kv_preparation(2025, summary)
+    assert prep["values"]["crypto_gains"]["value_eur"] == "300"
+    assert prep["values"]["crypto_losses"]["value_eur"] == "100"
