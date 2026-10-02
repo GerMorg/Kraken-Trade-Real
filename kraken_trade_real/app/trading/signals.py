@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
-from app.domain.models import Instrument, MarketSnapshot, NewsItem, Signal
+from app.domain.models import Instrument, MarketSnapshot, Signal
 from app.domain.states import Direction
 
 
