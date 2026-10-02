@@ -55,6 +55,9 @@ options:
   news_refresh_minutes: 10
   sensors_enabled: true
   log_file_enabled: true
+  tax_enabled: true
+  tax_provider_classification: "FOREIGN"
+  tax_report_enabled: true
 schema:
   kraken_api_key: password
   kraken_api_secret: password
@@ -92,3 +95,6 @@ schema:
   news_refresh_minutes: int
   sensors_enabled: bool
   log_file_enabled: bool
+  tax_enabled: bool
+  tax_provider_classification: str
+  tax_report_enabled: bool
