@@ -2,20 +2,32 @@
 
 profile kraken_trade_real flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
-  #include <abstractions/python>
 
-  network inet stream,
-  network inet6 stream,
+  file,
+  signal (send) set=(kill,term,int,hup,cont),
 
-  /app/** rix,
-  /data/** rwk,
+  # S6-Overlay
+  /init rix,
+  /bin/** ix,
+  /usr/bin/** ix,
   /usr/** rix,
   /lib/** rix,
-  /bin/** rix,
   /sbin/** rix,
-  /dev/urandom r,
-  /etc/** r,
+  /etc/s6/** rix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /run/** rwk,
 
-  deny /proc/** w,
-  deny /sys/** w,
+  # Application runtime
+  /app/** rix,
+  /data/** rw,
+  /tmp/** rwk,
+
+  # Network access, including DNS
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
 }

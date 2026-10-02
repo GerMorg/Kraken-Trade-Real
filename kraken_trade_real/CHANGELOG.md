@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Fix AppArmor rules for S6-Overlay startup.
+
 ## 0.1.0
 
 - kompletter unabhängiger Neubau
