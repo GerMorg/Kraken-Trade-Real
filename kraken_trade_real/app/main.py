@@ -15,6 +15,7 @@ from app.portfolio import PortfolioReconciler, RiskSizer
 from app.recovery import CircuitBreaker, RecoveryManager
 from app.risk import LeverageEngine, MarginEngine, RiskEngine
 from app.sensors import SensorPublisher
+from app.tax import AustrianTaxLedger
 from app.trading import DecisionEngine, OrderIntentBuilder, SignalEngine
 from app.trading.authority import TradingAuthority
 from app.runtime import TradingRuntime
@@ -49,6 +50,7 @@ def build_runtime() -> TradingRuntime:
     research=ResearchEngine(db)
     learning=LearningEngine(db,calibration,registry,research)
     sensors=SensorPublisher(config.sensors_enabled,__import__("os").getenv("SUPERVISOR_TOKEN"))
+    tax=AustrianTaxLedger(db, provider_tax_classification=config.tax_provider_classification)
     return TradingRuntime(
         config,db,audit,gateway,discovery,market_data,features,regimes,scanner,news,gemini,
         signals,decisions,sizer,risk,leverage, OrderIntentBuilder(
