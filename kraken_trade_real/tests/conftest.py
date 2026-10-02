@@ -75,6 +75,7 @@ class FakeGateway:
         if method=="ordersstatus": return {"orders":[]}
         return {"result":"success"}
 
+    def spot_trades_history(self, params=None): return {"trades": {}}
     def api_permissions(self): return self.spot_private("GetApiKeyInfo")
     def websocket_token(self): return {"token":"never-log-this"}
     def submit_spot_order(self, **kwargs):
