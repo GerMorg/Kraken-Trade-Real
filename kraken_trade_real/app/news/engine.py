@@ -5,6 +5,7 @@ from email.utils import parsedate_to_datetime
 import hashlib
 import re
 import time
+from typing import Any
 from urllib.request import Request, urlopen
 from defusedxml import ElementTree as ET
 from app.domain.models import NewsItem
@@ -16,9 +17,9 @@ class NewsEngine:
     POS={ "approval","approved","growth","surge","rally","adoption","partnership","launch","profit","record","easing" }
     NEG={ "hack","fraud","ban","banned","lawsuit","crisis","collapse","sanction","war","recession","loss","liquidation","outage","investigation" }
     ALIASES={"BTC":{"BTC","BITCOIN","XBT"},"ETH":{"ETH","ETHEREUM"},"SOL":{"SOL","SOLANA"},"XRP":{"XRP","RIPPLE"},"DOGE":{"DOGE","DOGECOIN"},"ADA":{"ADA","CARDANO"}}
-    def __init__(self,db:object,refresh_minutes:int=10)->None:self.db=db;self.refresh_seconds=max(60,refresh_minutes*60)
+    def __init__(self,db:Any,refresh_minutes:int=10)->None:self.db=db;self.refresh_seconds=max(60,refresh_minutes*60)
     def collect(self,limit_per_source:int=30)->list[NewsItem]:
-        out=[]
+        out: list[RawNews]=[]
         for source,url in SOURCES:
             try:
                 rows=self._fetch(source,url,limit_per_source);out.extend(self._classify(x) for x in rows)
