@@ -137,7 +137,7 @@ class KrakenGateway:
         return self.spot_public("Ticker"), self.futures_public("tickers")
 
     def public_status(self):
-        return self.spot_public("SystemStatus"), self.futures_public("status")
+        return self.spot_public("SystemStatus")
 
     def spot_balance(self):
         return self.spot_private("Balance")
