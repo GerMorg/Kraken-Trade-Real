@@ -51,7 +51,7 @@ def build_runtime() -> TradingRuntime:
     sensors=SensorPublisher(config.sensors_enabled,__import__("os").getenv("SUPERVISOR_TOKEN"))
     return TradingRuntime(
         config,db,audit,gateway,discovery,market_data,features,regimes,scanner,news,gemini,
-        signals,decisions,sizer,risk,leverage, __import__("app.trading",fromlist=["OrderIntentBuilder"]).OrderIntentBuilder(
+        signals,decisions,sizer,risk,leverage, OrderIntentBuilder(
             config.execution_max_slippage_bps,config.execution_order_timeout_seconds
         ), authority,portfolio,recovery,learning,registry,sensors
     )
