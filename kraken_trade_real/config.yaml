@@ -13,10 +13,10 @@ boot: auto
 homeassistant: "2026.4.0"
 homeassistant_api: true
 hassio_role: default
-apparmor: kraken_trade_real
+apparmor: true
 init: false
 map:
-  - type: addon_config
+  - type: app_config
     read_only: false
 options:
   kraken_api_key: ""
