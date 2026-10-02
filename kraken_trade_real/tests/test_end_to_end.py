@@ -24,7 +24,7 @@ def test_full_runtime_smoke(config,db,fake_gateway):
     portfolio=PortfolioReconciler(fake_gateway,db);breaker=CircuitBreaker();recovery=RecoveryManager(db,audit,breaker)
     registry=ModelRegistry(db);learning=LearningEngine(db,CalibrationEngine(),registry,ResearchEngine(db))
     sensors=SensorPublisher(False,None);intent=OrderIntentBuilder(config.execution_max_slippage_bps,config.execution_order_timeout_seconds)
-    runtime=TradingRuntime(config,db,audit,fake_gateway,discovery,market,features,regimes,scanner,news,gemini,signals,decisions,RiskSizer(config.risk_max_position_pct,config.risk_cash_reserve_pct),risk,lev,intent,authority,portfolio,recovery,learning,registry,sensors)
+    runtime=TradingRuntime(config,db,audit,fake_gateway,discovery,market,features,regimes,scanner,news,gemini,signals,decisions,RiskSizer(config.risk_max_position_pct,config.risk_cash_reserve_pct),risk,lev,intent,authority,portfolio,recovery,learning,registry,sensors,tax)
     assert runtime.startup()
     result=runtime.run_cycle()
     assert result["status"] in {"COMPLETED","FAILED"}
