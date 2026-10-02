@@ -213,6 +213,8 @@ class TradingRuntime:
             self.audit.emit("TAX_REPORT_FAILED", "WARNING", error=type(exc).__name__)
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
+        tax_report=self.tax.build_report(datetime.now(timezone.utc).year) if self.config.tax_enabled else {}
+        tax_summary=tax_report.get("summary",{})
         self.sensors.publish(self.sensors.states(
             status=self.state.stage.value,stage=self.state.stage.value,cycle_id=self.state.cycle_id,
             blocker=self.state.blocker,symbol=self.state.selected_symbol,
@@ -222,5 +224,9 @@ class TradingRuntime:
             daily_pnl_eur=portfolio.daily_pnl_eur,drawdown_pct=portfolio.drawdown_pct,
             open_positions=len(portfolio.positions),news_status="OK" if self.config.news_enabled else "DISABLED",
             gemini_status=str(gemini.get("status","UNKNOWN")),model_version=model_version,
-            breaker_active=self.recovery.breaker.active
+            breaker_active=self.recovery.breaker.active,
+            tax_status=str(tax_summary.get("status","DISABLED")),
+            tax_estimated_27_5_eur=tax_summary.get("indicative_27_5_tax_eur","0"),
+            tax_incomplete_events=int(tax_summary.get("incomplete_event_count",0)),
+            tax_year=datetime.now(timezone.utc).year,
         ))
