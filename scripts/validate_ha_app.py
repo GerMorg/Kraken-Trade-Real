@@ -26,4 +26,6 @@ bad=[p for p in ROOT.rglob("config.yaml") if p!=APP/"config.yaml"]
 if bad: raise SystemExit(f"unexpected nested config.yaml: {bad}")
 docker=(APP/"Dockerfile").read_text(encoding="utf-8")
 if "io.hass.type=\"app\"" not in docker or "io.hass.version" not in docker: raise SystemExit("Dockerfile missing HA labels")
+run_sh=(APP/"run.sh").read_text(encoding="utf-8").splitlines()
+if not run_sh or not run_sh[0].startswith("#!/usr/bin/with-contenv "): raise SystemExit("run.sh must use with-contenv for Supervisor environment propagation")
 print("Home Assistant app structure valid")
