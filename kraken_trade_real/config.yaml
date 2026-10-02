@@ -16,7 +16,7 @@ hassio_role: default
 apparmor: true
 init: false
 map:
-  - type: addon_config
+  - type: app_config
     read_only: false
 options:
   kraken_api_key: ""
