@@ -34,7 +34,7 @@ class SensorPublisher:
             try:
                 with urlopen(request,timeout=5):  # nosec B310
                     pass
-            except URLError:
+            except (URLError,OSError):
                 # Sensor transport is observational; it must never block trading.
                 continue
 
