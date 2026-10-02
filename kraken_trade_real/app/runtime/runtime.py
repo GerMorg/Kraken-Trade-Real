@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime, timezone
 import time
 from typing import Any
 
@@ -18,7 +19,7 @@ class TradingRuntime:
                  scanner: Any, news: Any, gemini: Any, signals: Any, decisions: Any,
                  sizer: Any, risk: Any, leverage: Any, intents: Any, authority: Any,
                  portfolio: Any, recovery: Any, learning: Any, registry: Any,
-                 sensors: Any) -> None:
+                 sensors: Any, tax: AustrianTaxLedger) -> None:
         self.config=config
         self.db=db
         self.audit=audit
@@ -42,6 +43,8 @@ class TradingRuntime:
         self.learning=learning
         self.registry=registry
         self.sensors=sensors
+        self.tax=tax
+        self._last_tax_sync=0.0
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.config_hash=digest_config(config.__dict__)
         self.instruments=[]
@@ -98,6 +101,7 @@ class TradingRuntime:
             self.state.set(RuntimeStage.SAFE_MODE,"PORTFOLIO_RECONCILE_FAILED")
             return False
 
+        self._update_tax_report(force=True)
         self.registry.active()
         self.state.set(RuntimeStage.MARKET_READY)
         self.state.set(RuntimeStage.MODELS_READY)
@@ -190,6 +194,23 @@ class TradingRuntime:
             self.db.finish_cycle(cycle_id,"FAILED",type(exc).__name__)
             self.state.set(RuntimeStage.SAFE_MODE,type(exc).__name__)
             return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__}
+
+    def _update_tax_report(self, force: bool = False) -> None:
+        if not self.config.tax_enabled or not self.config.tax_report_enabled:
+            return
+        now = time.time()
+        if not force and now - self._last_tax_sync < 3600:
+            return
+        try:
+            added = self.tax.sync_kraken_spot_history(self.gateway)
+            year = datetime.now(timezone.utc).year
+            paths = self.tax.write_report(year)
+            report = self.tax.build_report(year)
+            self.db.record_tax_report(year, report, paths)
+            self.audit.emit("TAX_REPORT_UPDATED", "INFO", events_added=added, status=report["summary"]["status"])
+            self._last_tax_sync = now
+        except Exception as exc:
+            self.audit.emit("TAX_REPORT_FAILED", "WARNING", error=type(exc).__name__)
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
         self.sensors.publish(self.sensors.states(
