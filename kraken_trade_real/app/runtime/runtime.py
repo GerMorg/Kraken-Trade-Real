@@ -8,7 +8,6 @@ from typing import Any
 from app.domain.models import digest_config, new_id
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
-from app.tax import AustrianTaxLedger
 
 
 D=Decimal
@@ -20,7 +19,7 @@ class TradingRuntime:
                  scanner: Any, news: Any, gemini: Any, signals: Any, decisions: Any,
                  sizer: Any, risk: Any, leverage: Any, intents: Any, authority: Any,
                  portfolio: Any, recovery: Any, learning: Any, registry: Any,
-                 sensors: Any, tax: AustrianTaxLedger) -> None:
+                 sensors: Any, tax: Any) -> None:
         self.config=config
         self.db=db
         self.audit=audit
