@@ -39,7 +39,7 @@ def test_2025_foreign_e1kv_mapping():
         proceeds_eur=Decimal("1000"), acquisition_cost_eur=Decimal("800"),
         realized_gain_eur=Decimal("200"),
     )
-    report = ledger.build_report(2025) if False else ledger.summarize(2025, [event])
+    report = ledger.summarize(2025, [event])
     prep = ledger.e1kv_preparation(2025, report)
     assert prep["values"]["crypto_gains"]["kennzahl"] == 174
     assert prep["values"]["crypto_losses"]["kennzahl"] == 176
