@@ -20,3 +20,13 @@ configuration:
   gemini_enabled:
     name: Gemini enrichment
     description: Enable news and research enrichment by Gemini.
+
+  tax_enabled:
+    name: Austrian tax reporting
+    description: Enable Austrian income-tax bookkeeping and annual reporting.
+  tax_provider_classification:
+    name: Tax provider classification
+    description: FOREIGN for foreign capital income; verify against the actual contract and tax documents.
+  tax_report_enabled:
+    name: Generate annual tax report
+    description: Generate tax summary, tax-event CSV and E1/E1kv preparation under /data/reports/tax.
