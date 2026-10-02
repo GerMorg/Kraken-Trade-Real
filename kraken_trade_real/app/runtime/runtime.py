@@ -52,26 +52,50 @@ class TradingRuntime:
     def startup(self) -> bool:
         self.state.set(RuntimeStage.CONFIG_LOADED)
         self.audit.emit("STARTUP_CONFIG_LOADED","INFO",config_hash=self.config_hash)
+        self._publish_runtime_status()
         if not self.config.kraken_enabled:
             self.state.set(RuntimeStage.SAFE_MODE,"KRAKEN_DISABLED")
+            self.audit.emit("STARTUP_KRAKEN_DISABLED","WARNING",blocker="KRAKEN_DISABLED")
+            self._publish_runtime_status()
             return False
         try:
-            self.gateway.public_status()
+            server_time = self.gateway.spot_public("Time")
             self.state.set(RuntimeStage.API_CHECKED)
-            self.audit.emit("STARTUP_KRAKEN_PUBLIC_OK")
+            self.audit.emit(
+                "STARTUP_KRAKEN_PUBLIC_OK",
+                "INFO",
+                server_time=server_time.get("unixtime") if isinstance(server_time,dict) else "",
+            )
+            self._publish_runtime_status()
+            try:
+                statuses = self.gateway.public_status()
+                self.audit.emit("STARTUP_KRAKEN_STATUS_OK","INFO",status_summary=str(statuses)[:500])
+            except Exception as exc:
+                self.audit.emit(
+                    "STARTUP_KRAKEN_STATUS_DEGRADED",
+                    "WARNING",
+                    error=f"{type(exc).__name__}:{str(exc)[:800]}",
+                )
         except Exception as exc:
-            self.recovery.issue("KRAKEN_UNAVAILABLE",type(exc).__name__)
+            detail=f"{type(exc).__name__}:{str(exc)[:800]}"
+            self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.state.set(RuntimeStage.DEGRADED,"KRAKEN_UNAVAILABLE")
+            self._publish_runtime_status()
             return False
 
         try:
             self.instruments=self.discovery.discover()
+            if not self.instruments:
+                raise RuntimeError("instrument discovery returned zero instruments")
             self.db.upsert_instruments(self.instruments)
             self.state.set(RuntimeStage.INSTRUMENTS_SYNCED)
             self.audit.emit("STARTUP_INSTRUMENTS_SYNCED",count=len(self.instruments))
+            self._publish_runtime_status()
         except Exception as exc:
-            self.recovery.issue("KRAKEN_UNAVAILABLE",f"instrument discovery:{type(exc).__name__}")
+            detail=f"instrument discovery:{type(exc).__name__}:{str(exc)[:700]}"
+            self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.state.set(RuntimeStage.DEGRADED,"INSTRUMENT_DISCOVERY_FAILED")
+            self._publish_runtime_status()
             return False
 
         if self.gateway.api_key:
@@ -87,10 +111,13 @@ class TradingRuntime:
                 if self.config.live_enabled and not allowed:
                     self.recovery.issue("PERMISSION_FAILURE","modify-trades missing")
                     self.state.set(RuntimeStage.SAFE_MODE,"PERMISSION_FAILURE")
+                    self._publish_runtime_status()
                     return False
             except Exception as exc:
-                self.recovery.issue("AUTH_FAILURE",type(exc).__name__)
+                detail=f"{type(exc).__name__}:{str(exc)[:800]}"
+                self.recovery.issue("AUTH_FAILURE",detail)
                 self.state.set(RuntimeStage.SAFE_MODE,"AUTH_FAILURE")
+                self._publish_runtime_status()
                 return False
 
         try:
@@ -98,8 +125,10 @@ class TradingRuntime:
             self.db.save_portfolio("startup",portfolio)
             self.state.set(RuntimeStage.ACCOUNT_RECONCILED)
         except Exception as exc:
-            self.recovery.issue("PORTFOLIO_MISMATCH",type(exc).__name__)
+            detail=f"{type(exc).__name__}:{str(exc)[:800]}"
+            self.recovery.issue("PORTFOLIO_MISMATCH",detail)
             self.state.set(RuntimeStage.SAFE_MODE,"PORTFOLIO_RECONCILE_FAILED")
+            self._publish_runtime_status()
             return False
 
         self._update_tax_report(force=True)
@@ -108,11 +137,13 @@ class TradingRuntime:
         self.state.set(RuntimeStage.MODELS_READY)
         self.state.set(RuntimeStage.READY)
         self.audit.emit("STARTUP_READY","INFO",instruments=len(self.instruments))
+        self._publish_runtime_status()
         return True
 
     def run_cycle(self) -> dict[str,Any]:
-        if self.state.stage not in {RuntimeStage.READY,RuntimeStage.RUNNING,RuntimeStage.DEGRADED}:
-            self.startup()
+        if self.state.stage not in {RuntimeStage.READY,RuntimeStage.RUNNING}:
+            if not self.startup():
+                return {"cycle_id":"","status":"DEGRADED","error":self.state.blocker or self.state.stage.value}
         cycle_id=new_id("cycle")
         self.state.cycle_id=cycle_id
         self.db.start_cycle(cycle_id,self.config_hash)
@@ -195,6 +226,39 @@ class TradingRuntime:
             self.db.finish_cycle(cycle_id,"FAILED",type(exc).__name__)
             self.state.set(RuntimeStage.SAFE_MODE,type(exc).__name__)
             return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__}
+
+    def _publish_runtime_status(self) -> None:
+        try:
+            self.sensors.publish(self.sensors.states(
+                status=self.state.stage.value,
+                stage=self.state.stage.value,
+                cycle_id=self.state.cycle_id,
+                blocker=self.state.blocker,
+                symbol=self.state.selected_symbol,
+                edge_bps=self.state.last_edge_bps,
+                confidence=self.state.last_confidence,
+                leverage="1",
+                equity_eur="0",
+                gross_eur="0",
+                net_eur="0",
+                margin_used_eur="0",
+                daily_pnl_eur="0",
+                drawdown_pct="0",
+                open_positions=0,
+                news_status="UNKNOWN",
+                gemini_status="UNKNOWN",
+                model_version="UNKNOWN",
+                breaker_active=self.recovery.breaker.active,
+                tax_status="UNKNOWN",
+                tax_estimated_27_5_eur="0",
+                tax_incomplete_events=0,
+                tax_year=datetime.now(timezone.utc).year,
+            ))
+            self.audit.emit("HA_SENSOR_PUBLISH_ATTEMPTED","INFO",
+                            enabled=bool(getattr(self.sensors,"enabled",False)))
+        except Exception as exc:
+            self.audit.emit("HA_SENSOR_PUBLISH_FAILED","WARNING",
+                            error=f"{type(exc).__name__}:{str(exc)[:500]}")
 
     def _update_tax_report(self, force: bool = False) -> None:
         if not self.config.tax_enabled or not self.config.tax_report_enabled:

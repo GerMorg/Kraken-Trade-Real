@@ -36,14 +36,23 @@ class HTTP:
         req = Request(
             url,
             data=data.encode("utf-8") if isinstance(data, str) else data,
-            headers=headers or {},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Kraken-Trade-Real/0.1.2",
+                **(headers or {}),
+            },
             method=method,
         )
         try:
             with urlopen(req, timeout=self.timeout) as response:  # nosec B310
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            raise KrakenError(f"HTTP_{exc.code}") from exc
+            try:
+                detail = exc.read(512).decode("utf-8", errors="replace").replace("\n", " ")[:400]
+            except OSError:
+                detail = ""
+            suffix = f":{detail}" if detail else ""
+            raise KrakenError(f"HTTP_{exc.code}{suffix}") from exc
         except URLError as exc:
             raise KrakenAmbiguous(f"NETWORK:{exc.reason}") from exc
         if not isinstance(payload, dict):
@@ -71,8 +80,10 @@ class KrakenGateway:
         query = urlencode(params or {}, doseq=True)
         url = f"{self.SPOT}/0/public/{method}" + (f"?{query}" if query else "")
         result = self.http.request(url)
-        if result.get("error"):
-            raise KrakenError("KRAKEN_PUBLIC")
+        errors = result.get("error")
+        if errors:
+            detail = ";".join(str(item) for item in errors)[:800]
+            raise KrakenError(f"KRAKEN_PUBLIC:{detail}")
         return result.get("result") or {}
 
     def spot_private(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
