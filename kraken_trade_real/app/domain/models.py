@@ -2,7 +2,10 @@ from __future__ import annotations
 from dataclasses import dataclass,field
 from decimal import Decimal
 from typing import Any
-import hashlib,json,time,uuid
+import hashlib
+import json
+import time
+import uuid
 from .states import Direction,OrderState,ProductType
 
 @dataclass(frozen=True)
