@@ -8,6 +8,7 @@ from typing import Any
 from app.domain.models import digest_config, new_id
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
+from app.tax import AustrianTaxLedger
 
 
 D=Decimal
@@ -203,11 +204,20 @@ class TradingRuntime:
             return
         try:
             added = self.tax.sync_kraken_spot_history(self.gateway)
-            year = datetime.now(timezone.utc).year
-            paths = self.tax.write_report(year)
-            report = self.tax.build_report(year)
-            self.db.record_tax_report(year, report, paths)
-            self.audit.emit("TAX_REPORT_UPDATED", "INFO", events_added=added, status=report["summary"]["status"])
+            current_year = datetime.now(timezone.utc).year
+            for year in {current_year, current_year - 1}:
+                if year < 2021:
+                    continue
+                paths = self.tax.write_report(year)
+                report = self.tax.build_report(year)
+                self.db.record_tax_report(year, report, paths)
+                self.audit.emit(
+                    "TAX_REPORT_UPDATED",
+                    "INFO",
+                    tax_year=year,
+                    events_added=added,
+                    status=report["summary"]["status"],
+                )
             self._last_tax_sync = now
         except Exception as exc:
             self.audit.emit("TAX_REPORT_FAILED", "WARNING", error=type(exc).__name__)
