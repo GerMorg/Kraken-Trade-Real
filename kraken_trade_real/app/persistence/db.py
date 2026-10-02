@@ -137,12 +137,21 @@ class Database:
         self.order_event(i.client_order_id,i.state.value,{"intent_id":i.intent_id})
 
     def update_order_state(self,client_order_id:str,state:str,**extra:Any)->None:
-        vals=[state]; sets=["state=?"]
-        for field in ("kraken_order_id","last_error"):
-            if field in extra: sets.append(field+"=?"); vals.append(extra[field])
-        vals.append(client_order_id)
-        self.execute(f"UPDATE orders SET {','.join(sets)} WHERE client_order_id=?",tuple(vals))
-        self.order_event(client_order_id,state,{k:v for k,v in extra.items() if k in {"kraken_order_id","last_error"}})
+        order_id=extra.get("kraken_order_id")
+        last_error=extra.get("last_error")
+        if order_id is not None and last_error is not None:
+            self.execute("UPDATE orders SET state=?, kraken_order_id=?, last_error=? WHERE client_order_id=?",
+                         (state,order_id,last_error,client_order_id))
+        elif order_id is not None:
+            self.execute("UPDATE orders SET state=?, kraken_order_id=? WHERE client_order_id=?",
+                         (state,order_id,client_order_id))
+        elif last_error is not None:
+            self.execute("UPDATE orders SET state=?, last_error=? WHERE client_order_id=?",
+                         (state,last_error,client_order_id))
+        else:
+            self.execute("UPDATE orders SET state=? WHERE client_order_id=?",(state,client_order_id))
+        self.order_event(client_order_id,state,{k:v for k,v in extra.items()
+                         if k in {"kraken_order_id","last_error"}})
 
     def order_event(self,client_order_id:str,state:str,detail:dict[str,Any])->None:
         self.execute("INSERT INTO order_events(created_at,client_order_id,state,detail_json) VALUES(?,?,?,?)",
