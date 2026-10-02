@@ -1,0 +1,100 @@
+name: Kraken Trade Real
+version: 0.1.0
+slug: kraken_trade_real
+description: >-
+  Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
+  Long/Short, Margin, Leverage, News, Gemini, Learning und Home-Assistant-Sensoren.
+arch:
+  - amd64
+  - aarch64
+url: https://github.com/GerMorg/Kraken-Trade-Real
+startup: application
+boot: auto
+homeassistant: "2026.4.0"
+homeassistant_api: true
+hassio_role: default
+apparmor: kraken_trade_real
+init: false
+map:
+  - type: addon_config
+    read_only: false
+options:
+  kraken_api_key: ""
+  kraken_api_secret: ""
+  kraken_enabled: true
+  live_enabled: false
+  kill_switch: true
+  gemini_api_key: ""
+  gemini_enabled: true
+  gemini_model: gemini-3.8-flash
+  market_scan_interval_seconds: 300
+  market_min_liquidity_eur: 50.0
+  market_max_spread_bps: 80.0
+  market_max_data_age_seconds: 30
+  strategy_min_edge_bps: 25.0
+  strategy_min_confidence: 0.58
+  risk_max_position_pct: 15.0
+  risk_max_gross_pct: 80.0
+  risk_max_net_pct: 50.0
+  risk_max_margin_pct: 35.0
+  risk_max_leverage: 3.0
+  risk_max_open_positions: 3
+  risk_daily_loss_pct: 3.0
+  risk_max_drawdown_pct: 8.0
+  risk_cash_reserve_pct: 20.0
+  execution_max_slippage_bps: 40.0
+  execution_order_timeout_seconds: 45
+  execution_max_reprices: 2
+  execution_max_orders_per_day: 10
+  learning_enabled: true
+  learning_lookback_days: 365
+  learning_validation_interval_hours: 24
+  learning_auto_calibration: true
+  learning_auto_promotion: true
+  news_enabled: true
+  news_refresh_minutes: 10
+  sensors_enabled: true
+  log_file_enabled: true
+  tax_enabled: true
+  tax_provider_classification: "FOREIGN"
+  tax_report_enabled: true
+schema:
+  kraken_api_key: password
+  kraken_api_secret: password
+  kraken_enabled: bool
+  live_enabled: bool
+  kill_switch: bool
+  gemini_api_key: password
+  gemini_enabled: bool
+  gemini_model: str
+  market_scan_interval_seconds: int
+  market_min_liquidity_eur: float
+  market_max_spread_bps: float
+  market_max_data_age_seconds: int
+  strategy_min_edge_bps: float
+  strategy_min_confidence: float
+  risk_max_position_pct: float
+  risk_max_gross_pct: float
+  risk_max_net_pct: float
+  risk_max_margin_pct: float
+  risk_max_leverage: float
+  risk_max_open_positions: int
+  risk_daily_loss_pct: float
+  risk_max_drawdown_pct: float
+  risk_cash_reserve_pct: float
+  execution_max_slippage_bps: float
+  execution_order_timeout_seconds: int
+  execution_max_reprices: int
+  execution_max_orders_per_day: int
+  learning_enabled: bool
+  learning_lookback_days: int
+  learning_validation_interval_hours: int
+  learning_auto_calibration: bool
+  learning_auto_promotion: bool
+  news_enabled: bool
+  news_refresh_minutes: int
+  sensors_enabled: bool
+  log_file_enabled: bool
+  tax_enabled: bool
+  tax_provider_classification: str
+  tax_report_enabled: bool

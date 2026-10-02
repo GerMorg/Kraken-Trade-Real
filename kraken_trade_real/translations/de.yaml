@@ -1,0 +1,35 @@
+configuration:
+  kraken_api_key:
+    name: Kraken API Key
+    description: Read/Trade API key. Withdrawal permissions are neither required nor used.
+  kraken_api_secret:
+    name: Kraken API Secret
+    description: Secret used only for Kraken API request signing.
+  kraken_enabled:
+    name: Kraken enabled
+    description: Enable Kraken connectivity and discovery.
+  live_enabled:
+    name: Live trading enabled
+    description: Permit the central Trading Authority to submit real orders after all safety gates pass.
+  kill_switch:
+    name: Kill switch
+    description: Keep real order submission disabled while active.
+  gemini_api_key:
+    name: Gemini API key
+    description: Google Gemini API key for structured research and news interpretation.
+  gemini_enabled:
+    name: Gemini enabled
+    description: Enable Gemini enrichment.
+  gemini_model:
+    name: Gemini model
+    description: Model name used by the Gemini structured-analysis client.
+
+  tax_enabled:
+    name: Österreichische Steueraufbereitung
+    description: Jährliche Steuerbuchhaltung und Aufbereitung für die österreichische Einkommensteuererklärung aktivieren.
+  tax_provider_classification:
+    name: Steuerliche Providerklassifikation
+    description: FOREIGN für ausländische Kapitaleinkünfte; anhand der konkreten Vertrags- und Steuerunterlagen prüfen.
+  tax_report_enabled:
+    name: Jährlichen Steuerreport erzeugen
+    description: Einkommensteuerbericht, Steuerereignis-CSV und E1/E1kv-Arbeitsunterlage unter /data/reports/tax erzeugen.

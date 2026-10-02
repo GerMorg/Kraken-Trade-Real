@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kraken-trade-real"
+version = "0.1.0"
+description = "Autonomous Kraken trading Home Assistant app"
+requires-python = ">=3.12"
+dependencies = [
+  "google-genai==2.27.0",
+  "pydantic==2.13.5",
+  "PyYAML==6.0.3",
+  "websocket-client==1.9.0",
+  "defusedxml==0.7.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.1.1",
+  "ruff==0.14.0",
+  "mypy==1.18.2",
+  "bandit==1.8.6",
+  "pip-audit==2.9.0",
+]
+
+[tool.setuptools]
+packages = [
+  "app",
+  "app.config",
+  "app.domain",
+  "app.persistence",
+  "app.monitoring",
+  "app.kraken",
+  "app.market",
+  "app.portfolio",
+  "app.trading",
+  "app.risk",
+  "app.execution",
+  "app.news",
+  "app.gemini",
+  "app.learning",
+  "app.recovery",
+  "app.sensors",
+  "app.runtime",
+  "app.tax",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501", "E701", "E702"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.bandit]
+exclude_dirs = ["tests"]
