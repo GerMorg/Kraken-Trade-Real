@@ -44,6 +44,9 @@ class Config:
     news_refresh_minutes: int
     sensors_enabled: bool
     log_file_enabled: bool
+    tax_enabled: bool
+    tax_provider_classification: str
+    tax_report_enabled: bool
 
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
