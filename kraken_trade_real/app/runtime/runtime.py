@@ -47,7 +47,7 @@ class TradingRuntime:
         self._last_tax_sync=0.0
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.config_hash=digest_config(config.__dict__)
-        self.instruments=[]
+        self.instruments: list[Any]=[]
 
     def startup(self) -> bool:
         self.state.set(RuntimeStage.CONFIG_LOADED)
@@ -77,7 +77,8 @@ class TradingRuntime:
         if self.gateway.api_key:
             try:
                 permissions=self.gateway.api_permissions()
-                perms=permissions.get("permissions") if isinstance(permissions,dict) else []
+                raw_perms=permissions.get("permissions") if isinstance(permissions,dict) else []
+                perms=list(raw_perms) if isinstance(raw_perms,list) else []
                 allowed="modify-trades" in perms
                 self.db.execute(
                     "INSERT OR REPLACE INTO api_permissions(id,checked_at,permissions_json,ok,detail) VALUES(1,?,?,?,?)",
