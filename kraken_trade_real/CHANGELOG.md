@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Publish startup and degraded runtime states to Home Assistant sensors.
+- Keep trading cycles blocked while startup is degraded.
+- Add actionable Kraken and network error details to AppLogs.
+- Send explicit JSON Accept and User-Agent headers to Kraken.
+
 ## 0.1.1
 
 - Fix AppArmor rules for S6-Overlay startup.
