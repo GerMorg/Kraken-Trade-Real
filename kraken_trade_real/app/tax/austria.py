@@ -366,7 +366,7 @@ class AustrianTaxLedger:
 
     def write_report(self, year: int) -> dict[str, str]:
         report = self.build_report(year)
-        events = self.events()
+        events = [event for event in self.events() if event.year == year]
         target = self.report_dir / "AT" / str(year)
         target.mkdir(parents=True, exist_ok=True)
         json_path = target / "income-tax-report.json"
