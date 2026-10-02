@@ -67,7 +67,12 @@ class Config:
             except (TypeError, ValueError):
                 return default
 
-        def f(name: str, default: float, lo: float | None = None, hi: float | None = None) -> float:
+        def f(
+            name: str,
+            default: float,
+            lo: float | None = None,
+            hi: float | None = None,
+        ) -> float:
             try:
                 value = float(raw.get(name, default))
             except (TypeError, ValueError):
@@ -115,6 +120,11 @@ class Config:
             news_refresh_minutes=i("news_refresh_minutes", 10, 1),
             sensors_enabled=b("sensors_enabled", True),
             log_file_enabled=b("log_file_enabled", True),
+            tax_enabled=b("tax_enabled", True),
+            tax_provider_classification=str(
+                raw.get("tax_provider_classification", "FOREIGN")
+            ).strip().upper(),
+            tax_report_enabled=b("tax_report_enabled", True),
         )
         cls.validate(cfg)
         return cfg
@@ -127,6 +137,5 @@ class Config:
             raise ValueError("position ceiling cannot exceed gross risk ceiling")
         if cfg.risk_max_leverage < 1:
             raise ValueError("leverage must be >= 1")
-        if not cfg.api_key and cfg.kraken_enabled:
-            # Configuration may intentionally be read-only during first boot.
-            return
+        if cfg.tax_provider_classification not in {"FOREIGN", "DOMESTIC", "UNVERIFIED"}:
+            raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")
