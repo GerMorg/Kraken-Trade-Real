@@ -1,7 +1,6 @@
 from __future__ import annotations
 from decimal import Decimal
 from math import sqrt
-from typing import Any
 from app.domain.models import MarketSnapshot
 D=Decimal
 class FeatureEngine:
