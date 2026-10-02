@@ -1,6 +1,7 @@
 from __future__ import annotations
-import json,threading
-from typing import Any,Callable
+import json
+import threading
+from typing import Any, Callable
 import websocket
 class SequenceTracker:
     def __init__(self):self.last=None
