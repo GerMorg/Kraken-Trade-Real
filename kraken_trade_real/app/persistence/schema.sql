@@ -151,3 +151,21 @@ CREATE TABLE IF NOT EXISTS api_permissions(
   id INTEGER PRIMARY KEY CHECK(id=1), checked_at REAL NOT NULL,
   permissions_json TEXT NOT NULL, ok INTEGER NOT NULL, detail TEXT NOT NULL
 );
+
+
+CREATE TABLE IF NOT EXISTS tax_events(
+  event_id TEXT PRIMARY KEY, created_at REAL NOT NULL, timestamp REAL NOT NULL, tax_year INTEGER NOT NULL,
+  venue TEXT NOT NULL, product_type TEXT NOT NULL, asset TEXT NOT NULL, quote_asset TEXT NOT NULL,
+  event_type TEXT NOT NULL, quantity TEXT NOT NULL, proceeds_eur TEXT NOT NULL,
+  acquisition_cost_eur TEXT NOT NULL, realized_gain_eur TEXT NOT NULL, fee_eur TEXT NOT NULL,
+  fee_asset TEXT NOT NULL, tax_class TEXT NOT NULL, asset_regime TEXT NOT NULL, tax_neutral INTEGER NOT NULL,
+  kest_withheld_eur TEXT NOT NULL, foreign_tax_eur TEXT NOT NULL, complete INTEGER NOT NULL,
+  source TEXT NOT NULL, detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tax_events_year_time ON tax_events(tax_year,timestamp);
+
+CREATE TABLE IF NOT EXISTS tax_reports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, tax_year INTEGER NOT NULL,
+  report_version TEXT NOT NULL, status TEXT NOT NULL, json_path TEXT NOT NULL,
+  csv_path TEXT NOT NULL, markdown_path TEXT NOT NULL, summary_json TEXT NOT NULL
+);
