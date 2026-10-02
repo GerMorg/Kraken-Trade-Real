@@ -8,6 +8,7 @@ from app.portfolio import PortfolioReconciler,RiskSizer
 from app.recovery import CircuitBreaker,RecoveryManager
 from app.risk import LeverageEngine,MarginEngine,RiskEngine
 from app.sensors import SensorPublisher
+from app.tax import AustrianTaxLedger
 from app.trading import DecisionEngine,OrderIntentBuilder,SignalEngine
 from app.trading.authority import TradingAuthority
 from app.runtime import TradingRuntime
