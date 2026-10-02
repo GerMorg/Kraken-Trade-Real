@@ -195,6 +195,7 @@ Nachweislich:
 - Order-Reconciliation
 - Neustart/API/WS-Recovery
 - Portfolio-Konsistenz
+- Automatisches Portfolio Rebalancing
 - keine GUI
 - HA-Konfiguration/Sensoren
 - vollständige Logs
