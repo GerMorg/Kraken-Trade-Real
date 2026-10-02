@@ -177,26 +177,30 @@ class AustrianTaxLedger:
         if self.db is not None:
             self.db.record_tax_event(event)
 
-    def sync_kraken_spot_history(self, gateway: Any, limit: int = 1000) -> int:
+    def sync_kraken_spot_history(self, gateway: Any, max_pages: int = 200) -> int:
         if self.db is None or not gateway.api_key:
             return 0
         try:
-            payload = gateway.spot_trades_history()
-            trades = payload.get("trades", {}) if isinstance(payload, dict) else {}
+            all_rows: list[tuple[str, dict[str, Any]]] = []
+            offset = 0
+            for _ in range(max_pages):
+                payload = gateway.spot_trades_history({"ofs": offset})
+                trades = payload.get("trades", {}) if isinstance(payload, dict) else {}
+                rows = [(str(k), v) for k, v in trades.items() if isinstance(v, dict)]
+                all_rows.extend(rows)
+                if len(rows) < 50:
+                    break
+                offset += 50
+            all_rows.sort(key=lambda item: float(dec(item[1].get("time"))))
+            self._pools.clear()
+            self.db.execute("DELETE FROM tax_events WHERE source='kraken_trades_history'")
         except Exception as exc:
             self.db.event("TAX_HISTORY_FETCH_FAILED", "WARNING", {"error": type(exc).__name__})
             return 0
-        rows = sorted(
-            ((str(k), v) for k, v in trades.items() if isinstance(v, dict)),
-            key=lambda item: float(dec(item[1].get("time"))),
-        )[-limit:]
-        added = 0
-        for tx_id, raw in rows:
-            if self.db.tax_event_exists(tx_id):
-                continue
+
+        for tx_id, raw in all_rows:
             self.record(self.ingest_kraken_spot_trade(tx_id, raw))
-            added += 1
-        return added
+        return len(all_rows)
 
     def ingest_kraken_spot_trade(
         self, tx_id: str, raw: dict[str, Any], unit_price_eur: D | None = None
