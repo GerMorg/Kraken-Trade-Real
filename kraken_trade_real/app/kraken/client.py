@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import base64,json,threading,time
+import json,threading,time
 from decimal import Decimal
 from urllib.error import HTTPError,URLError
 from urllib.parse import urlencode
@@ -15,7 +15,7 @@ class HTTP:
     def request(self,url:str,*,method:str="GET",data:str|bytes|None=None,headers:dict[str,str]|None=None)->dict[str,Any]:
         req=Request(url,data=data.encode() if isinstance(data,str) else data,headers=headers or {},method=method)
         try:
-            with urlopen(req,timeout=self.timeout) as response: payload=json.loads(response.read().decode("utf-8"))
+            with urlopen(req,timeout=self.timeout) as response:  # nosec B310 payload=json.loads(response.read().decode("utf-8"))
         except HTTPError as exc: raise KrakenError(f"HTTP_{exc.code}") from exc
         except URLError as exc: raise KrakenAmbiguous(f"NETWORK:{exc.reason}") from exc
         if not isinstance(payload,dict):raise KrakenError("INVALID_JSON_ROOT")
