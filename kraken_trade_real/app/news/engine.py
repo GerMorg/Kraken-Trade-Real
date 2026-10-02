@@ -2,8 +2,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
-import hashlib,re,time
-from urllib.request import Request,urlopen
+import hashlib
+import re
+import time
+from urllib.request import Request, urlopen
 from defusedxml import ElementTree as ET
 from app.domain.models import NewsItem
 D=Decimal
