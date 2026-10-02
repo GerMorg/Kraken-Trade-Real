@@ -54,7 +54,7 @@ class Database:
         with self.connect() as con:
             cur=con.execute("INSERT INTO events(created_at,code,level,payload_json) VALUES(?,?,?,?)",
                             (time.time(),code,level,json.dumps(payload or {},sort_keys=True,default=str)))
-            return int(cur.lastrowid)
+            return int(cur.lastrowid or 0)
 
     def start_cycle(self,cycle_id:str,config_hash:str)->None:
         self.execute("INSERT INTO cycles(cycle_id,started_at,status,config_hash) VALUES(?,?,?,?)",
