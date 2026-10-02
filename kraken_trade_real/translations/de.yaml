@@ -23,3 +23,13 @@ configuration:
   gemini_model:
     name: Gemini model
     description: Model name used by the Gemini structured-analysis client.
+
+  tax_enabled:
+    name: Österreichische Steueraufbereitung
+    description: Jährliche Steuerbuchhaltung und Aufbereitung für die österreichische Einkommensteuererklärung aktivieren.
+  tax_provider_classification:
+    name: Steuerliche Providerklassifikation
+    description: FOREIGN für ausländische Kapitaleinkünfte; anhand der konkreten Vertrags- und Steuerunterlagen prüfen.
+  tax_report_enabled:
+    name: Jährlichen Steuerreport erzeugen
+    description: Einkommensteuerbericht, Steuerereignis-CSV und E1/E1kv-Arbeitsunterlage unter /data/reports/tax erzeugen.
