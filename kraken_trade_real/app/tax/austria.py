@@ -283,24 +283,32 @@ class AustrianTaxLedger:
     def summarize(self, year: int, events: Iterable[TaxEvent]) -> dict[str, Any]:
         rows = [e for e in events if e.year == year]
         crypto = [e for e in rows if e.tax_class.startswith("CRYPTO")]
-        crypto_result = sum((e.realized_gain_eur for e in crypto), D("0"))
-        current_income = sum((e.realized_gain_eur for e in rows if e.tax_class == "CRYPTO_CURRENT_INCOME"), D("0"))
-        derivative = sum((e.realized_gain_eur for e in rows if e.tax_class == "DERIVATIVE_27_5"), D("0"))
+        positive_gains = sum((max(D("0"), e.realized_gain_eur) for e in crypto), D("0"))
+        negative_losses = sum((max(D("0"), -e.realized_gain_eur) for e in crypto), D("0"))
+        crypto_result = positive_gains - negative_losses
+        current_income = sum(
+            (e.realized_gain_eur for e in rows if e.tax_class == "CRYPTO_CURRENT_INCOME"), D("0")
+        )
+        derivative = sum(
+            (e.realized_gain_eur for e in rows if e.tax_class == "DERIVATIVE_27_5"), D("0")
+        )
         kest = sum((e.kest_withheld_eur for e in rows), D("0"))
         foreign_tax = sum((e.foreign_tax_eur for e in rows), D("0"))
         incomplete = [e.event_id for e in rows if not e.complete]
-        indicative_base = max(D("0"), crypto_result + current_income + derivative)
+        indicative_base = max(D("0"), crypto_result + current_income)
         tax = indicative_base * CRYPTO_TAX_RATE
         return {
             "tax_year": year,
             "provider_tax_classification": self.provider_tax_classification,
-            "crypto_realized_result_eur": str(crypto_result),
+            "crypto_realized_gains_eur": str(positive_gains),
+            "crypto_realized_losses_eur": str(negative_losses),
+            "crypto_realized_net_result_eur": str(crypto_result),
             "crypto_current_income_eur": str(current_income),
             "derivative_result_eur": str(derivative),
             "kest_withheld_eur": str(kest),
             "foreign_tax_eur": str(foreign_tax),
-            "indicative_27_5_tax_eur": str(tax),
-            "indicative_balance_after_kest_eur": str(tax - kest),
+            "indicative_crypto_27_5_tax_eur": str(tax),
+            "indicative_crypto_balance_after_kest_eur": str(tax - kest),
             "event_count": len(rows),
             "incomplete_event_count": len(incomplete),
             "status": "INCOMPLETE_DATA" if incomplete else "READY_FOR_REVIEW",
@@ -323,8 +331,8 @@ class AustrianTaxLedger:
             "provider_classification": self.provider_tax_classification,
             "values": {
                 "crypto_current_income": {"kennzahl": 172 if foreign else 171, "value_eur": summary["crypto_current_income_eur"]},
-                "crypto_gains": {"kennzahl": 174 if foreign else 173, "value_eur": summary["crypto_realized_result_eur"]},
-                "crypto_losses": {"kennzahl": 176 if foreign else 175, "value_eur": str(max(D("0"), -dec(summary["crypto_realized_result_eur"])))},
+                "crypto_gains": {"kennzahl": 174 if foreign else 173, "value_eur": summary["crypto_realized_gains_eur"]},
+                "crypto_losses": {"kennzahl": 176 if foreign else 175, "value_eur": summary["crypto_realized_losses_eur"]},
                 "withheld_kest": {"kennzahl": 899, "value_eur": summary["kest_withheld_eur"]},
             },
         }
@@ -388,7 +396,9 @@ class AustrianTaxLedger:
         lines = [
             f"# Österreich Einkommensteuer – Krypto/Trading {report['tax_year']}",
             "",
-            f"- Krypto realisierte Wertsteigerungen: **{s['crypto_realized_result_eur']} EUR**",
+            f"- Krypto realisierte Gewinne: **{s['crypto_realized_gains_eur']} EUR**",
+            f"- Krypto realisierte Verluste: **{s['crypto_realized_losses_eur']} EUR**",
+            f"- Krypto Nettoergebnis: **{s['crypto_realized_net_result_eur']} EUR**",
             f"- Laufende Krypto-Einkünfte: **{s['crypto_current_income_eur']} EUR**",
             f"- Derivate-Ergebnis: **{s['derivative_result_eur']} EUR**",
             f"- Einbehaltene KESt: **{s['kest_withheld_eur']} EUR**",
