@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from app.domain.models import Decision, Instrument, PortfolioState, Signal, digest_config, new_id
+from app.domain.models import Decision, Instrument, PortfolioState, Signal, new_id
 
 
 D=Decimal
