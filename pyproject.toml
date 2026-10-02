@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kraken-ai-trader"
+version = "1.0.0"
+description = "Deterministic Home Assistant Kraken trading authority with research, learning and Gemini integration."
+requires-python = ">=3.13,<3.14"
+dependencies = ["aiohttp>=3.11,<4", "homeassistant>=2026.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --disable-warnings --maxfail=1"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["custom_components*"]
+namespaces = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.coverage.run]
+branch = true
+source = ["custom_components/kraken_ai_trader/core"]
+omit = [
+  "*/core/kraken.py",
+  "*/core/gemini.py",
+  "*/core/news.py",
+  "*/core/websocket.py",
+]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

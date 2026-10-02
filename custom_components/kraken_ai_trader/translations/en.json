@@ -1,0 +1,174 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kraken account",
+        "description": "Spot credentials are required. Futures credentials enable dynamic futures discovery and trading. Live trading stays disabled unless explicitly enabled.",
+        "data": {
+          "api_key": "Kraken spot API key",
+          "api_secret": "Kraken spot API secret",
+          "futures_api_key": "Kraken futures API key",
+          "futures_api_secret": "Kraken futures API secret",
+          "enabled": "Enable trader",
+          "live_enabled": "Allow live orders",
+          "account_currency": "Account currency (default EUR)"
+        }
+      },
+      "ai": {
+        "title": "News and Gemini",
+        "data": {
+          "gemini_api_key": "Gemini API key",
+          "gemini_model": "Gemini model",
+          "news_enabled": "Enable news",
+          "news_urls": "RSS feed URLs"
+        }
+      },
+      "risk": {
+        "title": "Risk and operating limits",
+        "data": {
+          "max_position_risk": "Maximum position risk fraction",
+          "max_gross_exposure": "Maximum gross exposure",
+          "max_net_exposure": "Maximum net exposure",
+          "max_margin": "Maximum margin utilization",
+          "max_leverage": "Maximum leverage",
+          "max_positions": "Maximum open positions",
+          "daily_loss_limit": "Daily loss limit fraction",
+          "max_drawdown": "Maximum drawdown fraction",
+          "cash_reserve": "Cash reserve",
+          "max_slippage": "Maximum expected slippage",
+          "max_orders_per_day": "Maximum orders per day",
+          "minimum_liquidity": "Minimum 24h liquidity",
+          "max_spread": "Maximum spread ratio",
+          "minimum_expected_edge": "Minimum expected net edge",
+          "minimum_confidence": "Minimum model confidence",
+          "poll_interval": "Cycle interval seconds",
+          "history_backfill_instruments": "Instruments to warm in history backfill"
+        }
+      }
+    },
+    "error": {}
+  },
+  "entity": {
+    "sensor": {
+      "portfolio_equity": {
+        "name": "Portfolio Equity"
+      },
+      "available_cash": {
+        "name": "Available Cash"
+      },
+      "available_margin": {
+        "name": "Available Margin"
+      },
+      "used_margin": {
+        "name": "Used Margin"
+      },
+      "gross_exposure": {
+        "name": "Gross Exposure"
+      },
+      "net_exposure": {
+        "name": "Net Exposure"
+      },
+      "realized_pnl": {
+        "name": "Realized Pnl"
+      },
+      "unrealized_pnl": {
+        "name": "Unrealized Pnl"
+      },
+      "daily_pnl": {
+        "name": "Daily Pnl"
+      },
+      "drawdown": {
+        "name": "Drawdown"
+      },
+      "open_positions": {
+        "name": "Open Positions"
+      },
+      "open_orders": {
+        "name": "Open Orders"
+      },
+      "orders_today": {
+        "name": "Orders Today"
+      },
+      "current_leverage": {
+        "name": "Current Leverage"
+      },
+      "average_slippage": {
+        "name": "Average Slippage"
+      },
+      "average_latency": {
+        "name": "Average Latency"
+      },
+      "expected_edge": {
+        "name": "Expected Edge"
+      },
+      "system_state": {
+        "name": "System State"
+      },
+      "last_action": {
+        "name": "Last Action"
+      },
+      "last_symbol": {
+        "name": "Last Symbol"
+      },
+      "last_direction": {
+        "name": "Last Direction"
+      },
+      "last_blocker": {
+        "name": "Last Blocker"
+      },
+      "last_trade": {
+        "name": "Last Trade"
+      },
+      "active_strategy": {
+        "name": "Active Strategy"
+      },
+      "active_model": {
+        "name": "Active Model"
+      },
+      "active_regime": {
+        "name": "Active Regime"
+      },
+      "last_news_event": {
+        "name": "Last News Event"
+      },
+      "gemini_status": {
+        "name": "Gemini Status"
+      },
+      "learning_status": {
+        "name": "Learning Status"
+      }
+    },
+    "binary_sensor": {
+      "trading_enabled": {
+        "name": "Trading Enabled"
+      },
+      "system_ready": {
+        "name": "System Ready"
+      },
+      "market_data_healthy": {
+        "name": "Market Data Healthy"
+      },
+      "private_data_healthy": {
+        "name": "Private Data Healthy"
+      },
+      "portfolio_consistent": {
+        "name": "Portfolio Consistent"
+      },
+      "model_ready": {
+        "name": "Model Ready"
+      },
+      "news_healthy": {
+        "name": "News Healthy"
+      },
+      "gemini_healthy": {
+        "name": "Gemini Healthy"
+      },
+      "circuit_breaker": {
+        "name": "Circuit Breaker"
+      },
+      "margin_safe": {
+        "name": "Margin Safe"
+      }
+    }
+  }
+}

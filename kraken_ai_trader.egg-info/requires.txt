@@ -1,0 +1,2 @@
+aiohttp<4,>=3.11
+homeassistant>=2026.9
