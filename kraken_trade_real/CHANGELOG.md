@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Start through `with-contenv` so Supervisor-provided environment variables, including `SUPERVISOR_TOKEN`, reach the Python runtime.
+- Remove the unsupported Futures `status` startup request that produced HTTP 404.
+
 ## 0.1.2
 
 - Publish startup and degraded runtime states to Home Assistant sensors.
