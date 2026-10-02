@@ -36,7 +36,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.2"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.3"
     assert captured["timeout"] == 15.0
 
 
@@ -114,3 +114,10 @@ def test_startup_failure_is_published_and_does_not_enter_cycle():
 
     result = runtime.run_cycle()
     assert result["status"] == "DEGRADED"
+
+
+def test_run_script_uses_with_contenv():
+    from pathlib import Path
+
+    run_sh = Path(__file__).resolve().parents[1].joinpath("run.sh")
+    assert run_sh.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/with-contenv bashio"
