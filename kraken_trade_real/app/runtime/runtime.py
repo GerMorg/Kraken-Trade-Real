@@ -120,7 +120,6 @@ class TradingRuntime:
             spot_payload,future_payload=self.gateway.public_tickers()
             snapshots={}
             feature_map={}
-            candidates=[]
             for instrument in self.instruments:
                 payload=spot_payload if instrument.venue=="spot" else future_payload
                 snapshot=self.market_data.snapshot(instrument,payload)
