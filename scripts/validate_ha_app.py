@@ -12,6 +12,11 @@ for key in ("name","version","slug","description","arch"):
 if cfg["arch"]!=["amd64","aarch64"]: raise SystemExit("arch must be amd64 and aarch64")
 if cfg.get("homeassistant_api") is not True: raise SystemExit("homeassistant_api must be enabled")
 if not isinstance(cfg.get("apparmor", True), bool): raise SystemExit("apparmor must be a boolean in the current Supervisor schema")
+profile_path=APP/"apparmor.txt"
+if cfg.get("apparmor") is True:
+    profile_text=profile_path.read_text(encoding="utf-8")
+    for required in ("/init rix", "/etc/s6/**", "/run/{s6,s6-rc*,service}/**"):
+        if required not in profile_text: raise SystemExit(f"apparmor.txt missing S6 rule: {required}")
 for entry in cfg.get("map", []):
     if isinstance(entry, dict) and entry.get("type") == "addon_config":
         raise SystemExit("addon_config map type is legacy; use app_config")
