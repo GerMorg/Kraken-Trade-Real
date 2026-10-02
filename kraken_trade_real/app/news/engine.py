@@ -4,7 +4,7 @@ from decimal import Decimal
 from email.utils import parsedate_to_datetime
 import hashlib,re,time
 from urllib.request import Request,urlopen
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from app.domain.models import NewsItem
 D=Decimal
 SOURCES=(("Kraken Blog","https://blog.kraken.com/feed"),("Federal Reserve","https://www.federalreserve.gov/feeds/press_all.xml"),("ECB","https://www.ecb.europa.eu/rss/press.html"))
