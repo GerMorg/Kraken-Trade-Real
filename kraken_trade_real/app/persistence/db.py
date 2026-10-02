@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 from typing import Iterator, Any
+from decimal import Decimal
 from app.domain.models import Decision, Fill, Instrument, MarketSnapshot, NewsItem, OrderIntent, PortfolioState
 
 class Database:
@@ -172,3 +173,57 @@ class Database:
     def learning_event(self,event_type:str,entity_id:str,payload:dict[str,Any])->None:
         self.execute("INSERT INTO learning_events(created_at,event_type,entity_id,payload_json) VALUES(?,?,?,?)",
                      (time.time(),event_type,entity_id,json.dumps(payload,sort_keys=True,default=str)))
+
+
+    def tax_event_exists(self, event_id: str) -> bool:
+        return self.one("SELECT event_id FROM tax_events WHERE event_id=?", (event_id,)) is not None
+
+    def record_tax_event(self, event: Any) -> None:
+        self.execute(
+            """INSERT OR REPLACE INTO tax_events(
+              event_id,created_at,timestamp,tax_year,venue,product_type,asset,quote_asset,event_type,
+              quantity,proceeds_eur,acquisition_cost_eur,realized_gain_eur,fee_eur,fee_asset,tax_class,
+              asset_regime,tax_neutral,kest_withheld_eur,foreign_tax_eur,complete,source,detail_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event.event_id, time.time(), event.timestamp, event.year, event.venue, event.product_type,
+                event.asset, event.quote_asset, event.event_type, str(event.quantity), str(event.proceeds_eur),
+                str(event.acquisition_cost_eur), str(event.realized_gain_eur), str(event.fee_eur),
+                event.fee_asset, event.tax_class, event.asset_regime, int(event.tax_neutral),
+                str(event.kest_withheld_eur), str(event.foreign_tax_eur), int(event.complete),
+                event.source, json.dumps(event.detail, sort_keys=True, default=str),
+            ),
+        )
+
+    def tax_events(self, year: int | None = None) -> list[Any]:
+        from app.tax import TaxEvent
+        sql = "SELECT * FROM tax_events"
+        params: tuple[Any, ...] = ()
+        if year is not None:
+            sql += " WHERE tax_year=?"
+            params = (year,)
+        sql += " ORDER BY timestamp,event_id"
+        rows = self.query(sql, params)
+        return [
+            TaxEvent(
+                r["event_id"], float(r["timestamp"]), int(r["tax_year"]), r["venue"], r["product_type"],
+                r["asset"], r["quote_asset"], r["event_type"], Decimal(r["quantity"]), Decimal(r["proceeds_eur"]),
+                Decimal(r["acquisition_cost_eur"]), Decimal(r["realized_gain_eur"]), Decimal(r["fee_eur"]),
+                r["fee_asset"], r["tax_class"], r["asset_regime"], bool(r["tax_neutral"]),
+                Decimal(r["kest_withheld_eur"]), Decimal(r["foreign_tax_eur"]), bool(r["complete"]),
+                r["source"], json.loads(r["detail_json"]),
+            )
+            for r in rows
+        ]
+
+    def record_tax_report(self, year: int, report: dict[str, Any], paths: dict[str, str]) -> None:
+        self.execute(
+            """INSERT INTO tax_reports(
+              created_at,tax_year,report_version,status,json_path,csv_path,markdown_path,summary_json
+            ) VALUES(?,?,?,?,?,?,?,?)""",
+            (
+                time.time(), year, report.get("report_version", ""), report.get("summary", {}).get("status", "UNKNOWN"),
+                paths["json"], paths["csv"], paths["markdown"],
+                json.dumps(report.get("summary", {}), sort_keys=True),
+            ),
+        )
