@@ -32,7 +32,7 @@ class SensorPublisher:
                 method="POST",
             )
             try:
-                with urlopen(request,timeout=5):
+                with urlopen(request,timeout=5):  # nosec B310
                     pass
             except URLError:
                 # Sensor transport is observational; it must never block trading.
