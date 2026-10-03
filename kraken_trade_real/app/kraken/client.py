@@ -126,7 +126,6 @@ class KrakenGateway:
             raise KrakenError("FUTURES_DISABLED_OR_CREDENTIALS_MISSING")
         endpoint = f"/api/v3/{method}"
         body = dict(params or {})
-        body.setdefault("nonce", self._next_nonce())
         encoded = urlencode(body, doseq=True)
         result = self.http.request(
             self.FUTURES + endpoint,
