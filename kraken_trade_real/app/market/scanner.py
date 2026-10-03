@@ -14,7 +14,7 @@ D = Decimal
 # diagnostics; actual API availability remains determined by instrument discovery.
 KNOWN_XSTOCKS = frozenset({
     "AAPLX","ABBVX","ABTX","ACNX","ADBEX","AMATX","AMBRX","AMDX","AMZNX","ANETX",
-    "APLDX","APPX","ASMLX","ASTSX","AVG0X","AVGOX","AZNX","BACX","BMNRX","BRK.BX",
+    "APLDX","APPX","ASMLX","ASTSX","AVGOX","AVGOX","AZNX","BACX","BMNRX","BRK.BX",
     "BSPX","BTBTX","BTGOX","CEGX","CLSKX","CMCSAX","COINX","COPXX","CORZX","CRCLX",
     "CRMX","CRWDX","CSCOX","CVXX","DELLX","DFDVX","DHRX","ETNX","FGDLX","FLBLX",
     "FLQMX","FSMLX","GEVX","GLDX","GLXYX","GMEX","GOOGLX","GSX","HDX","HONX",
@@ -26,7 +26,7 @@ KNOWN_XSTOCKS = frozenset({
     "SGOVX","SKHYX","SLVX","SMCIX","SMHX","SMRX","SNDKX","SPCEX","SPCX","SPYX",
     "STRCX","TBLLX","TERX","TMOX","TMUSX","TONXX","TQQQX","TSLAX","TSMX","UBERX",
     "UNHX","URAX","USARX","USPXX","UUUUX","VCXX","VGKX","VRTX","VTIX","VTX","VUGX",
-    "VXUSX","WBDX","WMTX","WULFX","XLEX","XOMX","XOPX","YLDEx".upper(),
+    "VXUSX","WBDX","WMTX","WULFX","XLEX","XOMX","XOPX","YLDEX",
 })
 
 FAMILY_ORDER = ("XSTOCK", "STOCK", "DERIVATIVE", "CRYPTO", "OTHER")
@@ -260,11 +260,14 @@ class MarketScanner:
             selected_symbols.add(instrument.symbol)
             seen_keys.add(key_for(instrument))
 
+        additional_added = 0
         for family in FAMILY_ORDER:
-            if family_slots <= 0:
+            if family_slots <= 0 or additional_added >= limit:
                 break
             added = 0
             for instrument in ranked_list:
+                if additional_added >= limit:
+                    break
                 if instrument.symbol in selected_symbols or self.product_family(instrument) != family:
                     continue
                 key = key_for(instrument)
@@ -274,15 +277,15 @@ class MarketScanner:
                 selected.append(instrument)
                 selected_symbols.add(instrument.symbol)
                 seen_keys.add(key)
+                additional_added += 1
                 added += 1
                 if added >= family_slots:
                     break
 
-        slots = 0
         for instrument in ranked_list:
             if instrument.symbol in selected_symbols:
                 continue
-            if slots >= limit:
+            if additional_added >= limit:
                 break
             key = key_for(instrument)
             if key in seen_keys:
