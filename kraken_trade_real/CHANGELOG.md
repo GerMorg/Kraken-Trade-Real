@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- Bound Gemini model requests with a configurable 30-second client/request timeout.
+- Disable Gemini retry loops for cycle-critical calls so a single API/network problem cannot stall a complete cycle.
+- Add explicit Gemini request start, completion, timeout/error and duration diagnostics.
+
+
 ## 0.1.9
 
 - Make News refresh cache-aware so the 10-minute refresh interval is actually respected.
