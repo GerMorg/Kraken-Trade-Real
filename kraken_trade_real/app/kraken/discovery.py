@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
@@ -51,27 +50,29 @@ class InstrumentDiscovery:
             leverage = tuple(sorted({_d(x, "1") for x in levels_raw}))
             margin_available = bool(raw.get("leverage_buy") or raw.get("leverage_sell"))
             pair_decimals = int(raw.get("pair_decimals") or 8)
-            found.append(Instrument(
-                venue="spot",
-                product_type=ProductType.SPOT_MARGIN if margin_available else ProductType.SPOT,
-                symbol=symbol,
-                instrument_id=str(item_id),
-                altname=str(raw.get("altname") or symbol),
-                base=base,
-                quote=quote,
-                status=status,
-                margin_available=margin_available,
-                long_available=True,
-                short_available=margin_available,
-                leverage_levels=leverage or (Decimal("1"),),
-                min_order_qty=_d(raw.get("ordermin")),
-                min_cost=_d(raw.get("costmin")),
-                lot_decimals=int(raw.get("lot_decimals") or 8),
-                price_decimals=pair_decimals,
-                tick_size=Decimal("1").scaleb(-pair_decimals),
-                margin_class="spot-margin" if margin_available else "spot",
-                metadata=dict(raw),
-            ))
+            found.append(
+                Instrument(
+                    venue="spot",
+                    product_type=ProductType.SPOT_MARGIN if margin_available else ProductType.SPOT,
+                    symbol=symbol,
+                    instrument_id=str(item_id),
+                    altname=str(raw.get("altname") or symbol),
+                    base=base,
+                    quote=quote,
+                    status=status,
+                    margin_available=margin_available,
+                    long_available=True,
+                    short_available=margin_available,
+                    leverage_levels=leverage or (Decimal("1"),),
+                    min_order_qty=_d(raw.get("ordermin")),
+                    min_cost=_d(raw.get("costmin")),
+                    lot_decimals=int(raw.get("lot_decimals") or 8),
+                    price_decimals=pair_decimals,
+                    tick_size=Decimal("1").scaleb(-pair_decimals),
+                    margin_class="spot-margin" if margin_available else "spot",
+                    metadata=dict(raw),
+                )
+            )
         return found
 
     def _futures(self, payload: dict[str, Any]) -> list[Instrument]:
@@ -93,25 +94,27 @@ class InstrumentDiscovery:
             lev_levels = tuple(Decimal(i) for i in range(1, max_lev_int + 1))
             base = str(raw.get("underlying") or raw.get("base") or "")
             quote = str(raw.get("quoteCurrency") or raw.get("quote") or "USD")
-            found.append(Instrument(
-                venue="futures",
-                product_type=ProductType.DERIVATIVE,
-                symbol=symbol,
-                instrument_id=str(raw.get("symbol") or symbol),
-                altname=str(raw.get("symbol") or symbol),
-                base=base,
-                quote=quote,
-                status=status,
-                margin_available=True,
-                long_available=bool(long_ok),
-                short_available=bool(short_ok),
-                leverage_levels=lev_levels,
-                min_order_qty=_d(raw.get("contractSize") or raw.get("minOrderSize")),
-                min_cost=_d(raw.get("minOrderSize") or "0"),
-                lot_decimals=8,
-                price_decimals=8,
-                tick_size=_d(raw.get("tickSize"), "0.00000001"),
-                margin_class=str(raw.get("marginCurrency") or quote),
-                metadata=dict(raw),
-            ))
+            found.append(
+                Instrument(
+                    venue="futures",
+                    product_type=ProductType.DERIVATIVE,
+                    symbol=symbol,
+                    instrument_id=str(raw.get("symbol") or symbol),
+                    altname=str(raw.get("symbol") or symbol),
+                    base=base,
+                    quote=quote,
+                    status=status,
+                    margin_available=True,
+                    long_available=bool(long_ok),
+                    short_available=bool(short_ok),
+                    leverage_levels=lev_levels,
+                    min_order_qty=_d(raw.get("contractSize") or raw.get("minOrderSize")),
+                    min_cost=_d(raw.get("minOrderSize") or "0"),
+                    lot_decimals=8,
+                    price_decimals=8,
+                    tick_size=_d(raw.get("tickSize"), "0.00000001"),
+                    margin_class=str(raw.get("marginCurrency") or quote),
+                    metadata=dict(raw),
+                )
+            )
         return found
