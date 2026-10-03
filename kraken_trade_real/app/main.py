@@ -36,7 +36,7 @@ def build_runtime() -> TradingRuntime:
         config.market_max_spread_bps,
         config.market_max_data_age_seconds,
     )
-    news = NewsEngine(db, config.news_refresh_minutes)
+    news = NewsEngine(db, config.news_refresh_minutes, config.news_source_timeout_seconds)
     gemini = GeminiAnalyzer(
         config.gemini_api_key,
         config.gemini_model,
