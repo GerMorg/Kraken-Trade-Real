@@ -110,23 +110,6 @@ class TradingAuthority:
                 continue
 
             stats["checked"] += 1
-            if not is_valid_kraken_client_order_id(client_order_id):
-                self.db.update_order_state(
-                    client_order_id,
-                    OrderState.REJECTED.value,
-                    last_error="INVALID_CLIENT_ORDER_ID_LEGACY",
-                )
-                self.audit.emit(
-                    "PREFLIGHT_ORDER_CLEARED",
-                    "WARNING",
-                    symbol=instrument.symbol,
-                    client_order_id=client_order_id,
-                    previous_state=state,
-                    outcome="INVALID_CLIENT_ORDER_ID_LEGACY",
-                    age_seconds=round(age_seconds, 2),
-                )
-                continue
-
             try:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,
@@ -490,6 +473,22 @@ class TradingAuthority:
                 or row.get("created_at")
                 or time.time()
             )
+            if not is_valid_kraken_client_order_id(client_order_id):
+                self.db.update_order_state(
+                    client_order_id,
+                    OrderState.REJECTED.value,
+                    last_error="INVALID_CLIENT_ORDER_ID_LEGACY",
+                )
+                self.audit.emit(
+                    "PREFLIGHT_ORDER_CLEARED",
+                    "WARNING",
+                    symbol=instrument.symbol,
+                    client_order_id=client_order_id,
+                    previous_state=state,
+                    outcome="INVALID_CLIENT_ORDER_ID_LEGACY",
+                    age_seconds=round(age_seconds, 2),
+                )
+                continue
             try:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,
