@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.18",
+                "User-Agent": "Kraken-Trade-Real/0.1.20",
                 **(headers or {}),
             },
             method=method,
@@ -75,10 +75,20 @@ class KrakenGateway:
     FUTURES = "https://futures.kraken.com/derivatives"
     FUTURES_CHARTS = "https://futures.kraken.com/api/charts/v1"
 
-    def __init__(self, api_key: str, api_secret: str, timeout: float = 15.0, futures_enabled: bool = False, futures_api_key: str | None = None, futures_api_secret: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        timeout: float = 15.0,
+        futures_enabled: bool = False,
+        futures_api_key: str | None = None,
+        futures_api_secret: str | None = None,
+        tokenized_assets_enabled: bool = False,
+    ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
         self.futures_enabled = futures_enabled
+        self.tokenized_assets_enabled = tokenized_assets_enabled
         self.futures_api_key = futures_api_key or ""
         self.futures_api_secret = futures_api_secret or ""
         self.http = HTTP(timeout)
@@ -88,7 +98,9 @@ class KrakenGateway:
         self._nonce = time.time_ns() // 1_000
         self._spot_private_lock = threading.RLock()
         self.last_public_instrument_warnings: list[str] = []
+        self.last_public_instrument_stage = "IDLE"
         self.last_public_ticker_warnings: list[str] = []
+        self.last_public_ticker_stage = "IDLE"
 
     def _next_nonce(self) -> int:
         with self._spot_private_lock:
@@ -161,57 +173,67 @@ class KrakenGateway:
         return result
 
     def public_instruments(self):
-        # Keep the core crypto Spot universe on Kraken's documented default
-        # AssetPairs request. Tokenized assets are optional and must never make
-        # the complete startup path depend on xStocks availability.
+        # The normal Spot universe is the startup-critical market source.
+        # Tokenized xStocks are opt-in because Kraken currently restricts EEA
+        # API order-book trading for these assets; they must never block core
+        # crypto startup when the endpoint is unavailable.
         self.last_public_instrument_warnings = []
+        self.last_public_instrument_stage = "SPOT_ASSETPAIRS"
         spot = self.spot_public("AssetPairs")
+
         tokenized: dict[str, Any] = {}
-        try:
-            tokenized_raw = self.spot_public(
-                "AssetPairs",
-                {"aclass_base": "tokenized_asset"},
-                timeout=min(self.http.timeout, 5.0),
-            )
-            tokenized = {
-                str(key): {**value, "aclass_base": "tokenized_asset"}
-                for key, value in (tokenized_raw or {}).items()
-                if isinstance(value, dict)
-            }
-        except (KrakenError, KrakenAmbiguous) as exc:
-            warning = f"{type(exc).__name__}:{str(exc)[:300]}"
-            self.last_public_instrument_warnings.append(warning)
+        if self.tokenized_assets_enabled:
+            self.last_public_instrument_stage = "TOKENIZED_ASSETPAIRS"
+            try:
+                tokenized_raw = self.spot_public(
+                    "AssetPairs",
+                    {"aclass_base": "tokenized_asset"},
+                    timeout=min(self.http.timeout, 5.0),
+                )
+                tokenized = {
+                    str(key): {**value, "aclass_base": "tokenized_asset"}
+                    for key, value in (tokenized_raw or {}).items()
+                    if isinstance(value, dict)
+                }
+            except (KrakenError, KrakenAmbiguous) as exc:
+                warning = f"{type(exc).__name__}:{str(exc)[:300]}"
+                self.last_public_instrument_warnings.append(warning)
 
         merged_spot = dict(spot or {})
         merged_spot.update(tokenized)
-        futures = (
-            self.futures_public("instruments")
-            if self.futures_enabled
-            else {"instruments": []}
-        )
+        if self.futures_enabled:
+            self.last_public_instrument_stage = "FUTURES_INSTRUMENTS"
+            futures = self.futures_public("instruments")
+        else:
+            futures = {"instruments": []}
+        self.last_public_instrument_stage = "COMPLETE"
         return merged_spot, futures
 
     def public_tickers(self):
         self.last_public_ticker_warnings = []
+        self.last_public_ticker_stage = "SPOT_TICKER"
         spot = self.spot_public("Ticker")
         tokenized: dict[str, Any] = {}
-        try:
-            tokenized = self.spot_public(
-                "Ticker",
-                {"asset_class": "tokenized_asset"},
-                timeout=min(self.http.timeout, 5.0),
-            )
-        except (KrakenError, KrakenAmbiguous) as exc:
-            self.last_public_ticker_warnings.append(
-                f"{type(exc).__name__}:{str(exc)[:300]}"
-            )
+        if self.tokenized_assets_enabled:
+            self.last_public_ticker_stage = "TOKENIZED_TICKER"
+            try:
+                tokenized = self.spot_public(
+                    "Ticker",
+                    {"asset_class": "tokenized_asset"},
+                    timeout=min(self.http.timeout, 5.0),
+                )
+            except (KrakenError, KrakenAmbiguous) as exc:
+                self.last_public_ticker_warnings.append(
+                    f"{type(exc).__name__}:{str(exc)[:300]}"
+                )
         merged_spot = dict(spot or {})
         merged_spot.update(tokenized or {})
-        futures = (
-            self.futures_public("tickers")
-            if self.futures_enabled
-            else {"tickers": []}
-        )
+        if self.futures_enabled:
+            self.last_public_ticker_stage = "FUTURES_TICKERS"
+            futures = self.futures_public("tickers")
+        else:
+            futures = {"tickers": []}
+        self.last_public_ticker_stage = "COMPLETE"
         return merged_spot, futures
 
     def futures_chart_candles(
