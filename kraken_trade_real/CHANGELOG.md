@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.12
+
+- Fix OrderIntent persistence SQL placeholder mismatch that could abort a cycle immediately before real order submission.
+- Add a regression test covering complete OrderIntent persistence including margin, leverage, reduce-only and post-only fields.
+- Update the Kraken User-Agent and Home Assistant/package version to 0.1.12.
+
 ## 0.1.11
 
 - Add automatic Gemini model fallback for quota exhaustion, rate limits, timeouts and model availability failures.
