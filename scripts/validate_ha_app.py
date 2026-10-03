@@ -17,9 +17,15 @@ if cfg.get("apparmor") is True:
     profile_text=profile_path.read_text(encoding="utf-8")
     for required in ("/init rix", "/etc/s6/**", "/run/{s6,s6-rc*,service}/**"):
         if required not in profile_text: raise SystemExit(f"apparmor.txt missing S6 rule: {required}")
-for entry in cfg.get("map", []):
-    if isinstance(entry, dict) and entry.get("type") == "addon_config":
-        raise SystemExit("addon_config map type is legacy; use app_config")
+map_types=[
+    entry.get("type") for entry in cfg.get("map", [])
+    if isinstance(entry, dict)
+]
+if "addon_config" not in map_types:
+    raise SystemExit("map must include addon_config for user-accessible app files")
+if "app_config" in map_types:
+    raise SystemExit("app_config is obsolete here; use addon_config")
+
 if cfg.get("host_network",False): raise SystemExit("host_network is not permitted")
 if cfg.get("full_access",False): raise SystemExit("full_access is not permitted")
 bad=[p for p in ROOT.rglob("config.yaml") if p!=APP/"config.yaml"]
