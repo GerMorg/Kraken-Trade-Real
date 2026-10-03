@@ -26,7 +26,7 @@ def build_runtime() -> TradingRuntime:
     config = Config.load()
     db = Database()
     audit = AuditLogger(config.log_file_enabled)
-    gateway = KrakenGateway(config.api_key, config.api_secret)
+    gateway = KrakenGateway(config.api_key, config.api_secret, futures_enabled=config.futures_enabled, futures_api_key=config.futures_api_key, futures_api_secret=config.futures_api_secret)
     discovery = InstrumentDiscovery(gateway)
     market_data = MarketData(gateway)
     features = FeatureEngine()
