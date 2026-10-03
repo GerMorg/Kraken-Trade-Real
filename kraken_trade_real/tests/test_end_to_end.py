@@ -88,6 +88,7 @@ def test_full_runtime_smoke(config, db, fake_gateway):
         tax,
     )
     assert runtime.startup()
+    runtime.learning.process_feedback = lambda: (_ for _ in ()).throw(KeyError("stale-feedback-key"))
     result = runtime.run_cycle()
-    assert result["status"] in {"COMPLETED", "FAILED"}
+    assert result["status"] == "COMPLETED"
     assert fake_gateway.orders == []
