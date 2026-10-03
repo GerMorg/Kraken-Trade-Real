@@ -387,7 +387,11 @@ class TradingAuthority:
             return {"allowed": False, "reason": "SHORT_NOT_AVAILABLE"}
         if intent.quantity < intent.instrument.min_order_qty:
             return {"allowed": False, "reason": "MIN_ORDER_QTY"}
-        if intent.limit_price and intent.quantity * intent.limit_price < intent.instrument.min_cost:
+        if (
+            intent.instrument.venue != "futures"
+            and intent.limit_price
+            and intent.quantity * intent.limit_price < intent.instrument.min_cost
+        ):
             return {"allowed": False, "reason": "MIN_ORDER_COST"}
         if intent.leverage < D("1"):
             return {"allowed": False, "reason": "LEVERAGE_BELOW_ONE"}
