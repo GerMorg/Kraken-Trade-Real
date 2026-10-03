@@ -23,6 +23,8 @@ class Config:
     market_min_liquidity_eur: float
     market_max_spread_bps: float
     market_max_data_age_seconds: int
+    market_history_candidate_limit: int
+    market_history_cache_seconds: int
     strategy_min_edge_bps: float
     strategy_min_confidence: float
     risk_max_position_pct: float
@@ -102,6 +104,8 @@ class Config:
             market_min_liquidity_eur=f("market_min_liquidity_eur", 50.0, 0.0),
             market_max_spread_bps=f("market_max_spread_bps", 80.0, 0.0, 2000.0),
             market_max_data_age_seconds=i("market_max_data_age_seconds", 30, 5),
+            market_history_candidate_limit=i("market_history_candidate_limit", 200, 20),
+            market_history_cache_seconds=i("market_history_cache_seconds", 900, 60),
             strategy_min_edge_bps=f("strategy_min_edge_bps", 25.0, 0.0, 5000.0),
             strategy_min_confidence=f("strategy_min_confidence", 0.58, 0.0, 1.0),
             risk_max_position_pct=f("risk_max_position_pct", 15.0, 0.1, 100.0),
