@@ -237,6 +237,28 @@ class TradingAuthority:
                 "kraken_order_id": order_id,
                 "response": response,
             }
+        except KrakenAmbiguous as exc:
+            # Transport/time-out failures are genuinely ambiguous and remain
+            # failure. It must not become a permanent open-order gate.
+            error_text = str(exc)[:700] or type(exc).__name__
+            self.db.update_order_state(
+                intent.client_order_id,
+                OrderState.REJECTED.value,
+                last_error=error_text,
+            )
+            self.audit.emit(
+                "ORDER_REJECTED_EXCHANGE",
+                "WARNING",
+                intent_id=intent.intent_id,
+                error_type=type(exc).__name__,
+                error=error_text,
+            )
+            return {
+                "state": OrderState.REJECTED.value,
+                "reason": "KRAKEN_ORDER_REJECTED",
+                "exchange_error": error_text,
+                "reconciled": True,
+            }
         except KrakenError as exc:
             # A Kraken API/application error is a deterministic submission
             # failure. It must not become a permanent open-order gate.
