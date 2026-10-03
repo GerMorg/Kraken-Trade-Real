@@ -164,8 +164,11 @@ def test_stale_unknown_order_is_reconciled_to_exchange_confirmed_no_order(
         last_error="NETWORK",
     )
 
+    from dataclasses import replace
+
+    test_config = replace(config, live_enabled=True, kill_switch=False)
     authority = TradingAuthority(
-        config,
+        test_config,
         Gateway(),
         db,
         AuditLogger(False),
