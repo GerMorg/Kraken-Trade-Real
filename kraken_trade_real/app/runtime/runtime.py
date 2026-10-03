@@ -173,6 +173,16 @@ class TradingRuntime:
         try:
             try:
                 startup_spot_tickers,_=self.gateway.public_tickers()
+                ticker_warnings = list(
+                    getattr(self.gateway, "last_public_ticker_warnings", [])
+                )
+                if ticker_warnings:
+                    self.audit.emit(
+                        "STARTUP_OPTIONAL_MARKETS_DEGRADED",
+                        "WARNING",
+                        component="xstocks_ticker",
+                        warnings=ticker_warnings,
+                    )
                 self.portfolio.set_market_context(self.instruments,startup_spot_tickers)
                 self.audit.emit("STARTUP_PORTFOLIO_MARKET_CONTEXT","INFO",tickers=len(startup_spot_tickers))
             except Exception as exc:
