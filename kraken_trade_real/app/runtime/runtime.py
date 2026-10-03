@@ -45,6 +45,8 @@ class TradingRuntime:
         self.sensors=sensors
         self.tax=tax
         self._last_tax_sync=0.0
+        self._tax_status="UNKNOWN"
+        self._tax_error=""
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
@@ -149,18 +151,35 @@ class TradingRuntime:
             if not self.startup():
                 return {"cycle_id":"","status":"DEGRADED","error":self.state.blocker or self.state.stage.value}
         cycle_id=new_id("cycle")
-        self.state.cycle_id=cycle_id
-        self.db.start_cycle(cycle_id,self.config_hash)
-        self.learning.process_feedback()
-        self.state.set(RuntimeStage.RUNNING)
+        cycle_started=False
+        stage="CYCLE_START"
         blockers=[]
+        self.state.cycle_id=cycle_id
         try:
+            self.db.start_cycle(cycle_id,self.config_hash)
+            cycle_started=True
+            self.state.set(RuntimeStage.RUNNING)
+            self.audit.emit("CYCLE_START","INFO",cycle_id=cycle_id,instruments=len(self.instruments))
+            self._publish_runtime_status()
+
+            stage="LEARNING_FEEDBACK"
+            try:
+                feedback=self.learning.process_feedback()
+                self.audit.emit("LEARNING_FEEDBACK","INFO",cycle_id=cycle_id,**feedback)
+            except Exception as exc:
+                self.audit.emit("LEARNING_FEEDBACK_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
+
+            stage="PORTFOLIO_RECONCILE"
             portfolio=self.portfolio.reconcile()
+            self.audit.emit("CYCLE_PORTFOLIO_RECONCILED","INFO",cycle_id=cycle_id,equity_eur=str(portfolio.equity_eur),gross_eur=str(portfolio.gross_eur),open_positions=len(portfolio.positions))
             if self.recovery.breaker.active:
                 blockers.append(self.recovery.breaker.reason)
+
+            stage="MARKET_DATA"
             spot_payload,future_payload=self.gateway.public_tickers()
             snapshots={}
             feature_map={}
+            captured=0
             for instrument in self.instruments:
                 payload=spot_payload if instrument.venue=="spot" else future_payload
                 snapshot=self.market_data.snapshot(instrument,payload)
@@ -168,76 +187,92 @@ class TradingRuntime:
                     snapshots[instrument.symbol]=snapshot
                     feature_map[instrument.symbol]=self.features.calculate(snapshot)
                     self.db.save_market(snapshot,feature_map[instrument.symbol])
+                    captured+=1
+            self.audit.emit("CYCLE_MARKET_DATA","INFO",cycle_id=cycle_id,instruments=len(self.instruments),snapshots=captured)
+
+            stage="MARKET_SCAN"
             fast=self.scanner.fast_filter(self.instruments,snapshots)
             ranked=self.scanner.rank(fast,snapshots,feature_map)
-            news=self.news.collect() if self.config.news_enabled else []
             selected=ranked[:20]
+            self.audit.emit("CYCLE_MARKET_SCAN","INFO",cycle_id=cycle_id,fast_candidates=len(fast),ranked=len(ranked),selected=len(selected))
+
+            stage="NEWS"
+            news=self.news.collect() if self.config.news_enabled else []
+            self.audit.emit("CYCLE_NEWS","INFO",cycle_id=cycle_id,enabled=self.config.news_enabled,count=len(news))
+
+            stage="GEMINI"
             gemini_context=[{"symbol":i.symbol,"features":feature_map[i.symbol]} for i in selected[:10]]
-            gemini=self.gemini.analyze(
-                [n.__dict__ for n in news[:20]],{"markets":gemini_context}
-            ) if selected else {"status":"SKIPPED","effect_bps":0}
+            gemini=self.gemini.analyze([n.__dict__ for n in news[:20]],{"markets":gemini_context}) if selected else {"status":"SKIPPED","effect_bps":0}
             gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
+            self.audit.emit("CYCLE_GEMINI","INFO",cycle_id=cycle_id,status=str(gemini.get("status","UNKNOWN")),expected_impact_bps=str(gemini_bps))
+
+            stage="DECISIONS"
             model_version=self.registry.active()
             model_parameters=self.registry.parameters(model_version)
             placed=0
+            decisions_count=0
             last_decision=None
             for instrument in selected:
                 snap=snapshots[instrument.symbol]
                 f=feature_map[instrument.symbol]
                 regime=self.regimes.detect(f)
                 news_bps=self.news.effect_for(instrument.symbol,news)
-                long_signal,short_signal=self.signals.evaluate(
-                    instrument,snap,f,regime,news_bps,gemini_bps
-                )
-                decision=self.decisions.choose(
-                    instrument,long_signal,short_signal,portfolio,model_version,
-                    self.config_hash,model_parameters
-                )
+                long_signal,short_signal=self.signals.evaluate(instrument,snap,f,regime,news_bps,gemini_bps)
+                decision=self.decisions.choose(instrument,long_signal,short_signal,portfolio,model_version,self.config_hash,model_parameters)
                 if not decision:
-                    self.learning.record_cycle(cycle_id,0,0,["NO_ACTION"])
+                    self.learning.record_cycle(cycle_id,0,0,[f"{instrument.symbol}:NO_ACTION"])
                     continue
-                lev=self.leverage.choose(
-                    instrument,f,long_signal.confidence if decision.signal.direction.value=="LONG" else short_signal.confidence,
-                    (portfolio.gross_eur/portfolio.equity_eur*100 if portfolio.equity_eur else D("999")),
-                    None,self.config.risk_max_leverage
-                )
+                decisions_count+=1
+                confidence=decision.signal.confidence if decision.signal.direction.value=="LONG" else short_signal.confidence
+                lev=self.leverage.choose(instrument,f,confidence,(portfolio.gross_eur/portfolio.equity_eur*100 if portfolio.equity_eur else D("999")),None,self.config.risk_max_leverage)
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
                 risk=self.risk.evaluate(decision,portfolio,snap)
                 self.db.save_decision(decision)
-                self.db.save_prediction(
-                    new_id("prediction"), decision, float(decision.signal.confidence)
-                )
+                self.db.save_prediction(new_id("prediction"),decision,float(decision.signal.confidence))
+                last_decision=decision
                 if not risk.allowed:
                     blockers.append(f"{instrument.symbol}:{risk.reason}")
                     self.db.learning_event("BLOCKER",decision.decision_id,{"reason":risk.reason,"checks":risk.checks})
                     continue
                 quantity=decision.target_notional_eur/snap.price
-                method=self.authority.policy.choose(
-                    snap.spread_bps,decision.signal.net_edge_bps,f.get("volatility",D("999"))
-                )
+                method=self.authority.policy.choose(snap.spread_bps,decision.signal.net_edge_bps,f.get("volatility",D("999")))
                 price=snap.ask if decision.signal.direction.value=="LONG" else snap.bid
                 intent=self.intents.build(decision,lev,method["order_type"],quantity,price)
                 result=self.authority.submit(intent,snap)
-                last_decision=decision
                 self.learning.record_order_outcome(intent.client_order_id,result)
                 if result.get("state") in {"ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"}:
                     placed+=1
-            self.db.save_portfolio(cycle_id,portfolio)
+
+            self.audit.emit("CYCLE_DECISIONS","INFO",cycle_id=cycle_id,decisions=decisions_count,orders=placed,blockers=len(blockers))
+            stage="PORTFOLIO_FINAL"
+            final_portfolio=self.portfolio.reconcile()
+            self.db.save_portfolio(cycle_id,final_portfolio)
             self.learning.record_cycle(cycle_id,len(selected),placed,blockers)
-            self.learning.process_feedback()
+            try:
+                feedback=self.learning.process_feedback()
+                self.audit.emit("LEARNING_POST_CYCLE","INFO",cycle_id=cycle_id,**feedback)
+            except Exception as exc:
+                self.audit.emit("LEARNING_POST_CYCLE_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
             self.db.finish_cycle(cycle_id,"COMPLETED",";".join(blockers[:5]))
             self.state.selected_symbol=last_decision.instrument.symbol if last_decision else ""
             self.state.last_edge_bps=str(last_decision.signal.net_edge_bps if last_decision else 0)
             self.state.last_confidence=str(last_decision.signal.confidence if last_decision else 0)
             self.state.set(RuntimeStage.READY,blockers[0] if blockers else "")
-            self._publish(portfolio,gemini,model_version)
-            return {"cycle_id":cycle_id,"status":"COMPLETED","placed":placed,"blockers":blockers}
+            self._publish(final_portfolio,gemini,model_version)
+            self.audit.emit("CYCLE_COMPLETED","INFO",cycle_id=cycle_id,selected=len(selected),orders=placed,blockers=blockers[:5])
+            return {"cycle_id":cycle_id,"status":"COMPLETED","placed":placed,"selected":len(selected),"blockers":blockers}
         except Exception as exc:
-            self.recovery.issue("EXECUTION_FAILURE",type(exc).__name__)
-            self.db.finish_cycle(cycle_id,"FAILED",type(exc).__name__)
-            self.state.set(RuntimeStage.SAFE_MODE,type(exc).__name__)
-            return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__}
-
+            detail=f"{stage}:{type(exc).__name__}:{str(exc)[:800]}"
+            self.audit.emit("CYCLE_FAILED","ERROR",cycle_id=cycle_id,stage=stage,error=f"{type(exc).__name__}:{str(exc)[:800]}",traceback=__import__("traceback").format_exc()[:3500])
+            self.recovery.issue("RUNTIME_CYCLE_FAILURE",detail)
+            if cycle_started:
+                try:
+                    self.db.finish_cycle(cycle_id,"FAILED",detail)
+                except Exception:
+                    pass
+            self.state.set(RuntimeStage.SAFE_MODE if self.recovery.breaker.active else RuntimeStage.DEGRADED,self.recovery.breaker.reason if self.recovery.breaker.active else detail)
+            self._publish_runtime_status()
+            return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__,"stage":stage}
     def _publish_runtime_status(self) -> None:
         try:
             publish_result = self.sensors.publish(self.sensors.states(
