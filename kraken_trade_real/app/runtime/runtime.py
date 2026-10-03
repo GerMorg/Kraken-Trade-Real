@@ -100,19 +100,23 @@ class TradingRuntime:
 
         if self.gateway.api_key:
             try:
-                permissions=self.gateway.api_permissions()
-                raw_perms=permissions.get("permissions") if isinstance(permissions,dict) else []
-                perms=list(raw_perms) if isinstance(raw_perms,list) else []
-                allowed="modify-trades" in perms
-                self.db.execute(
-                    "INSERT OR REPLACE INTO api_permissions(id,checked_at,permissions_json,ok,detail) VALUES(1,?,?,?,?)",
-                    (time.time(),__import__("json").dumps(perms),int(allowed),"modify-trades required for live execution"),
-                )
-                if self.config.live_enabled and not allowed:
-                    self.recovery.issue("PERMISSION_FAILURE","modify-trades missing")
-                    self.state.set(RuntimeStage.SAFE_MODE,"PERMISSION_FAILURE")
-                    self._publish_runtime_status()
-                    return False
+                # Validate the Spot key with a read-only account endpoint first.
+                self.gateway.spot_balance()
+                self.audit.emit("KRAKEN_SPOT_PRIVATE_OK","INFO",mode="READ_ONLY" if not self.config.live_enabled else "LIVE")
+                if self.config.live_enabled:
+                    permissions=self.gateway.api_permissions()
+                    raw_perms=permissions.get("permissions") if isinstance(permissions,dict) else []
+                    perms=list(raw_perms) if isinstance(raw_perms,list) else []
+                    allowed="modify-trades" in perms
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO api_permissions(id,checked_at,permissions_json,ok,detail) VALUES(1,?,?,?,?)",
+                        (time.time(),__import__("json").dumps(perms),int(allowed),"modify-trades required for live execution"),
+                    )
+                    if not allowed:
+                        self.recovery.issue("PERMISSION_FAILURE","modify-trades missing")
+                        self.state.set(RuntimeStage.SAFE_MODE,"PERMISSION_FAILURE")
+                        self._publish_runtime_status()
+                        return False
             except Exception as exc:
                 detail=f"{type(exc).__name__}:{str(exc)[:800]}"
                 self.recovery.issue("AUTH_FAILURE",detail)
