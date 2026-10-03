@@ -8,6 +8,10 @@ def test_real_trading_defaults_to_disabled():
     assert cfg.risk_max_leverage >= 1
     assert cfg.market_history_candidate_limit >= 20
     assert cfg.market_history_cache_seconds >= 60
+    assert cfg.market_exploration_candidate_limit >= 1
+    assert cfg.market_exploration_slots_per_family >= 1
+    assert cfg.execution_reconciliation_limit >= 1
+    assert cfg.execution_reconciliation_stale_seconds >= 5
 
 
 def test_config_rejects_inconsistent_risk(tmp_path):
