@@ -847,8 +847,8 @@ class TradingRuntime:
                 RuntimeStage.SAFE_MODE,
                 f"RUNTIME_WATCHDOG_TIMEOUT:{snapshot.stage}",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            self._watchdog_fail_safe_error=type(exc).__name__
         os._exit(70)
 
     def _recover_stale_cycles(self) -> None:
