@@ -287,11 +287,14 @@ class MarketScanner:
                 break
             key = key_for(instrument)
             if key in seen_keys:
-                duplicates_removed += 1
+                if instrument.symbol not in counted_duplicate_symbols:
+                    duplicates_removed += 1
+                    counted_duplicate_symbols.add(instrument.symbol)
                 continue
             selected.append(instrument)
             selected_symbols.add(instrument.symbol)
             seen_keys.add(key)
+            additional_added += 1
         return selected, duplicates_removed
 
     @classmethod
