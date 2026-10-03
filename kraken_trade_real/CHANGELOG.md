@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7
+
+- Expose Austrian tax reports through Home Assistant's user-accessible `addon_config` directory.
+- Fix the HA tax sensor to publish the actual indicative 27.5% report amount.
+- Reduce market-cycle API work by filtering from the bulk ticker first, fetching historical candles only for fast candidates, and order books only for the selected instruments.
+- Fetch candidate history/order books concurrently with bounded workers and publish explicit market-stage diagnostics.
+- Add explicit no-action reasons (`MIN_EDGE`, `MIN_CONFIDENCE`, `MINIMUM_COST`) to cycle AppLogs without changing trading thresholds.
+- Make the scan interval start-to-start rather than adding a full sleep after every cycle.
+
 ## 0.1.6
 
 - Prevent a tax-report KeyError from breaking startup or later runtime processing.
