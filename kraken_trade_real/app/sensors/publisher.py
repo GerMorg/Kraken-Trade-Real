@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -15,11 +16,17 @@ class SensorPublisher:
         self.token=supervisor_token or ""
         self.base_url=base_url.rstrip("/")
 
-    def publish(self, states: dict[str,Any]) -> dict[str,Any]:
+    def publish(self, states: dict[str,Any], total_timeout_seconds: float = 15.0) -> dict[str,Any]:
         stats: dict[str, Any] = {"enabled": self.enabled, "attempted": 0, "published": 0, "failed": 0, "last_error": ""}
+        deadline=time.monotonic()+max(1.0,float(total_timeout_seconds))
         if not self.enabled:
             return stats
         for entity_id, state in states.items():
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                stats["failed"] += len(states)-stats["attempted"]
+                stats["last_error"]="TOTAL_TIMEOUT"
+                break
             stats["attempted"] += 1
             payload=state if isinstance(state,dict) else {"state":str(state)}
             safe=redact(payload)
@@ -34,10 +41,10 @@ class SensorPublisher:
                 method="POST",
             )
             try:
-                with urlopen(request,timeout=5):  # nosec B310
+                with urlopen(request,timeout=min(5.0,remaining)):  # nosec B310
                     pass
                 stats["published"] += 1
-            except (URLError,OSError) as exc:
+            except (URLError,OSError,TimeoutError) as exc:
                 stats["failed"] += 1
                 stats["last_error"] = f"{type(exc).__name__}:{str(exc)[:180]}"
         return stats
