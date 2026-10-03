@@ -9,6 +9,14 @@ from typing import Iterator, Any
 from decimal import Decimal
 from app.domain.models import Decision, Fill, Instrument, MarketSnapshot, NewsItem, OrderIntent, PortfolioState
 
+
+def _safe_json_object(value: Any) -> dict[str,Any]:
+    try:
+        parsed=json.loads(value or "{}")
+        return parsed if isinstance(parsed,dict) else {}
+    except (TypeError,ValueError):
+        return {}
+
 class Database:
     def __init__(self, path: str="/data/state/trader.db") -> None:
         self.path=path
@@ -273,12 +281,18 @@ class Database:
         rows = self.query(sql, params)
         return [
             TaxEvent(
-                r["event_id"], float(r["timestamp"]), int(r["tax_year"]), r["venue"], r["product_type"],
-                r["asset"], r["quote_asset"], r["event_type"], Decimal(r["quantity"]), Decimal(r["proceeds_eur"]),
-                Decimal(r["acquisition_cost_eur"]), Decimal(r["realized_gain_eur"]), Decimal(r["fee_eur"]),
-                r["fee_asset"], r["tax_class"], r["asset_regime"], bool(r["tax_neutral"]),
-                Decimal(r["kest_withheld_eur"]), Decimal(r["foreign_tax_eur"]), bool(r["complete"]),
-                r["source"], json.loads(r["detail_json"]),
+                r.get("event_id",""),
+                float(r.get("timestamp",r.get("created_at",time.time()))),
+                int(r.get("tax_year",1970)),
+                r.get("venue","kraken"), r.get("product_type","SPOT"),
+                r.get("asset",""), r.get("quote_asset","UNKNOWN"), r.get("event_type","OTHER"),
+                Decimal(str(r.get("quantity","0"))), Decimal(str(r.get("proceeds_eur","0"))),
+                Decimal(str(r.get("acquisition_cost_eur","0"))), Decimal(str(r.get("realized_gain_eur","0"))),
+                Decimal(str(r.get("fee_eur","0"))),
+                r.get("fee_asset","EUR"), r.get("tax_class","CRYPTO_27_5"),
+                r.get("asset_regime","NEUVERMÖGEN"), bool(r.get("tax_neutral",0)),
+                Decimal(str(r.get("kest_withheld_eur","0"))), Decimal(str(r.get("foreign_tax_eur","0"))),
+                bool(r.get("complete",0)), r.get("source","kraken"), _safe_json_object(r.get("detail_json")),
             )
             for r in rows
         ]
@@ -290,7 +304,7 @@ class Database:
             ) VALUES(?,?,?,?,?,?,?,?)""",
             (
                 time.time(), year, report.get("report_version", ""), report.get("summary", {}).get("status", "UNKNOWN"),
-                paths["json"], paths["csv"], paths["markdown"],
+                paths.get("json",""), paths.get("csv",""), paths.get("markdown",""),
                 json.dumps(report.get("summary", {}), sort_keys=True),
             ),
         )

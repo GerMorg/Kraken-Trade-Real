@@ -330,10 +330,10 @@ class AustrianTaxLedger:
             "official_form_mapping_available": True,
             "provider_classification": self.provider_tax_classification,
             "values": {
-                "crypto_current_income": {"kennzahl": 172 if foreign else 171, "value_eur": summary["crypto_current_income_eur"]},
-                "crypto_gains": {"kennzahl": 174 if foreign else 173, "value_eur": summary["crypto_realized_gains_eur"]},
-                "crypto_losses": {"kennzahl": 176 if foreign else 175, "value_eur": summary["crypto_realized_losses_eur"]},
-                "withheld_kest": {"kennzahl": 899, "value_eur": summary["kest_withheld_eur"]},
+                "crypto_current_income": {"kennzahl": 172 if foreign else 171, "value_eur": summary.get("crypto_current_income_eur","0")},
+                "crypto_gains": {"kennzahl": 174 if foreign else 173, "value_eur": summary.get("crypto_realized_gains_eur","0")},
+                "crypto_losses": {"kennzahl": 176 if foreign else 175, "value_eur": summary.get("crypto_realized_losses_eur","0")},
+                "withheld_kest": {"kennzahl": 899, "value_eur": summary.get("kest_withheld_eur","0")},
             },
         }
 
@@ -396,20 +396,24 @@ class AustrianTaxLedger:
         lines = [
             f"# Österreich Einkommensteuer – Krypto/Trading {report['tax_year']}",
             "",
-            f"- Krypto realisierte Gewinne: **{s['crypto_realized_gains_eur']} EUR**",
-            f"- Krypto realisierte Verluste: **{s['crypto_realized_losses_eur']} EUR**",
-            f"- Krypto Nettoergebnis: **{s['crypto_realized_net_result_eur']} EUR**",
-            f"- Laufende Krypto-Einkünfte: **{s['crypto_current_income_eur']} EUR**",
-            f"- Derivate-Ergebnis: **{s['derivative_result_eur']} EUR**",
-            f"- Einbehaltene KESt: **{s['kest_withheld_eur']} EUR**",
-            f"- Indikativer 27,5-%-Betrag: **{s['indicative_27_5_tax_eur']} EUR**",
-            f"- Datenstatus: **{s['status']}**",
+            f"- Krypto realisierte Gewinne: **{s.get('crypto_realized_gains_eur','0')} EUR**",
+            f"- Krypto realisierte Verluste: **{s.get('crypto_realized_losses_eur','0')} EUR**",
+            f"- Krypto Nettoergebnis: **{s.get('crypto_realized_net_result_eur','0')} EUR**",
+            f"- Laufende Krypto-Einkünfte: **{s.get('crypto_current_income_eur','0')} EUR**",
+            f"- Derivate-Ergebnis: **{s.get('derivative_result_eur','0')} EUR**",
+            f"- Einbehaltene KESt: **{s.get('kest_withheld_eur','0')} EUR**",
+            f"- Indikativer 27,5-%-Betrag: **{s.get('indicative_crypto_27_5_tax_eur','0')} EUR**",
+            f"- Datenstatus: **{s.get('status','UNKNOWN')}**",
             "",
             "## E1/E1kv Vorbereitung",
             f"- Providerklassifikation: **{p.get('provider_classification', 'UNVERIFIED')}**",
         ]
         for name, value in p.get("values", {}).items():
-            lines.append(f"- {name}: KZ **{value['kennzahl']}** → **{value['value_eur']} EUR**")
+            if not isinstance(value, dict):
+                continue
+            lines.append(
+                f"- {name}: KZ **{value.get('kennzahl','?')}** → **{value.get('value_eur','0')} EUR**"
+            )
         return "\\n".join(lines) + "\\n"
 
     @staticmethod

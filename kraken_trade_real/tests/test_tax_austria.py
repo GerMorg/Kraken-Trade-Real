@@ -74,3 +74,17 @@ def test_e1kv_keeps_gains_and_losses_separate():
     prep = ledger.e1kv_preparation(2025, summary)
     assert prep["values"]["crypto_gains"]["value_eur"] == "300"
     assert prep["values"]["crypto_losses"]["value_eur"] == "100"
+
+
+def test_markdown_report_tolerates_incomplete_e1kv_payload():
+    report = {
+        "tax_year": 2025,
+        "summary": {},
+        "e1kv_preparation": {
+            "provider_classification": "FOREIGN",
+            "values": {"crypto_gains": {}},
+        },
+    }
+    rendered = AustrianTaxLedger._markdown_report(report)
+    assert "Datenstatus" in rendered
+    assert "KZ **?**" in rendered

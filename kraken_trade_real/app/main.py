@@ -81,8 +81,22 @@ def main() -> None:
     runtime = build_runtime()
     runtime.startup()
     while True:
-        runtime.run_cycle()
-        time.sleep(runtime.config.market_scan_interval_seconds)
+        try:
+            result = runtime.run_cycle()
+            runtime.audit.emit(
+                "MAIN_LOOP_CYCLE_RESULT",
+                "INFO",
+                status=result.get("status","UNKNOWN"),
+                cycle_id=result.get("cycle_id",""),
+            )
+        except Exception as exc:
+            runtime.audit.emit(
+                "MAIN_LOOP_EXCEPTION",
+                "ERROR",
+                error=f"{type(exc).__name__}:{str(exc)[:800]}",
+                traceback=__import__("traceback").format_exc()[:3500],
+            )
+        time.sleep(max(1, runtime.config.market_scan_interval_seconds))
 
 
 if __name__ == "__main__":
