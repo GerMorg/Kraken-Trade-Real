@@ -202,3 +202,31 @@ def test_spot_query_orders_normalizes_txid_keyed_response(monkeypatch):
         {"status": "open", "vol": "1.0", "txid": "O-123"},
         {"status": "closed", "vol": "2.0", "txid": "O-456"},
     ]
+
+def test_http_transport_timeout_is_ambiguous(monkeypatch):
+    from app.kraken.client import KrakenAmbiguous
+
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("app.kraken.client.urlopen", fake_urlopen)
+
+    with pytest.raises(KrakenAmbiguous, match="NETWORK:"):
+        HTTP().request("https://example.invalid/test")
+
+
+def test_http_server_error_is_ambiguous(monkeypatch):
+    from urllib.error import HTTPError
+    from app.kraken.client import KrakenAmbiguous
+
+    class ErrorResponse:
+        def read(self, _size):
+            return b"upstream unavailable"
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
+
+    monkeypatch.setattr("app.kraken.client.urlopen", fake_urlopen)
+
+    with pytest.raises(KrakenAmbiguous, match="HTTP_503"):
+        HTTP().request("https://example.invalid/test")
