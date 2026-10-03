@@ -110,6 +110,16 @@ class TradingRuntime:
         self._watchdog_arm("", "STARTUP_INSTRUMENTS")
         try:
             self.instruments=self.discovery.discover()
+            optional_warnings = list(
+                getattr(self.gateway, "last_public_instrument_warnings", [])
+            )
+            if optional_warnings:
+                self.audit.emit(
+                    "STARTUP_OPTIONAL_MARKETS_DEGRADED",
+                    "WARNING",
+                    component="xstocks",
+                    warnings=optional_warnings,
+                )
             if not self.instruments:
                 raise RuntimeError("instrument discovery returned zero instruments")
             self.db.upsert_instruments(self.instruments)
