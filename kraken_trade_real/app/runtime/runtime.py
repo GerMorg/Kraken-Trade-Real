@@ -330,7 +330,7 @@ class TradingRuntime:
             refreshed=0
             quote_missing=0
             latest_spot_payload=spot_payload
-                        if selected:
+            if selected:
                 refreshed_spot,refreshed_future=self.gateway.public_tickers()
                 latest_spot_payload=refreshed_spot
                 refreshed_at=time.time()
