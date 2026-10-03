@@ -277,7 +277,7 @@ def test_deterministic_kraken_error_does_not_create_unknown_gate(config, db, ins
     )
     intent = OrderIntent(
         "intent_deterministic_error",
-        "client_deterministic_error",
+        "11111111-2222-4333-8444-555555555555",
         "decision_deterministic_error",
         instrument,
         Direction.LONG,
