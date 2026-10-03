@@ -133,8 +133,7 @@ def test_startup_failure_is_published_and_does_not_enter_cycle():
 
 
 def test_run_script_uses_with_contenv():
-    from contextlib import contextmanager
-from pathlib import Path
+    from pathlib import Path
 
     run_sh = Path(__file__).resolve().parents[1].joinpath("run.sh")
     assert run_sh.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/with-contenv bashio"
