@@ -38,6 +38,7 @@ class RuntimeWatchdog:
             name="kraken-runtime-watchdog",
             daemon=True,
         )
+        self._last_callback_error = ""
         self._thread.start()
 
     def arm(self, cycle_id: str, stage: str, timeout_seconds: float) -> None:
@@ -88,8 +89,5 @@ class RuntimeWatchdog:
                 self._snapshot = None
             try:
                 self._on_timeout(snapshot)
-            except Exception:
-                # The runtime callback is responsible for the hard fail-safe.
-                # Keep the watchdog thread itself alive if a test/dry callback
-                # raises unexpectedly.
-                continue
+            except Exception as exc:
+                self._last_callback_error = type(exc).__name__
