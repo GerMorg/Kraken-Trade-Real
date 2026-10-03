@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.3
+version: 0.1.4
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -21,6 +21,9 @@ map:
 options:
   kraken_api_key: ""
   kraken_api_secret: ""
+  futures_enabled: false
+  futures_api_key: ""
+  futures_api_secret: ""
   kraken_enabled: true
   live_enabled: false
   kill_switch: true
@@ -61,6 +64,9 @@ options:
 schema:
   kraken_api_key: password
   kraken_api_secret: password
+  futures_enabled: bool
+  futures_api_key: password
+  futures_api_secret: password
   kraken_enabled: bool
   live_enabled: bool
   kill_switch: bool

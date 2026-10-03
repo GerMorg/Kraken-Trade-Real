@@ -51,7 +51,8 @@ class PortfolioReconciler:
                         net += value
         except Exception as exc:
             self.db.event("PORTFOLIO_SPOT_POSITIONS_FAILED", "WARNING", {"error": type(exc).__name__})
-        try:
+        if getattr(self.gateway, "futures_enabled", False):
+          try:
             accounts = self.gateway.futures_accounts().get("accounts", {})
             acct: dict[str, Any] = (
                 next(iter(accounts.values()), {}) if isinstance(accounts, dict) else {}
@@ -72,9 +73,9 @@ class PortfolioReconciler:
                         positions[symbol] = value
                         gross += abs(value)
                         net += value if str(item.get("side", "buy")).lower() == "buy" else -abs(value)
-        except Exception as exc:
+          except Exception as exc:
             self.margin_account = None
-            self.db.event("PORTFOLIO_FUTURES_READ_FAILED", "WARNING", {"error": type(exc).__name__})
+            self.db.event("PORTFOLIO_FUTURES_READ_FAILED", "WARNING", {"error": str(exc)[:300]})
         equity = equity if equity > 0 else cash + max(D(0), unreal)
         peak_row = self.db.one("SELECT MAX(CAST(equity_eur AS REAL)) AS peak FROM portfolio_snapshots")
         peak = dec(peak_row.get("peak") if peak_row else equity)

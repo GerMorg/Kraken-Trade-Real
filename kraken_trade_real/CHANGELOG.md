@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Disable Kraken Futures by default and require separate Futures credentials when explicitly enabled.
+- Keep Spot market discovery, tickers and portfolio reconciliation independent of Futures.
+- Validate read-only Spot API access independently of live-trading permissions.
+- Preserve Kraken private API error details and report Home Assistant sensor publication results.
+
 ## 0.1.3
 
 - Start through `with-contenv` so Supervisor-provided environment variables, including `SUPERVISOR_TOKEN`, reach the Python runtime.

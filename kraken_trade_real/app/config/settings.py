@@ -10,6 +10,9 @@ import os
 class Config:
     api_key: str
     api_secret: str
+    futures_enabled: bool
+    futures_api_key: str
+    futures_api_secret: str
     kraken_enabled: bool
     live_enabled: bool
     kill_switch: bool
@@ -86,6 +89,9 @@ class Config:
         cfg = cls(
             api_key=str(raw.get("kraken_api_key", os.getenv("KRAKEN_API_KEY", ""))).strip(),
             api_secret=str(raw.get("kraken_api_secret", os.getenv("KRAKEN_API_SECRET", ""))).strip(),
+            futures_enabled=b("futures_enabled", False),
+            futures_api_key=str(raw.get("futures_api_key", "")).strip(),
+            futures_api_secret=str(raw.get("futures_api_secret", "")).strip(),
             kraken_enabled=b("kraken_enabled", True),
             live_enabled=b("live_enabled", False),
             kill_switch=b("kill_switch", True),
@@ -131,6 +137,8 @@ class Config:
 
     @staticmethod
     def validate(cfg: "Config") -> None:
+        if cfg.futures_enabled and not (cfg.futures_api_key and cfg.futures_api_secret):
+            raise ValueError("Futures enabled requires separate Futures API key and secret")
         if cfg.risk_max_net_pct > cfg.risk_max_gross_pct:
             raise ValueError("net risk ceiling cannot exceed gross risk ceiling")
         if cfg.risk_max_position_pct > cfg.risk_max_gross_pct:

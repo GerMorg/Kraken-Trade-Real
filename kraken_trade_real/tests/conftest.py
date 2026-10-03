@@ -59,6 +59,8 @@ class FakeGateway:
         if method=="status": return {"result":"success","status":"online"}
         return {"result":"success"}
 
+    def spot_balance(self): return {"ZEUR":"50.0"}
+
     def spot_private(self, method, params=None):
         if method=="GetApiKeyInfo": return {"permissions":["query-funds","query-open-trades","query-closed-trades","modify-trades","close-trades","create-ws-token"]}
         if method=="Balance": return {"ZEUR":"50.0"}

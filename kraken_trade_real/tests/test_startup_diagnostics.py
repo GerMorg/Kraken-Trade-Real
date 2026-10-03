@@ -36,7 +36,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.3"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.4"
     assert captured["timeout"] == 15.0
 
 
@@ -121,3 +121,28 @@ def test_run_script_uses_with_contenv():
 
     run_sh = Path(__file__).resolve().parents[1].joinpath("run.sh")
     assert run_sh.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/with-contenv bashio"
+
+
+
+def test_futures_disabled_by_default_and_requires_separate_credentials(tmp_path):
+    from app.config import Config
+
+    cfg = Config.load(str(tmp_path / "missing.json"))
+    assert cfg.futures_enabled is False
+    assert cfg.futures_api_key == ""
+    assert cfg.futures_api_secret == ""
+
+    path = tmp_path / "futures.json"
+    path.write_text('{"futures_enabled": true}', encoding="utf-8")
+    with pytest.raises(ValueError, match="separate Futures API key"):
+        Config.load(str(path))
+
+
+def test_gateway_does_not_call_futures_when_disabled(monkeypatch):
+    gateway = KrakenGateway("spot-key", "spot-secret")
+    calls = []
+    monkeypatch.setattr(gateway, "spot_public", lambda method: calls.append(method) or {})
+    spot, futures = gateway.public_instruments()
+    assert calls == ["AssetPairs"]
+    assert spot == {}
+    assert futures == {"instruments": []}

@@ -15,10 +15,12 @@ class SensorPublisher:
         self.token=supervisor_token or ""
         self.base_url=base_url.rstrip("/")
 
-    def publish(self, states: dict[str,Any]) -> None:
+    def publish(self, states: dict[str,Any]) -> dict[str,Any]:
+        stats: dict[str, Any] = {"enabled": self.enabled, "attempted": 0, "published": 0, "failed": 0, "last_error": ""}
         if not self.enabled:
-            return
+            return stats
         for entity_id, state in states.items():
+            stats["attempted"] += 1
             payload=state if isinstance(state,dict) else {"state":str(state)}
             safe=redact(payload)
             body=json.dumps(safe,ensure_ascii=False,default=str).encode("utf-8")
@@ -34,9 +36,11 @@ class SensorPublisher:
             try:
                 with urlopen(request,timeout=5):  # nosec B310
                     pass
-            except (URLError,OSError):
-                # Sensor transport is observational; it must never block trading.
-                continue
+                stats["published"] += 1
+            except (URLError,OSError) as exc:
+                stats["failed"] += 1
+                stats["last_error"] = f"{type(exc).__name__}:{str(exc)[:180]}"
+        return stats
 
     @staticmethod
     def states(status: str, stage: str, cycle_id: str, blocker: str="",
