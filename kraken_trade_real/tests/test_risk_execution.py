@@ -16,3 +16,28 @@ def test_margin_and_leverage_bounds():
     assert MarginEngine().validate_leverage(Decimal("5"),Decimal("10"),Decimal("5"))[0] is True
     assert MarginEngine().validate_leverage(Decimal("6"),Decimal("10"),Decimal("5"))[0] is False
     assert LeverageEngine.IMMUTABLE_MAX_LEVERAGE==Decimal("5")
+
+
+def test_decision_rejection_reason_distinguishes_edge_and_confidence(config, instrument):
+    from app.domain.models import PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.trading.decision import DecisionEngine
+
+    features = {"volatility": Decimal("2")}
+    weak = Signal(
+        instrument.symbol, Direction.LONG, Decimal("4"), Decimal("1"), Decimal("0.9"),
+        "TREND_UP", Decimal("0"), Decimal("0"), features
+    )
+    strong_edge_low_conf = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("12"), Decimal("1"), Decimal("0.3"),
+        "TREND_DOWN", Decimal("0"), Decimal("0"), features
+    )
+    portfolio = PortfolioState(equity_eur=Decimal("46"), cash_eur=Decimal("46"))
+
+    engine = DecisionEngine(config)
+    assert engine.rejection_reason(
+        instrument, weak, weak, portfolio, {}
+    ) == "MIN_EDGE"
+    assert engine.rejection_reason(
+        instrument, strong_edge_low_conf, strong_edge_low_conf, portfolio, {}
+    ) == "MIN_CONFIDENCE"
