@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from urllib.parse import parse_qs
-
 from app.domain.models import Instrument, MarketSnapshot, OrderIntent
 from app.domain.states import Direction, OrderState, ProductType
 from app.kraken.client import KrakenGateway
@@ -198,7 +196,10 @@ def test_xstock_ohlc_and_orderbook_include_asset_class():
         def spot_public(self, method, params=None):
             self.calls.append((method, dict(params or {})))
             if method == "OHLC":
-                return {"AAPLxUSD": [[1, 1, 1, 1, 250, 1, 1, 1]]}
+                return {"AAPLxUSD": [
+                    [1, 1, 1, 1, 249, 1, 1, 1],
+                    [2, 2, 2, 2, 250, 1, 1, 1],
+                ]}
             return {
                 "AAPLxUSD": {
                     "bids": [["249.9", "1"]],
