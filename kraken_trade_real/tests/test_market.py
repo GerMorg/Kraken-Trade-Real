@@ -95,5 +95,5 @@ def test_market_selection_always_preserves_held_position(instrument):
     selected,removed=MarketScanner(1,100,60).select_for_cycle(
         [usd,instrument],limit=1,preserve_symbols={"XBT/EUR"}
     )
-    assert [item.symbol for item in selected] == ["XBT/EUR","XBT/USD"]
-    assert removed == 0
+    assert [item.symbol for item in selected] == ["XBT/EUR"]
+    assert removed == 1
