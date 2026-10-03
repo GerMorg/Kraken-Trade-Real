@@ -132,7 +132,7 @@ class Config:
             execution_order_timeout_seconds=i("execution_order_timeout_seconds", 45, 5),
             execution_max_reprices=i("execution_max_reprices", 2, 0),
             execution_max_orders_per_day=i("execution_max_orders_per_day", 10, 1),
-            execution_reconciliation_limit=i("execution_reconciliation_limit", 3, 1),
+            execution_reconciliation_limit=i("execution_reconciliation_limit", 20, 1),
             execution_reconciliation_stale_seconds=i("execution_reconciliation_stale_seconds", 30, 5),
             learning_enabled=b("learning_enabled", True),
             learning_lookback_days=i("learning_lookback_days", 365, 1),
