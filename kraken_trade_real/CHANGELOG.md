@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.8
+
+- Prevent long history enrichment from making every snapshot fail the 30-second freshness gate.
+- Reuse persisted hourly history between cycles and refresh it only after the configured cache lifetime.
+- Limit history enrichment to the automatically prefiltered top markets before detailed ranking.
+- Refresh the bulk ticker immediately before decisions so execution uses current bid/ask/last prices.
+- Keep full market discovery and automatic prefiltering while reducing unnecessary per-market API work.
+- Add explicit history-cache, quote-refresh and history-quality diagnostics to cycle AppLogs.
+- Remove the duplicate cycle market-scan log entry.
+
 ## 0.1.7
 
 - Expose Austrian tax reports through Home Assistant's user-accessible `addon_config` directory.
