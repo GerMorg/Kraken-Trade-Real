@@ -444,6 +444,9 @@ class TradingRuntime:
                     tax_year=year,
                     events_added=added,
                     status=status,
+                    report_json=paths.get("json",""),
+                    report_csv=paths.get("csv",""),
+                    report_markdown=paths.get("markdown",""),
                 )
             self._last_tax_sync=now
             self._tax_status="INCOMPLETE_DATA" if "INCOMPLETE_DATA" in statuses else "READY_FOR_REVIEW"
@@ -492,7 +495,7 @@ class TradingRuntime:
             gemini_status=str(gemini.get("status","UNKNOWN")),model_version=model_version,
             breaker_active=self.recovery.breaker.active,
             tax_status=str(tax_summary.get("status","DISABLED")),
-            tax_estimated_27_5_eur=tax_summary.get("indicative_27_5_tax_eur","0"),
+            tax_estimated_27_5_eur=tax_summary.get("indicative_crypto_27_5_tax_eur","0"),
             tax_incomplete_events=int(tax_summary.get("incomplete_event_count",0)),
             tax_year=datetime.now(timezone.utc).year,
         ))
