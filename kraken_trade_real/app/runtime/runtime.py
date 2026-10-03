@@ -266,28 +266,29 @@ class TradingRuntime:
             selected=ranked[:20]
 
             quote_refresh_started=time.monotonic()
-            refreshed_spot,refreshed_future=self.gateway.public_tickers()
-            refreshed_at=time.time()
             refreshed=0
             quote_missing=0
-            from dataclasses import replace
-            for instrument in selected:
-                payload=refreshed_spot if instrument.venue=="spot" else refreshed_future
-                quote=self.market_data.snapshot(
-                    instrument,
-                    payload,
-                    include_history=False,
-                    include_orderbook=False,
-                    captured_at=refreshed_at,
-                )
-                if not quote:
-                    quote_missing+=1
-                    continue
-                snapshots[instrument.symbol]=replace(
-                    quote,
-                    closes=snapshots[instrument.symbol].closes,
-                )
-                refreshed+=1
+            if selected:
+                refreshed_spot,refreshed_future=self.gateway.public_tickers()
+                refreshed_at=time.time()
+                from dataclasses import replace
+                for instrument in selected:
+                    payload=refreshed_spot if instrument.venue=="spot" else refreshed_future
+                    quote=self.market_data.snapshot(
+                        instrument,
+                        payload,
+                        include_history=False,
+                        include_orderbook=False,
+                        captured_at=refreshed_at,
+                    )
+                    if not quote:
+                        quote_missing+=1
+                        continue
+                    snapshots[instrument.symbol]=replace(
+                        quote,
+                        closes=snapshots[instrument.symbol].closes,
+                    )
+                    refreshed+=1
 
             selected=[instrument for instrument in selected if instrument.symbol in snapshots]
             self.audit.emit(
