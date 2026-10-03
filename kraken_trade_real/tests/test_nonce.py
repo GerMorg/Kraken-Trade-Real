@@ -16,7 +16,7 @@ class FakeHTTP:
             if data and "nonce=" in data:
                 self.calls.append(int(dict(part.split("=", 1) for part in data.split("&"))["nonce"]))
         time.sleep(0.001)
-        return {"result": {"ok": True}}
+        return {"result": "success"}
 
 
 def test_spot_nonce_is_high_resolution_and_monotonic():
