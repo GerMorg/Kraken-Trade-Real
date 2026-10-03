@@ -332,8 +332,7 @@ class TradingRuntime:
             self.audit.emit("TAX_REPORT_FAILED", "WARNING", error=type(exc).__name__)
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
-        tax_report=self.tax.build_report(datetime.now(timezone.utc).year) if self.config.tax_enabled else {}
-        tax_summary=tax_report.get("summary",{})
+        tax_summary=self._safe_tax_summary()
         self.sensors.publish(self.sensors.states(
             status=self.state.stage.value,stage=self.state.stage.value,cycle_id=self.state.cycle_id,
             blocker=self.state.blocker,symbol=self.state.selected_symbol,
