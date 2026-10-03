@@ -104,6 +104,7 @@ class TradingRuntime:
             self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.state.set(RuntimeStage.DEGRADED,"KRAKEN_UNAVAILABLE")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
 
         self._watchdog_arm("", "STARTUP_INSTRUMENTS")
@@ -126,6 +127,7 @@ class TradingRuntime:
             self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.state.set(RuntimeStage.DEGRADED,"INSTRUMENT_DISCOVERY_FAILED")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
 
         if self.gateway.api_key:
@@ -188,6 +190,7 @@ class TradingRuntime:
             self.recovery.issue("PORTFOLIO_MISMATCH",detail)
             self.state.set(RuntimeStage.SAFE_MODE,"PORTFOLIO_RECONCILE_FAILED")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
 
         self._watchdog_arm("", "STARTUP_TAX")
