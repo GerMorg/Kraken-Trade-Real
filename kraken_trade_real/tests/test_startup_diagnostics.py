@@ -36,7 +36,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.15"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.16"
     assert captured["timeout"] == 15.0
 
 
@@ -218,10 +218,6 @@ def test_http_transport_timeout_is_ambiguous(monkeypatch):
 def test_http_server_error_is_ambiguous(monkeypatch):
     from urllib.error import HTTPError
     from app.kraken.client import KrakenAmbiguous
-
-    class ErrorResponse:
-        def read(self, _size):
-            return b"upstream unavailable"
 
     def fake_urlopen(request, timeout):
         raise HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
