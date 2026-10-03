@@ -100,6 +100,7 @@ class TradingRuntime:
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
+        self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:
         self.state.set(RuntimeStage.CONFIG_LOADED)
@@ -144,15 +145,26 @@ class TradingRuntime:
             return False
 
         self._watchdog_arm("", "STARTUP_INSTRUMENTS")
+        self._startup_instrument_operation = "DISCOVERY"
         self.audit.emit(
             "STARTUP_INSTRUMENT_DISCOVERY_START",
             "INFO",
             hard_timeout_seconds=75,
-            operation=getattr(self.gateway, "last_public_instrument_stage", "IDLE"),
+            operation=self._startup_instrument_operation,
+            kraken_operation=getattr(self.gateway, "last_public_instrument_stage", "IDLE"),
         )
         try:
             def _discover_and_persist() -> None:
+                self._startup_instrument_operation = "DISCOVERY"
                 self.instruments=self.discovery.discover()
+                self.audit.emit(
+                    "STARTUP_INSTRUMENT_DISCOVERY_COMPLETED",
+                    "INFO",
+                    count=len(self.instruments),
+                    kraken_operation=getattr(
+                        self.gateway, "last_public_instrument_stage", "UNKNOWN"
+                    ),
+                )
                 optional_warnings = list(
                     getattr(self.gateway, "last_public_instrument_warnings", [])
                 )
@@ -165,7 +177,19 @@ class TradingRuntime:
                     )
                 if not self.instruments:
                     raise RuntimeError("instrument discovery returned zero instruments")
+                self._startup_instrument_operation = "PERSIST_INSTRUMENTS"
+                self.audit.emit(
+                    "STARTUP_INSTRUMENT_PERSIST_START",
+                    "INFO",
+                    count=len(self.instruments),
+                )
                 self.db.upsert_instruments(self.instruments)
+                self._startup_instrument_operation = "COMPLETE"
+                self.audit.emit(
+                    "STARTUP_INSTRUMENT_PERSIST_COMPLETED",
+                    "INFO",
+                    count=len(self.instruments),
+                )
 
             _run_with_hard_timeout(
                 _discover_and_persist,
@@ -1024,7 +1048,7 @@ class TradingRuntime:
                 "stage": snapshot.stage,
                 "timeout_seconds": snapshot.timeout_seconds,
                 "silence_seconds": round(time.monotonic()-snapshot.heartbeat_at, 3),
-                "operation": getattr(self.gateway, "last_public_instrument_stage", "UNKNOWN") if snapshot.stage == "STARTUP_INSTRUMENTS" else "",
+                "operation": self._startup_instrument_operation if snapshot.stage == "STARTUP_INSTRUMENTS" else "",
 
             },
         }
