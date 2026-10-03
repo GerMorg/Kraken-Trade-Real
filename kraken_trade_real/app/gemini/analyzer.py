@@ -137,15 +137,18 @@ class GeminiAnalyzer:
                 {"model":model,"attempt":len(attempted),"timeout_seconds":self.timeout_seconds},
             )
             try:
-                response=client.interactions.create(
-                    model=model,input=prompt,
-                    response_format={
-                        "type":"text",
-                        "mime_type":"application/json",
-                        "schema":GeminiResult.model_json_schema(),
-                    },
-                    store=False,
-                    timeout=float(self.timeout_seconds),
+                response=self._run_hard_timeout(
+                    lambda: client.interactions.create(
+                        model=model,input=prompt,
+                        response_format={
+                            "type":"text",
+                            "mime_type":"application/json",
+                            "schema":GeminiResult.model_json_schema(),
+                        },
+                        store=False,
+                        timeout=float(self.timeout_seconds),
+                    ),
+                    float(self.timeout_seconds),
                 )
                 parsed=GeminiResult.model_validate_json(response.output_text).model_dump()
                 result={
