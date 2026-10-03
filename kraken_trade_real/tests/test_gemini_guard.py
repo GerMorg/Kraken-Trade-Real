@@ -139,14 +139,14 @@ def test_gemini_hard_timeout_interrupts_blocking_operation(db):
     assert time.monotonic()-started < 0.5
 
 @pytest.mark.skipif(not hasattr(signal,"SIGALRM"),reason="hard timeout uses POSIX SIGALRM")
-def test_gemini_client_init_timeout_continues_without_model_call(db):
+def test_gemini_client_init_timeout_continues_without_model_call(db,monkeypatch):
     analyzer=GeminiAnalyzer("key", "gemini-3.8-flash", True, db, timeout_seconds=30)
     analyzer._client_init_timeout_seconds=0.05
 
     def blocking_client_build():
         time.sleep(1)
 
-    analyzer._build_client=blocking_client_build
+    monkeypatch.setattr(analyzer,"_build_client",blocking_client_build)
     result=analyzer.analyze([], {})
 
     assert result["status"]=="TIMEOUT"
