@@ -1,4 +1,5 @@
 from decimal import Decimal
+import time
 
 from app.domain.models import OrderIntent
 from app.domain.states import Direction, OrderState
@@ -51,3 +52,67 @@ def test_save_order_intent_persists_all_order_fields(db, instrument):
     assert row["expected_edge_bps"] == "30"
     assert row["max_slippage_bps"] == "40"
     assert row["expires_seconds"] == 45
+
+
+def test_rejected_intents_do_not_trigger_cooldown_or_daily_limit(config, db, instrument):
+    from app.domain.models import MarketSnapshot
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    market=MarketSnapshot(
+        "XBT/EUR",Decimal("60005"),Decimal("60000"),Decimal("60010"),Decimal("1000"),time.time(),
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+    authority=TradingAuthority(
+        config, object(), db, AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    for i in range(config.execution_max_orders_per_day):
+        intent=OrderIntent(
+            f"intent_gate_{i}",f"client_gate_{i}",f"decision_gate_{i}",instrument,
+            Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
+            True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
+        )
+        db.save_order_intent(intent)
+        db.update_order_state(intent.client_order_id,OrderState.REJECTED.value,last_error="TEST_REJECTED")
+    candidate=OrderIntent(
+        "intent_candidate","client_candidate","decision_candidate",instrument,
+        Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
+        True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
+    )
+    check=authority._preflight(candidate,market)
+    assert check["allowed"] is True
+
+
+def test_real_submission_timestamp_triggers_cooldown(config, db, instrument):
+    from app.domain.models import MarketSnapshot
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    market=MarketSnapshot(
+        "XBT/EUR",Decimal("60005"),Decimal("60000"),Decimal("60010"),Decimal("1000"),time.time(),
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+    authority=TradingAuthority(
+        config, object(), db, AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    first=OrderIntent(
+        "intent_submitted","client_submitted","decision_submitted",instrument,
+        Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
+        True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
+    )
+    db.save_order_intent(first)
+    db.update_order_state(first.client_order_id,OrderState.SUBMITTING.value,submitted_at=time.time())
+    candidate=OrderIntent(
+        "intent_candidate2","client_candidate2","decision_candidate2",instrument,
+        Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
+        True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
+    )
+    check=authority._preflight(candidate,market)
+    assert check["allowed"] is False
+    assert check["reason"] == "ORDER_COOLDOWN"
