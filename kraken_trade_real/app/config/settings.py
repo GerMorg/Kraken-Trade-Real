@@ -13,6 +13,7 @@ class Config:
     futures_enabled: bool
     futures_api_key: str
     futures_api_secret: str
+    tokenized_assets_enabled: bool
     kraken_enabled: bool
     live_enabled: bool
     kill_switch: bool
@@ -101,6 +102,7 @@ class Config:
             futures_enabled=b("futures_enabled", False),
             futures_api_key=str(raw.get("futures_api_key", "")).strip(),
             futures_api_secret=str(raw.get("futures_api_secret", "")).strip(),
+            tokenized_assets_enabled=b("tokenized_assets_enabled", False),
             kraken_enabled=b("kraken_enabled", True),
             live_enabled=b("live_enabled", False),
             kill_switch=b("kill_switch", True),

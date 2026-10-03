@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from datetime import datetime, timezone
 import time
-from typing import Any
+from typing import Any, Callable
 
 from app.domain.models import digest_config, new_id
 from app.domain.states import RuntimeStage
@@ -15,6 +17,40 @@ from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
 
 
 D=Decimal
+
+
+class _StageTimeout(TimeoutError):
+    pass
+
+
+def _run_with_hard_timeout(
+    fn: Callable[[], Any],
+    timeout_seconds: float,
+    stage: str,
+) -> Any:
+    """Run a blocking startup operation with a real POSIX deadline.
+
+    urllib socket timeouts are inactivity limits, not total operation
+    deadlines. The startup watchdog cannot interrupt a blocked main thread,
+    so startup-critical synchronous work also gets a SIGALRM deadline.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return fn()
+    timeout = max(0.1, float(timeout_seconds))
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0.0)
+    def _handler(signum: int, frame: Any) -> None:
+        raise _StageTimeout(f"{stage} exceeded {timeout:g}s")
+    signal.signal(signal.SIGALRM, _handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        return fn()
+    finally:
+        remaining = signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            restore_after = max(0.0, previous_timer[0] - (timeout - remaining[0]))
+            signal.setitimer(signal.ITIMER_REAL, restore_after)
 
 
 class TradingRuntime:
@@ -108,21 +144,34 @@ class TradingRuntime:
             return False
 
         self._watchdog_arm("", "STARTUP_INSTRUMENTS")
+        self.audit.emit(
+            "STARTUP_INSTRUMENT_DISCOVERY_START",
+            "INFO",
+            hard_timeout_seconds=75,
+            operation=getattr(self.gateway, "last_public_instrument_stage", "IDLE"),
+        )
         try:
-            self.instruments=self.discovery.discover()
-            optional_warnings = list(
-                getattr(self.gateway, "last_public_instrument_warnings", [])
-            )
-            if optional_warnings:
-                self.audit.emit(
-                    "STARTUP_OPTIONAL_MARKETS_DEGRADED",
-                    "WARNING",
-                    component="xstocks",
-                    warnings=optional_warnings,
+            def _discover_and_persist() -> None:
+                self.instruments=self.discovery.discover()
+                optional_warnings = list(
+                    getattr(self.gateway, "last_public_instrument_warnings", [])
                 )
-            if not self.instruments:
-                raise RuntimeError("instrument discovery returned zero instruments")
-            self.db.upsert_instruments(self.instruments)
+                if optional_warnings:
+                    self.audit.emit(
+                        "STARTUP_OPTIONAL_MARKETS_DEGRADED",
+                        "WARNING",
+                        component="xstocks",
+                        warnings=optional_warnings,
+                    )
+                if not self.instruments:
+                    raise RuntimeError("instrument discovery returned zero instruments")
+                self.db.upsert_instruments(self.instruments)
+
+            _run_with_hard_timeout(
+                _discover_and_persist,
+                min(self.STEP_TIMEOUTS["STARTUP_INSTRUMENTS"] - 5.0, 75.0),
+                "STARTUP_INSTRUMENTS",
+            )
             self.state.set(RuntimeStage.INSTRUMENTS_SYNCED)
             self.audit.emit("STARTUP_INSTRUMENTS_SYNCED",count=len(self.instruments))
             self.audit.emit(
@@ -133,8 +182,15 @@ class TradingRuntime:
             )
             self._publish_runtime_status()
         except Exception as exc:
-            detail=f"instrument discovery:{type(exc).__name__}:{str(exc)[:700]}"
+            operation=getattr(self.gateway, "last_public_instrument_stage", "UNKNOWN")
+            detail=f"instrument discovery:{type(exc).__name__}:{str(exc)[:500]}:operation={operation}"
             self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
+            self.audit.emit(
+                "STARTUP_INSTRUMENTS_FAILED",
+                "ERROR",
+                error=detail,
+                operation=operation,
+            )
             self.state.set(RuntimeStage.DEGRADED,"INSTRUMENT_DISCOVERY_FAILED")
             self._publish_runtime_status()
             self._watchdog_clear("")
@@ -968,6 +1024,8 @@ class TradingRuntime:
                 "stage": snapshot.stage,
                 "timeout_seconds": snapshot.timeout_seconds,
                 "silence_seconds": round(time.monotonic()-snapshot.heartbeat_at, 3),
+                "operation": getattr(self.gateway, "last_public_instrument_stage", "UNKNOWN") if snapshot.stage == "STARTUP_INSTRUMENTS" else "",
+
             },
         }
         try:

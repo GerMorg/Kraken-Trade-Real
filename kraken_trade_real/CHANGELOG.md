@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.20
+
+- Make tokenized xStock discovery explicitly opt-in so EEA-incompatible API market-order-book paths cannot delay or block core Spot startup.
+- Add a POSIX hard deadline around startup instrument discovery and persistence; a blocked synchronous Kraken call can no longer wait for the external watchdog before the application records a startup failure.
+- Track and publish the exact startup instrument operation (`SPOT_ASSETPAIRS`, tokenized AssetPairs, or Futures instruments) involved in a failure.
+- Bump application/package/Home Assistant add-on and Kraken User-Agent version to 0.1.20.
+
 ## 0.1.19
 
 - Keep core startup dependent only on the documented default Spot AssetPairs request.
