@@ -781,6 +781,98 @@ class TradingRuntime:
             self.state.set(RuntimeStage.SAFE_MODE if self.recovery.breaker.active else RuntimeStage.DEGRADED,self.recovery.breaker.reason if self.recovery.breaker.active else detail)
             self._publish_runtime_status()
             return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__,"stage":stage}
+
+    def _watchdog_arm(self, cycle_id: str, stage: str) -> None:
+        timeout = self.STEP_TIMEOUTS.get(stage, 120.0)
+        previous = self.watchdog.snapshot()
+        if previous is not None:
+            self.audit.emit(
+                "RUNTIME_STEP_COMPLETED", "INFO",
+                cycle_id=previous.cycle_id,
+                stage=previous.stage,
+                duration_seconds=round(time.monotonic()-previous.armed_at, 3),
+            )
+        self.watchdog.arm(cycle_id, stage, timeout)
+        self.audit.emit(
+            "RUNTIME_STEP_START", "INFO",
+            cycle_id=cycle_id,
+            stage=stage,
+            timeout_seconds=timeout,
+        )
+
+    def _watchdog_heartbeat(self, cycle_id: str, stage: str) -> None:
+        self.watchdog.heartbeat(cycle_id, stage)
+
+    def _watchdog_clear(self, cycle_id: str) -> None:
+        previous = self.watchdog.snapshot()
+        if previous is not None and previous.cycle_id == cycle_id:
+            self.audit.emit(
+                "RUNTIME_STEP_COMPLETED", "INFO",
+                cycle_id=previous.cycle_id,
+                stage=previous.stage,
+                duration_seconds=round(time.monotonic()-previous.armed_at, 3),
+            )
+        self.watchdog.clear(cycle_id)
+
+    def _handle_watchdog_timeout(self, snapshot: WatchdogSnapshot) -> None:
+        payload = {
+            "ts": time.time(),
+            "code": "RUNTIME_WATCHDOG_TIMEOUT",
+            "level": "ERROR",
+            "payload": {
+                "cycle_id": snapshot.cycle_id,
+                "stage": snapshot.stage,
+                "timeout_seconds": snapshot.timeout_seconds,
+                "silence_seconds": round(time.monotonic()-snapshot.heartbeat_at, 3),
+            },
+        }
+        try:
+            os.write(
+                2,
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
+            )
+        except OSError:
+            pass
+        try:
+            self.recovery.breaker.trip(
+                "RUNTIME_WATCHDOG_TIMEOUT",
+                f"{snapshot.stage}:{snapshot.cycle_id}",
+            )
+            self.state.set(
+                RuntimeStage.SAFE_MODE,
+                f"RUNTIME_WATCHDOG_TIMEOUT:{snapshot.stage}",
+            )
+        except Exception:
+            pass
+        os._exit(70)
+
+    def _recover_stale_cycles(self) -> None:
+        threshold = max(
+            900,
+            int(getattr(self.config, "market_scan_interval_seconds", 300)) * 3,
+        )
+        cutoff = time.time() - threshold
+        rows = self.db.query(
+            "SELECT cycle_id,started_at FROM cycles WHERE status='RUNNING' AND started_at<?",
+            (cutoff,),
+        )
+        for row in rows:
+            cycle_id = str(row.get("cycle_id", ""))
+            self.db.finish_cycle(
+                cycle_id,
+                "FAILED",
+                "PROCESS_RESTART_OR_WATCHDOG",
+            )
+            self.audit.emit(
+                "STALE_CYCLE_RECOVERED", "WARNING",
+                cycle_id=cycle_id,
+                age_seconds=round(
+                    time.time()-float(row.get("started_at", time.time())),
+                    1,
+                ),
+                reason="PROCESS_RESTART_OR_WATCHDOG",
+            )
+
     def _publish_runtime_status(self) -> None:
         try:
             publish_result = self.sensors.publish(self.sensors.states(
