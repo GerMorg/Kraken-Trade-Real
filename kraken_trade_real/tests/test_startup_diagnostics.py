@@ -179,3 +179,26 @@ def test_tax_report_failure_is_diagnostic_and_non_blocking():
     assert events[-1][0] == "TAX_REPORT_FAILED"
     assert events[-1][2]["stage"] == "tax_history_sync"
     assert "KeyError" in events[-1][2]["traceback"]
+
+def test_spot_query_orders_normalizes_txid_keyed_response(monkeypatch):
+    gateway = KrakenGateway("spot-key", "spot-secret")
+    monkeypatch.setattr(
+        gateway,
+        "spot_private",
+        lambda method, params: {
+            "O-123": {"status": "open", "vol": "1.0"},
+            "O-456": {"status": "closed", "vol": "2.0"},
+        },
+    )
+
+    result = gateway.lookup_order(
+        client_order_id="client-123",
+        instrument=SimpleNamespace(
+            product_type=SimpleNamespace(value="SPOT")
+        ),
+    )
+
+    assert result == [
+        {"status": "open", "vol": "1.0", "txid": "O-123"},
+        {"status": "closed", "vol": "2.0", "txid": "O-456"},
+    ]
