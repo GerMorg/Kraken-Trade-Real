@@ -1,3 +1,8 @@
+import signal
+import time
+
+import pytest
+
 from app.gemini import GeminiAnalyzer
 
 
@@ -52,6 +57,7 @@ def test_gemini_timeout_returns_without_breaking_cycle(db):
     assert result["timeout_seconds"] == 30
     row = db.one("SELECT code FROM events WHERE code='GEMINI_TIMEOUT' ORDER BY id DESC LIMIT 1")
     assert row is not None
+
 
 
 def test_gemini_falls_back_after_quota_exhaustion(db):
@@ -122,3 +128,48 @@ def test_gemini_all_models_exhausted_returns_zero_impact(db):
     assert result["reason"] == "ALL_MODELS_FAILED"
     row = db.one("SELECT code FROM events WHERE code='GEMINI_FALLBACK_EXHAUSTED' ORDER BY id DESC LIMIT 1")
     assert row is not None
+
+
+@pytest.mark.skipif(not hasattr(signal,"SIGALRM"),reason="hard timeout uses POSIX SIGALRM")
+def test_gemini_hard_timeout_interrupts_blocking_operation(db):
+    analyzer=GeminiAnalyzer("", "gemini-3.8-flash", False, db)
+    started=time.monotonic()
+    with pytest.raises(TimeoutError,match="hard timeout"):
+        analyzer._run_hard_timeout(lambda: time.sleep(1),0.05)
+    assert time.monotonic()-started < 0.5
+
+@pytest.mark.skipif(not hasattr(signal,"SIGALRM"),reason="hard timeout uses POSIX SIGALRM")
+def test_gemini_client_init_timeout_continues_without_model_call(db,monkeypatch):
+    analyzer=GeminiAnalyzer("key", "gemini-3.8-flash", True, db, timeout_seconds=30)
+    analyzer._client_init_timeout_seconds=0.05
+
+    def blocking_client_build():
+        time.sleep(1)
+
+    monkeypatch.setattr(analyzer,"_build_client",blocking_client_build)
+    result=analyzer.analyze([], {})
+
+    assert result["status"]=="TIMEOUT"
+    assert result["reason"]=="CLIENT_INIT_FAILED"
+    row=db.one("SELECT code FROM events WHERE code='GEMINI_CLIENT_INIT_TIMEOUT' ORDER BY id DESC LIMIT 1")
+    assert row is not None
+
+@pytest.mark.skipif(not hasattr(signal,"SIGALRM"),reason="hard timeout uses POSIX SIGALRM")
+def test_gemini_model_call_hard_timeout_falls_back_without_waiting(db):
+    analyzer=GeminiAnalyzer("key", "gemini-3.8-flash", True, db, timeout_seconds=30)
+    analyzer.timeout_seconds=0.05
+
+    class FakeInteractions:
+        def create(self, **kwargs):
+            time.sleep(1)
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    analyzer._client=FakeClient()
+    started=time.monotonic()
+    result=analyzer.analyze([], {})
+
+    assert result["status"]=="TIMEOUT"
+    assert result["attempted_models"][0]=="gemini-3.8-flash"
+    assert time.monotonic()-started < 0.5

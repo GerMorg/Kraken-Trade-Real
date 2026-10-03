@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.13
+
+- Add a hard POSIX watchdog around Gemini client initialization and model requests so a stuck SDK/transport cannot block the trading cycle indefinitely.
+- Emit explicit Gemini client-init start, ready, timeout and failure diagnostics.
+- Treat Gemini client-init failures as zero-impact degraded operation so market analysis, risk, execution and learning continue normally.
+- Add regression tests for blocking Gemini client initialization and model calls.
+
 ## 0.1.12
 
 - Fix OrderIntent persistence SQL placeholder mismatch that could abort a cycle immediately before real order submission.
