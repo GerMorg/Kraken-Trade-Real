@@ -122,7 +122,30 @@ class GeminiAnalyzer:
 
     def analyze(self,news:list[dict[str,Any]],market_context:dict[str,Any])->dict[str,Any]:
         client=self._client_for_use()
-        if client is None:return {"status":"DISABLED","effect_bps":0.0,"model":""}
+        if client is None:
+            if not self.enabled or not self.api_key:
+                return {"status":"DISABLED","effect_bps":0.0,"model":""}
+            status="TIMEOUT" if self._client_error=="TIMEOUT" else "DEGRADED"
+            self.db.event(
+                "GEMINI_FALLBACK_EXHAUSTED",
+                "WARNING",
+                {
+                    "attempted_models":[],
+                    "failures":[{"stage":"CLIENT_INIT","reason":self._client_error or "ERROR"}],
+                    "status":status,
+                    "continuation":"ZERO_IMPACT_AND_CONTINUE",
+                },
+            )
+            return {
+                "status":status,
+                "effect_bps":0.0,
+                "expected_impact_bps":0.0,
+                "model":"",
+                "attempted_models":[],
+                "fallback_used":False,
+                "reason":"CLIENT_INIT_FAILED",
+                "timeout_seconds":self.timeout_seconds if status=="TIMEOUT" else 0,
+            }
         prompt=("Research only. Never return an order, trade instruction, position size, leverage instruction "
                 "or execution command. Return JSON matching this schema. NEWS="+json.dumps(news[:20],default=str)+
                 " CONTEXT="+json.dumps(market_context,default=str))
