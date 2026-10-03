@@ -170,6 +170,73 @@ class Database:
             str(state.daily_pnl_eur),str(state.drawdown_pct),json.dumps({k:str(v) for k,v in state.positions.items()}),
             state.open_orders))
 
+    def save_prediction(self, prediction_id: str, decision: Any, probability: float, horizon: str = "15m") -> None:
+        import hashlib
+        feature_hash = hashlib.sha256(
+            json.dumps(decision.rationale, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        self.execute(
+            """INSERT OR IGNORE INTO predictions(
+              prediction_id,created_at,decision_id,symbol,horizon,probability,
+              expected_return_bps,model_version,feature_hash,outcome_status
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                prediction_id, time.time(), decision.decision_id, decision.instrument.symbol,
+                horizon, float(probability), str(decision.signal.expected_return_bps),
+                decision.model_version, feature_hash, "OPEN",
+            ),
+        )
+
+    def settle_predictions(self, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        rows = self.query(
+            "SELECT * FROM predictions WHERE outcome_status='OPEN'"
+        )
+        settled = 0
+        for row in rows:
+            horizon_seconds = 900 if row["horizon"] == "15m" else 3600
+            if now < float(row["created_at"]) + horizon_seconds:
+                continue
+            start = self.one(
+                """SELECT price FROM market_snapshots
+                   WHERE symbol=? AND captured_at<=?
+                   ORDER BY captured_at DESC LIMIT 1""",
+                (row["symbol"], float(row["created_at"])),
+            )
+            end = self.one(
+                """SELECT price FROM market_snapshots
+                   WHERE symbol=? AND captured_at>=?
+                   ORDER BY captured_at ASC LIMIT 1""",
+                (row["symbol"], float(row["created_at"]) + horizon_seconds),
+            )
+            if not start or not end:
+                continue
+            start_price = Decimal(str(start["price"]))
+            end_price = Decimal(str(end["price"]))
+            if start_price <= 0:
+                continue
+            realized = (end_price / start_price - Decimal("1")) * Decimal("10000")
+            expected = Decimal(str(row["expected_return_bps"]))
+            signed = realized if expected >= 0 else -realized
+            success = int(signed > 0)
+            error = Decimal(str(row["probability"])) - Decimal(success)
+            self.execute(
+                """INSERT OR REPLACE INTO prediction_outcomes(
+                   prediction_id,measured_at,realized_return_bps,success,error_bps,detail_json
+                ) VALUES(?,?,?,?,?,?)""",
+                (
+                    row["prediction_id"], now, str(realized), success,
+                    str(error * Decimal("10000")),
+                    json.dumps({"start_price": str(start_price), "end_price": str(end_price)}),
+                ),
+            )
+            self.execute(
+                "UPDATE predictions SET outcome_status='SETTLED' WHERE prediction_id=?",
+                (row["prediction_id"],),
+            )
+            settled += 1
+        return settled
+
     def learning_event(self,event_type:str,entity_id:str,payload:dict[str,Any])->None:
         self.execute("INSERT INTO learning_events(created_at,event_type,entity_id,payload_json) VALUES(?,?,?,?)",
                      (time.time(),event_type,entity_id,json.dumps(payload,sort_keys=True,default=str)))
