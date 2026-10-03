@@ -78,6 +78,7 @@ class TradingRuntime:
             self.state.set(RuntimeStage.SAFE_MODE,"KRAKEN_DISABLED")
             self.audit.emit("STARTUP_KRAKEN_DISABLED","WARNING",blocker="KRAKEN_DISABLED")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
         self._watchdog_arm("", "STARTUP_API")
         try:
@@ -140,12 +141,14 @@ class TradingRuntime:
                         self.recovery.issue("PERMISSION_FAILURE","modify-trades missing")
                         self.state.set(RuntimeStage.SAFE_MODE,"PERMISSION_FAILURE")
                         self._publish_runtime_status()
+                        self._watchdog_clear("")
                         return False
             except Exception as exc:
                 detail=f"{type(exc).__name__}:{str(exc)[:800]}"
                 self.recovery.issue("AUTH_FAILURE",detail)
                 self.state.set(RuntimeStage.SAFE_MODE,"AUTH_FAILURE")
                 self._publish_runtime_status()
+                self._watchdog_clear("")
                 return False
 
         self._watchdog_arm("", "STARTUP_PORTFOLIO")
