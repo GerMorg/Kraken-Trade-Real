@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.15
+
+- Reconcile stale `SUBMITTING` and `UNKNOWN_RECONCILING` submissions against Kraken before new orders are evaluated; ambiguous states are never cleared by age alone.
+- Treat a successful exact exchange lookup with no matching order as an exchange-confirmed no-order result, while lookup failures remain conservatively blocked.
+- Broaden historical market hydration with a rotating exploration pool outside the core volume-ranked candidates.
+- Add product-family-aware detailed selection so available XStocks, stocks, derivatives and crypto markets are represented during each cycle without exceeding the detailed-market cap (held positions remain preserved).
+- Add explicit universe breakdown and exclusion diagnostics from discovery through ticker, prefilter, history and detailed selection stages.
+- Add expected-return, expected-cost, net-edge and confidence diagnostics for every strategy rejection so `MIN_EDGE` blocks are explainable.
+- Add configurable reconciliation and market-exploration limits and update the application/package/User-Agent version to 0.1.15.
+
 ## 0.1.14
 
 - Count daily order limits and cooldowns from real submission attempts only, not from locally created or rejected order intents.

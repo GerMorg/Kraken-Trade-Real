@@ -104,6 +104,7 @@ class TradingRuntime:
             self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.state.set(RuntimeStage.DEGRADED,"KRAKEN_UNAVAILABLE")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
 
         self._watchdog_arm("", "STARTUP_INSTRUMENTS")
@@ -114,12 +115,19 @@ class TradingRuntime:
             self.db.upsert_instruments(self.instruments)
             self.state.set(RuntimeStage.INSTRUMENTS_SYNCED)
             self.audit.emit("STARTUP_INSTRUMENTS_SYNCED",count=len(self.instruments))
+            self.audit.emit(
+                "STARTUP_UNIVERSE_BREAKDOWN",
+                "INFO",
+                total=len(self.instruments),
+                families=self.scanner.count_by_family(self.instruments),
+            )
             self._publish_runtime_status()
         except Exception as exc:
             detail=f"instrument discovery:{type(exc).__name__}:{str(exc)[:700]}"
             self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.state.set(RuntimeStage.DEGRADED,"INSTRUMENT_DISCOVERY_FAILED")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
 
         if self.gateway.api_key:
@@ -165,12 +173,24 @@ class TradingRuntime:
                 )
             portfolio=self.portfolio.reconcile()
             self.db.save_portfolio("startup",portfolio)
+            reconcile_pending=getattr(self.authority,"reconcile_pending",None)
+            if callable(reconcile_pending):
+                try:
+                    reconciliation=reconcile_pending(self.instruments)
+                    self.audit.emit("STARTUP_ORDER_RECONCILIATION","INFO",**reconciliation)
+                except Exception as exc:
+                    self.audit.emit(
+                        "STARTUP_ORDER_RECONCILIATION_FAILED",
+                        "WARNING",
+                        error=f"{type(exc).__name__}:{str(exc)[:500]}",
+                    )
             self.state.set(RuntimeStage.ACCOUNT_RECONCILED)
         except Exception as exc:
             detail=f"{type(exc).__name__}:{str(exc)[:800]}"
             self.recovery.issue("PORTFOLIO_MISMATCH",detail)
             self.state.set(RuntimeStage.SAFE_MODE,"PORTFOLIO_RECONCILE_FAILED")
             self._publish_runtime_status()
+            self._watchdog_clear("")
             return False
 
         self._watchdog_arm("", "STARTUP_TAX")
@@ -237,6 +257,25 @@ class TradingRuntime:
             if self.recovery.breaker.active:
                 blockers.append(self.recovery.breaker.reason)
 
+            reconcile_pending=getattr(self.authority,"reconcile_pending",None)
+            if callable(reconcile_pending):
+                try:
+                    reconciliation=reconcile_pending(self.instruments)
+                    self.audit.emit(
+                        "CYCLE_ORDER_RECONCILIATION",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        **reconciliation,
+                    )
+                except Exception as exc:
+                    self.audit.emit(
+                        "CYCLE_ORDER_RECONCILIATION_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error=f"{type(exc).__name__}:{str(exc)[:500]}",
+                    )
+            self._watchdog_heartbeat(cycle_id, stage)
+
             ticker_snapshots={}
             for instrument in self.instruments:
                 payload=spot_payload if instrument.venue=="spot" else future_payload
@@ -250,7 +289,7 @@ class TradingRuntime:
                 if snapshot:
                     ticker_snapshots[instrument.symbol]=snapshot
 
-            prefiltered=self.scanner.fast_filter(
+            prefiltered,prefilter_diagnostics=self.scanner.fast_filter_with_diagnostics(
                 self.instruments,
                 ticker_snapshots,
                 require_history=False,
@@ -260,12 +299,22 @@ class TradingRuntime:
                 instrument for instrument in self.instruments
                 if instrument.symbol in position_symbols
             ]
-            history_candidates=prefiltered[:self.config.market_history_candidate_limit]
-            history_symbols={instrument.symbol for instrument in history_candidates}
-            for instrument in position_instruments:
-                if instrument.symbol not in history_symbols:
-                    history_candidates.append(instrument)
-                    history_symbols.add(instrument.symbol)
+            history_candidates=self.scanner.build_history_candidates(
+                prefiltered,
+                core_limit=self.config.market_history_candidate_limit,
+                exploration_limit=getattr(
+                    self.config,"market_exploration_candidate_limit",80
+                ),
+                exploration_slots_per_family=getattr(
+                    self.config,"market_exploration_slots_per_family",2
+                ),
+                cycle_key=cycle_id,
+                preserve_symbols=position_symbols,
+            )
+            ticker_instruments=[
+                instrument for instrument in self.instruments
+                if instrument.symbol in ticker_snapshots
+            ]
             self.audit.emit(
                 "CYCLE_MARKET_PREFILTER",
                 "INFO",
@@ -274,6 +323,31 @@ class TradingRuntime:
                 candidates=len(prefiltered),
                 history_candidates=len(history_candidates),
                 position_candidates=len(position_instruments),
+                core_history_limit=self.config.market_history_candidate_limit,
+                exploration_candidates=max(
+                    0,len(history_candidates)-min(
+                        len(prefiltered),self.config.market_history_candidate_limit
+                    )-len([
+                        instrument for instrument in position_instruments
+                        if instrument.symbol not in {
+                            item.symbol for item in prefiltered[
+                                :self.config.market_history_candidate_limit
+                            ]
+                        }
+                    ])
+                ),
+                prefilter_excluded_by_reason=prefilter_diagnostics["excluded_by_reason"],
+                prefilter_families=prefilter_diagnostics["families"],
+            )
+            self.audit.emit(
+                "UNIVERSE_BREAKDOWN",
+                "INFO",
+                cycle_id=cycle_id,
+                discovered=self.scanner.count_by_family(self.instruments),
+                ticker_available=self.scanner.count_by_family(ticker_instruments),
+                prefiltered=self.scanner.count_by_family(prefiltered),
+                history_candidates=self.scanner.count_by_family(history_candidates),
+                held_positions=self.scanner.count_by_family(position_instruments),
             )
 
             cached=self.db.latest_market_closes([i.symbol for i in history_candidates])
@@ -336,6 +410,9 @@ class TradingRuntime:
                 ranked,
                 limit=20,
                 preserve_symbols=position_symbols,
+                family_slots=getattr(
+                    self.config,"market_exploration_slots_per_family",2
+                ),
             )
             selected_symbols={instrument.symbol for instrument in selected}
             for instrument in position_instruments:
@@ -358,6 +435,16 @@ class TradingRuntime:
                 position_candidates=len(position_instruments),
                 evaluated=position_evaluated,
                 missing=position_missing,
+            )
+            self.audit.emit(
+                "UNIVERSE_BREAKDOWN",
+                "INFO",
+                cycle_id=cycle_id,
+                history_ready=self.scanner.count_by_family(
+                    [i for i in history_candidates if i.symbol in snapshots]
+                ),
+                selected=self.scanner.count_by_family(selected),
+                selected_total=len(selected),
             )
 
             quote_refresh_started=time.monotonic()
@@ -452,7 +539,9 @@ class TradingRuntime:
                 fast_candidates=len(snapshots),
                 ranked=len(ranked),
                 selected=len(selected),
+                selected_families=self.scanner.count_by_family(selected),
                 quote_duplicates_removed=quote_duplicates_removed,
+                prefilter_excluded_by_reason=prefilter_diagnostics["excluded_by_reason"],
             )
             stage="NEWS"
             self._watchdog_arm(cycle_id, stage)
@@ -557,6 +646,7 @@ class TradingRuntime:
             decisions_count=0
             strategy_rejected=0
             risk_rejected=0
+            order_blocked=0
             rebalance_decisions=0
             last_decision=None
             no_action_reasons: dict[str,int]={}
@@ -610,6 +700,16 @@ class TradingRuntime:
                         cycle_id=cycle_id,
                         symbol=instrument.symbol,
                         reason=reason,
+                        long_expected_return_bps=str(long_signal.expected_return_bps),
+                        long_expected_cost_bps=str(long_signal.expected_cost_bps),
+                        long_net_edge_bps=str(long_signal.net_edge_bps),
+                        long_confidence=str(long_signal.confidence),
+                        short_expected_return_bps=str(short_signal.expected_return_bps),
+                        short_expected_cost_bps=str(short_signal.expected_cost_bps),
+                        short_net_edge_bps=str(short_signal.net_edge_bps),
+                        short_confidence=str(short_signal.confidence),
+                        required_edge_bps=str(self.config.strategy_min_edge_bps),
+                        required_confidence=str(self.config.strategy_min_confidence),
                     )
                     continue
 
@@ -727,6 +827,23 @@ class TradingRuntime:
                     "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
                 }:
                     placed+=1
+                else:
+                    order_blocked+=1
+                    gate_reason=str(
+                        result.get("reason")
+                        or result.get("state")
+                        or "ORDER_BLOCKED"
+                    )
+                    no_action_reasons[gate_reason]=no_action_reasons.get(gate_reason,0)+1
+                    blockers.append(f"{instrument.symbol}:{gate_reason}")
+                    self.audit.emit(
+                        "CYCLE_ORDER_BLOCKED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        reason=gate_reason,
+                        state=str(result.get("state","")),
+                    )
 
             self.audit.emit(
                 "CYCLE_DECISIONS",
@@ -736,6 +853,7 @@ class TradingRuntime:
                 strategy_rejected=strategy_rejected,
                 rebalance_decisions=rebalance_decisions,
                 risk_rejected=risk_rejected,
+                order_blocked=order_blocked,
                 orders=placed,
                 blockers=len(blockers),
                 no_action_reasons=no_action_reasons,

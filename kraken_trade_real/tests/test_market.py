@@ -97,3 +97,89 @@ def test_market_selection_always_preserves_held_position(instrument):
     )
     assert [item.symbol for item in selected] == ["XBT/EUR"]
     assert removed == 1
+
+def test_product_family_classifies_xstocks_and_crypto(instrument):
+    from dataclasses import replace
+    from app.market.scanner import MarketScanner
+
+    scanner = MarketScanner(1, 100, 60)
+    xstock = replace(instrument, symbol="AAPLx/EUR", base="AAPLx")
+    crypto = replace(instrument, symbol="STX/EUR", base="STX")
+
+    assert scanner.product_family(xstock) == "XSTOCK"
+    assert scanner.product_family(crypto) == "CRYPTO"
+
+
+def test_history_candidate_exploration_reaches_non_core_family(instrument):
+    from dataclasses import replace
+    from app.market.scanner import MarketScanner
+
+    scanner = MarketScanner(1, 100, 60)
+    core = [
+        replace(
+            instrument,
+            symbol=f"C{i}/EUR",
+            instrument_id=f"C{i}EUR",
+            base=f"C{i}",
+        )
+        for i in range(200)
+    ]
+    xstock = replace(
+        instrument,
+        symbol="AAPLx/EUR",
+        instrument_id="AAPLxEUR",
+        base="AAPLx",
+    )
+
+    candidates = scanner.build_history_candidates(
+        core + [xstock],
+        core_limit=200,
+        exploration_limit=10,
+        exploration_slots_per_family=1,
+        cycle_key="test-cycle",
+    )
+
+    assert len(candidates) == 201
+    assert xstock in candidates
+
+
+def test_detailed_selection_keeps_family_coverage_inside_limit(instrument):
+    from dataclasses import replace
+    from app.market.scanner import MarketScanner
+    from app.domain.states import ProductType
+
+    scanner = MarketScanner(1, 100, 60)
+    xstock = replace(
+        instrument,
+        symbol="AAPLx/EUR",
+        instrument_id="AAPLxEUR",
+        base="AAPLx",
+    )
+    derivative = replace(
+        instrument,
+        venue="futures",
+        product_type=ProductType.DERIVATIVE,
+        symbol="PF_XBTUSD",
+        instrument_id="PF_XBTUSD",
+        quote="USD",
+        base="XBT",
+    )
+    crypto = replace(
+        instrument,
+        symbol="SOL/EUR",
+        instrument_id="SOLEUR",
+        base="SOL",
+    )
+
+    selected, _ = scanner.select_for_cycle(
+        [xstock, derivative, crypto],
+        limit=3,
+        family_slots=1,
+    )
+
+    assert len(selected) == 3
+    assert {scanner.product_family(item) for item in selected} == {
+        "XSTOCK",
+        "DERIVATIVE",
+        "CRYPTO",
+    }

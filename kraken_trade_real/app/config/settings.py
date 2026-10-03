@@ -27,6 +27,8 @@ class Config:
     market_max_data_age_seconds: int
     market_history_candidate_limit: int
     market_history_cache_seconds: int
+    market_exploration_candidate_limit: int
+    market_exploration_slots_per_family: int
     strategy_min_edge_bps: float
     strategy_min_confidence: float
     risk_max_position_pct: float
@@ -42,6 +44,8 @@ class Config:
     execution_order_timeout_seconds: int
     execution_max_reprices: int
     execution_max_orders_per_day: int
+    execution_reconciliation_limit: int
+    execution_reconciliation_stale_seconds: int
     learning_enabled: bool
     learning_lookback_days: int
     learning_validation_interval_hours: int
@@ -111,6 +115,8 @@ class Config:
             market_max_data_age_seconds=i("market_max_data_age_seconds", 30, 5),
             market_history_candidate_limit=i("market_history_candidate_limit", 200, 20),
             market_history_cache_seconds=i("market_history_cache_seconds", 900, 60),
+            market_exploration_candidate_limit=i("market_exploration_candidate_limit", 80, 1),
+            market_exploration_slots_per_family=i("market_exploration_slots_per_family", 2, 1),
             strategy_min_edge_bps=f("strategy_min_edge_bps", 25.0, 0.0, 5000.0),
             strategy_min_confidence=f("strategy_min_confidence", 0.58, 0.0, 1.0),
             risk_max_position_pct=f("risk_max_position_pct", 15.0, 0.1, 100.0),
@@ -126,6 +132,8 @@ class Config:
             execution_order_timeout_seconds=i("execution_order_timeout_seconds", 45, 5),
             execution_max_reprices=i("execution_max_reprices", 2, 0),
             execution_max_orders_per_day=i("execution_max_orders_per_day", 10, 1),
+            execution_reconciliation_limit=i("execution_reconciliation_limit", 3, 1),
+            execution_reconciliation_stale_seconds=i("execution_reconciliation_stale_seconds", 30, 5),
             learning_enabled=b("learning_enabled", True),
             learning_lookback_days=i("learning_lookback_days", 365, 1),
             learning_validation_interval_hours=i("learning_validation_interval_hours", 24, 1),

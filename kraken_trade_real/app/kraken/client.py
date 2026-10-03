@@ -38,7 +38,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.14",
+                "User-Agent": "Kraken-Trade-Real/0.1.15",
                 **(headers or {}),
             },
             method=method,
@@ -244,7 +244,15 @@ class KrakenGateway:
             result = self.futures_private("ordersstatus", {"cliOrdId": client_order_id})
             return list(result.get("orders") or [])
         result = self.spot_private("QueryOrders", {"cl_ord_id": client_order_id})
-        return [result] if result else []
+        # Spot QueryOrders returns an object keyed by Kraken txid. Normalize
+        # each order so the reconciler sees status and the Kraken identifier.
+        if not isinstance(result, dict):
+            return []
+        normalized = []
+        for txid, order in result.items():
+            if isinstance(order, dict):
+                normalized.append({**order, "txid": str(txid)})
+        return normalized
 
     def cancel_order(
         self,
