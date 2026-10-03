@@ -116,3 +116,123 @@ def test_real_submission_timestamp_triggers_cooldown(config, db, instrument):
     check=authority._preflight(candidate,market)
     assert check["allowed"] is False
     assert check["reason"] == "ORDER_COOLDOWN"
+
+def test_stale_unknown_order_is_reconciled_to_exchange_confirmed_no_order(
+    config, db, instrument
+):
+    from app.domain.models import MarketSnapshot
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    class Gateway:
+        def lookup_order(self, **kwargs):
+            return []
+
+    market = MarketSnapshot(
+        instrument.symbol,
+        Decimal("60005"),
+        Decimal("60000"),
+        Decimal("60010"),
+        Decimal("1000"),
+        time.time(),
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+    intent = OrderIntent(
+        "intent_unknown",
+        "client_unknown",
+        "decision_unknown",
+        instrument,
+        Direction.LONG,
+        "buy",
+        "limit",
+        Decimal("0.001"),
+        Decimal("60000"),
+        Decimal("1"),
+        True,
+        False,
+        Decimal("30"),
+        Decimal("40"),
+        45,
+        state=OrderState.UNKNOWN_RECONCILING,
+    )
+    db.save_order_intent(intent)
+    db.update_order_state(
+        intent.client_order_id,
+        OrderState.UNKNOWN_RECONCILING.value,
+        submitted_at=time.time() - 120,
+        last_error="NETWORK",
+    )
+
+    authority = TradingAuthority(
+        config,
+        Gateway(),
+        db,
+        AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    stats = authority.reconcile_pending([instrument])
+
+    row = db.one(
+        "SELECT state,last_error FROM orders WHERE client_order_id=?",
+        (intent.client_order_id,),
+    )
+    assert stats["resolved"] == 1
+    assert row is not None
+    assert row["state"] == OrderState.REJECTED.value
+    assert row["last_error"] == "EXCHANGE_CONFIRMED_NO_ORDER"
+
+
+def test_unknown_order_with_exchange_open_state_becomes_live(config, db, instrument):
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    class Gateway:
+        def lookup_order(self, **kwargs):
+            return [{"status": "open", "txid": "O-123"}]
+
+    intent = OrderIntent(
+        "intent_open",
+        "client_open",
+        "decision_open",
+        instrument,
+        Direction.LONG,
+        "buy",
+        "limit",
+        Decimal("0.001"),
+        Decimal("60000"),
+        Decimal("1"),
+        True,
+        False,
+        Decimal("30"),
+        Decimal("40"),
+        45,
+        state=OrderState.UNKNOWN_RECONCILING,
+    )
+    db.save_order_intent(intent)
+    db.update_order_state(
+        intent.client_order_id,
+        OrderState.UNKNOWN_RECONCILING.value,
+        submitted_at=time.time() - 120,
+    )
+
+    authority = TradingAuthority(
+        config,
+        Gateway(),
+        db,
+        AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    stats = authority.reconcile_pending([instrument])
+
+    row = db.one(
+        "SELECT state,kraken_order_id FROM orders WHERE client_order_id=?",
+        (intent.client_order_id,),
+    )
+    assert stats["resolved"] == 1
+    assert row is not None
+    assert row["state"] == OrderState.LIVE.value
+    assert row["kraken_order_id"] == "O-123"
