@@ -268,8 +268,11 @@ class TradingRuntime:
             if cycle_started:
                 try:
                     self.db.finish_cycle(cycle_id,"FAILED",detail)
-                except Exception:
-                    pass
+                except Exception as finish_exc:
+                    self.audit.emit(
+                        "CYCLE_FINISH_FAILED","WARNING",
+                        cycle_id=cycle_id,error=f"{type(finish_exc).__name__}:{str(finish_exc)[:400]}",
+                    )
             self.state.set(RuntimeStage.SAFE_MODE if self.recovery.breaker.active else RuntimeStage.DEGRADED,self.recovery.breaker.reason if self.recovery.breaker.active else detail)
             self._publish_runtime_status()
             return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__,"stage":stage}
