@@ -311,8 +311,8 @@ class TradingRuntime:
                 orderbook_futures=[
                     orderbook_executor.submit(enrich,instrument) for instrument in selected
                 ]
-                for future in as_completed(orderbook_futures):
-                    instrument,snapshot=future.result()
+                for orderbook_future in as_completed(orderbook_futures):
+                    instrument,snapshot=orderbook_future.result()
                     snapshots[instrument.symbol]=snapshot
                     feature_map[instrument.symbol]=self.features.calculate(snapshot)
                     self.db.save_market(snapshot,feature_map[instrument.symbol])
