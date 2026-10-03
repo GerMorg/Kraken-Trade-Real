@@ -108,7 +108,7 @@ class Database:
             return {}
         placeholders = ",".join("?" for _ in symbols)
         rows = self.query(
-            f"""
+            f"""  # nosec B608 - only placeholder count is interpolated; symbols stay bound parameters.
             SELECT symbol, captured_at, closes_json
             FROM market_history_cache
             WHERE symbol IN ({placeholders})
