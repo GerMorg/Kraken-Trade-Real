@@ -43,6 +43,8 @@ class Signal:
 class Decision:
     decision_id:str; instrument:Instrument; signal:Signal; target_notional_eur:Decimal; leverage:Decimal
     rationale:dict[str,Any]; strategy_version:str; model_version:str; config_hash:str
+    current_position_eur:Decimal=Decimal("0"); target_position_eur:Decimal=Decimal("0")
+    execution_direction:Direction|None=None; reduce_only:bool=False
 
 @dataclass(frozen=True)
 class OrderIntent:

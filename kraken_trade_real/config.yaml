@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.8
+version: 0.1.9
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -58,6 +58,7 @@ options:
   learning_auto_promotion: true
   news_enabled: true
   news_refresh_minutes: 10
+  news_source_timeout_seconds: 10
   sensors_enabled: true
   log_file_enabled: true
   tax_enabled: true
@@ -103,6 +104,7 @@ schema:
   learning_auto_promotion: bool
   news_enabled: bool
   news_refresh_minutes: int
+  news_source_timeout_seconds: int
   sensors_enabled: bool
   log_file_enabled: bool
   tax_enabled: bool

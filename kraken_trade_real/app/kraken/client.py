@@ -38,7 +38,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.8",
+                "User-Agent": "Kraken-Trade-Real/0.1.9",
                 **(headers or {}),
             },
             method=method,
@@ -206,7 +206,7 @@ class KrakenGateway:
             body["price"] = str(price)
         if margin:
             body["leverage"] = str(leverage)
-        if reduce_only:
+        if reduce_only and margin:
             body["reduce_only"] = "true"
         if post_only:
             body["oflags"] = "post"

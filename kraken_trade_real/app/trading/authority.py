@@ -53,7 +53,8 @@ class TradingAuthority:
     def _preflight(self,intent:OrderIntent,market:Any)->dict[str,Any]:
         if not self.config.kraken_enabled:return {"allowed":False,"reason":"KRAKEN_DISABLED"}
         if not intent.instrument.tradeable:return {"allowed":False,"reason":"INSTRUMENT_NOT_TRADEABLE"}
-        if intent.direction.value=="SHORT" and not intent.instrument.short_available:return {"allowed":False,"reason":"SHORT_NOT_AVAILABLE"}
+        if intent.direction.value=="SHORT" and not intent.instrument.short_available and not intent.reduce_only:
+            return {"allowed":False,"reason":"SHORT_NOT_AVAILABLE"}
         if intent.quantity<intent.instrument.min_order_qty:return {"allowed":False,"reason":"MIN_ORDER_QTY"}
         if intent.limit_price and intent.quantity*intent.limit_price<intent.instrument.min_cost:return {"allowed":False,"reason":"MIN_ORDER_COST"}
         if intent.leverage>intent.instrument.max_leverage:return {"allowed":False,"reason":"LEVERAGE_INSTRUMENT_LIMIT"}

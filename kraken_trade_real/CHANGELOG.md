@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.9
+
+- Make News refresh cache-aware so the 10-minute refresh interval is actually respected.
+- Fetch news sources concurrently with a bounded per-cycle timeout and explicit per-source diagnostics.
+- Reconcile normal Spot balances into EUR-valued portfolio positions instead of only relying on margin OpenPositions.
+- Count EUR, USD and other supported fiat balances toward the EUR cash reserve through live FX conversion.
+- Carry currently held positions into detailed market analysis every cycle, even when they fall outside the top-20 scan ranking.
+- Add position-aware target sizing, safe flatten-before-reverse behavior, and reduce-only rebalancing.
+- Convert EUR trade notionals into the instrument quote currency before calculating order quantity, including USD pairs.
+- Publish prediction lifecycle, learning progress, portfolio-symbol and FX diagnostics to AppLogs and Home Assistant sensors.
+- Add explicit risk-decision and prediction-created AppLogs for every generated decision.
+
 ## 0.1.8
 
 - Prevent long history enrichment from making every snapshot fail the 30-second freshness gate.
