@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.21
+
+- Fix slow Home Assistant startup caused by bulk instrument persistence running executemany() in SQLite autocommit mode, which committed each Kraken instrument separately.
+- Persist the complete discovered instrument universe in one explicit SQLite transaction.
+- Distinguish Kraken discovery completion from instrument database persistence in startup diagnostics and watchdog messages.
+- Bump application/package/Home Assistant add-on and Kraken User-Agent version to 0.1.21.
+
 ## 0.1.20
 
 - Make tokenized xStock discovery explicitly opt-in so EEA-incompatible API market-order-book paths cannot delay or block core Spot startup.
