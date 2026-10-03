@@ -48,6 +48,7 @@ class TradingRuntime:
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
+        self._learning_summary: dict[str,Any] = {"status":"UNKNOWN","samples":0,"settled":0,"settled_total":0,"open_predictions":0}
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
@@ -128,6 +129,16 @@ class TradingRuntime:
                 return False
 
         try:
+            try:
+                startup_spot_tickers,_=self.gateway.public_tickers()
+                self.portfolio.set_market_context(self.instruments,startup_spot_tickers)
+                self.audit.emit("STARTUP_PORTFOLIO_MARKET_CONTEXT","INFO",tickers=len(startup_spot_tickers))
+            except Exception as exc:
+                self.audit.emit(
+                    "STARTUP_PORTFOLIO_MARKET_CONTEXT_FAILED",
+                    "WARNING",
+                    error=f"{type(exc).__name__}:{str(exc)[:500]}",
+                )
             portfolio=self.portfolio.reconcile()
             self.db.save_portfolio("startup",portfolio)
             self.state.set(RuntimeStage.ACCOUNT_RECONCILED)
@@ -166,20 +177,37 @@ class TradingRuntime:
             stage="LEARNING_FEEDBACK"
             try:
                 feedback=self.learning.process_feedback()
+                self._learning_summary=feedback
                 self.audit.emit("LEARNING_FEEDBACK","INFO",cycle_id=cycle_id,**feedback)
             except Exception as exc:
                 self.audit.emit("LEARNING_FEEDBACK_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
-
-            stage="PORTFOLIO_RECONCILE"
-            portfolio=self.portfolio.reconcile()
-            self.audit.emit("CYCLE_PORTFOLIO_RECONCILED","INFO",cycle_id=cycle_id,equity_eur=str(portfolio.equity_eur),gross_eur=str(portfolio.gross_eur),open_positions=len(portfolio.positions))
-            if self.recovery.breaker.active:
-                blockers.append(self.recovery.breaker.reason)
 
             stage="MARKET_DATA"
             market_stage_started=time.monotonic()
             ticker_captured_at=time.time()
             spot_payload,future_payload=self.gateway.public_tickers()
+            self.portfolio.set_market_context(self.instruments,spot_payload)
+            portfolio=self.portfolio.reconcile()
+            self.audit.emit(
+                "CYCLE_PORTFOLIO_RECONCILED",
+                "INFO",
+                cycle_id=cycle_id,
+                equity_eur=str(portfolio.equity_eur),
+                cash_eur=str(portfolio.cash_eur),
+                gross_eur=str(portfolio.gross_eur),
+                open_positions=len(portfolio.positions),
+                position_symbols=sorted(portfolio.positions),
+            )
+            self.audit.emit(
+                "CYCLE_PORTFOLIO_POSITIONS",
+                "INFO",
+                cycle_id=cycle_id,
+                count=len(portfolio.positions),
+                positions={symbol:str(value) for symbol,value in portfolio.positions.items()},
+            )
+            if self.recovery.breaker.active:
+                blockers.append(self.recovery.breaker.reason)
+
             ticker_snapshots={}
             for instrument in self.instruments:
                 payload=spot_payload if instrument.venue=="spot" else future_payload
@@ -198,7 +226,17 @@ class TradingRuntime:
                 ticker_snapshots,
                 require_history=False,
             )
+            position_symbols=set(portfolio.positions)
+            position_instruments=[
+                instrument for instrument in self.instruments
+                if instrument.symbol in position_symbols
+            ]
             history_candidates=prefiltered[:self.config.market_history_candidate_limit]
+            history_symbols={instrument.symbol for instrument in history_candidates}
+            for instrument in position_instruments:
+                if instrument.symbol not in history_symbols:
+                    history_candidates.append(instrument)
+                    history_symbols.add(instrument.symbol)
             self.audit.emit(
                 "CYCLE_MARKET_PREFILTER",
                 "INFO",
@@ -206,6 +244,7 @@ class TradingRuntime:
                 ticker_snapshots=len(ticker_snapshots),
                 candidates=len(prefiltered),
                 history_candidates=len(history_candidates),
+                position_candidates=len(position_instruments),
             )
 
             cached=self.db.latest_market_closes([i.symbol for i in history_candidates])
@@ -264,12 +303,38 @@ class TradingRuntime:
                 feature_map,
             )
             selected=ranked[:20]
+            selected_symbols={instrument.symbol for instrument in selected}
+            for instrument in position_instruments:
+                if instrument.symbol in snapshots and instrument.symbol not in selected_symbols:
+                    selected.append(instrument)
+                    selected_symbols.add(instrument.symbol)
+            position_evaluated=sum(
+                1 for instrument in position_instruments
+                if instrument.symbol in selected_symbols
+            )
+            position_missing=sorted(
+                symbol for symbol in position_symbols
+                if symbol not in selected_symbols
+            )
+            self.audit.emit(
+                "CYCLE_POSITION_REEVALUATION",
+                "INFO",
+                cycle_id=cycle_id,
+                portfolio_positions=len(position_symbols),
+                position_candidates=len(position_instruments),
+                evaluated=position_evaluated,
+                missing=position_missing,
+            )
 
             quote_refresh_started=time.monotonic()
             refreshed=0
             quote_missing=0
+            latest_spot_payload=spot_payload
+            latest_future_payload=future_payload
             if selected:
                 refreshed_spot,refreshed_future=self.gateway.public_tickers()
+                latest_spot_payload=refreshed_spot
+                latest_future_payload=refreshed_future
                 refreshed_at=time.time()
                 from dataclasses import replace
                 for instrument in selected:
@@ -295,10 +360,22 @@ class TradingRuntime:
                 "CYCLE_MARKET_QUOTES_REFRESHED",
                 "INFO",
                 cycle_id=cycle_id,
-                selected_before_refresh=len(ranked[:20]),
+                selected_before_refresh=len(selected),
                 refreshed=refreshed,
                 missing=quote_missing,
                 duration_seconds=round(time.monotonic()-quote_refresh_started,2),
+            )
+
+            fx_quotes={}
+            for instrument in selected:
+                if instrument.venue=="spot":
+                    rate=self.portfolio.quote_to_eur_rate(instrument.quote)
+                    fx_quotes[instrument.quote]=str(rate) if rate is not None else ""
+            self.audit.emit(
+                "CYCLE_FX_CONTEXT",
+                "INFO",
+                cycle_id=cycle_id,
+                selected_quotes=fx_quotes,
             )
 
             def enrich(instrument: Any) -> tuple[Any,Any]:
@@ -343,11 +420,32 @@ class TradingRuntime:
                 selected=len(selected),
             )
             stage="NEWS"
+            news_started=time.monotonic()
             news=self.news.collect() if self.config.news_enabled else []
-            self.audit.emit("CYCLE_NEWS","INFO",cycle_id=cycle_id,enabled=self.config.news_enabled,count=len(news))
+            news_status=getattr(self.news,"last_status",{})
+            self.audit.emit(
+                "CYCLE_NEWS",
+                "INFO",
+                cycle_id=cycle_id,
+                enabled=self.config.news_enabled,
+                count=len(news),
+                duration_seconds=round(time.monotonic()-news_started,2),
+                **news_status,
+            )
 
             stage="GEMINI"
-            gemini_context=[{"symbol":i.symbol,"features":feature_map[i.symbol]} for i in selected[:10]]
+            gemini_instruments=[
+                instrument for instrument in selected
+                if instrument.symbol in position_symbols
+            ]
+            gemini_instruments += [
+                instrument for instrument in selected
+                if instrument.symbol not in position_symbols
+            ]
+            gemini_context=[
+                {"symbol":i.symbol,"features":feature_map[i.symbol]}
+                for i in gemini_instruments[:10]
+            ]
             gemini=self.gemini.analyze([n.__dict__ for n in news[:20]],{"markets":gemini_context}) if selected else {"status":"SKIPPED","effect_bps":0}
             gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
             self.audit.emit("CYCLE_GEMINI","INFO",cycle_id=cycle_id,status=str(gemini.get("status","UNKNOWN")),expected_impact_bps=str(gemini_bps))
@@ -357,6 +455,9 @@ class TradingRuntime:
             model_parameters=self.registry.parameters(model_version)
             placed=0
             decisions_count=0
+            strategy_rejected=0
+            risk_rejected=0
+            rebalance_decisions=0
             last_decision=None
             no_action_reasons: dict[str,int]={}
             for instrument in selected:
@@ -364,7 +465,23 @@ class TradingRuntime:
                 f=feature_map[instrument.symbol]
                 regime=self.regimes.detect(f)
                 news_bps=self.news.effect_for(instrument.symbol,news)
-                long_signal,short_signal=self.signals.evaluate(instrument,snap,f,regime,news_bps,gemini_bps)
+                long_signal,short_signal=self.signals.evaluate(
+                    instrument,snap,f,regime,news_bps,gemini_bps
+                )
+                min_cost_eur=self.portfolio.min_cost_eur(instrument)
+                if min_cost_eur is None:
+                    reason="FX_RATE_UNAVAILABLE"
+                    no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                    strategy_rejected+=1
+                    self.learning.record_cycle(cycle_id,0,0,[f"{instrument.symbol}:{reason}"])
+                    self.audit.emit(
+                        "CYCLE_DECISION_REJECTED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        reason=reason,
+                    )
+                    continue
                 decision=self.decisions.choose(
                     instrument,
                     long_signal,
@@ -373,6 +490,7 @@ class TradingRuntime:
                     model_version,
                     self.config_hash,
                     model_parameters,
+                    min_cost_eur,
                 )
                 if not decision:
                     reason=self.decisions.rejection_reason(
@@ -381,29 +499,132 @@ class TradingRuntime:
                         short_signal,
                         portfolio,
                         model_parameters,
+                        min_cost_eur,
                     )
                     no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                    strategy_rejected+=1
                     self.learning.record_cycle(cycle_id,0,0,[f"{instrument.symbol}:{reason}"])
+                    self.audit.emit(
+                        "CYCLE_DECISION_REJECTED",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        reason=reason,
+                    )
                     continue
+
                 decisions_count+=1
-                confidence=decision.signal.confidence if decision.signal.direction.value=="LONG" else short_signal.confidence
-                lev=self.leverage.choose(instrument,f,confidence,(portfolio.gross_eur/portfolio.equity_eur*100 if portfolio.equity_eur else D("999")),None,self.config.risk_max_leverage)
+                if decision.current_position_eur != 0:
+                    rebalance_decisions+=1
+                confidence=decision.signal.confidence
+                gross_pct=(
+                    portfolio.gross_eur/portfolio.equity_eur*100
+                    if portfolio.equity_eur else D("999")
+                )
+                lev=self.leverage.choose(
+                    instrument,
+                    f,
+                    confidence,
+                    gross_pct,
+                    self.portfolio.margin_account,
+                    self.config.risk_max_leverage,
+                )
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
-                risk=self.risk.evaluate(decision,portfolio,snap)
+                risk=self.risk.evaluate(
+                    decision,
+                    portfolio,
+                    snap,
+                    self.portfolio.margin_account,
+                )
                 self.db.save_decision(decision)
-                self.db.save_prediction(new_id("prediction"),decision,float(decision.signal.confidence))
+                prediction_id=new_id("prediction")
+                self.db.save_prediction(
+                    prediction_id,
+                    decision,
+                    float(decision.signal.confidence),
+                )
+                self.audit.emit(
+                    "PREDICTION_CREATED",
+                    "INFO",
+                    cycle_id=cycle_id,
+                    prediction_id=prediction_id,
+                    decision_id=decision.decision_id,
+                    symbol=decision.instrument.symbol,
+                    horizon="15m",
+                    probability=str(decision.signal.confidence),
+                    model_version=decision.model_version,
+                )
                 last_decision=decision
+                self.audit.emit(
+                    "CYCLE_RISK_DECISION",
+                    "INFO",
+                    cycle_id=cycle_id,
+                    symbol=instrument.symbol,
+                    allowed=risk.allowed,
+                    reason=risk.reason,
+                    checks=risk.checks,
+                    current_position_eur=str(decision.current_position_eur),
+                    target_position_eur=str(decision.target_position_eur),
+                    trade_notional_eur=str(decision.target_notional_eur),
+                    execution_direction=(
+                        decision.execution_direction.value
+                        if decision.execution_direction else ""
+                    ),
+                    reduce_only=decision.reduce_only,
+                )
                 if not risk.allowed:
+                    risk_rejected+=1
                     blockers.append(f"{instrument.symbol}:{risk.reason}")
-                    self.db.learning_event("BLOCKER",decision.decision_id,{"reason":risk.reason,"checks":risk.checks})
+                    self.db.learning_event(
+                        "BLOCKER",
+                        decision.decision_id,
+                        {"reason":risk.reason,"checks":risk.checks},
+                    )
                     continue
-                quantity=decision.target_notional_eur/snap.price
-                method=self.authority.policy.choose(snap.spread_bps,decision.signal.net_edge_bps,f.get("volatility",D("999")))
-                price=snap.ask if decision.signal.direction.value=="LONG" else snap.bid
-                intent=self.intents.build(decision,lev,method["order_type"],quantity,price)
+
+                quantity=self.portfolio.quantity_for_eur(
+                    instrument,
+                    decision.target_notional_eur,
+                    snap.price,
+                )
+                if quantity is None or quantity <= 0:
+                    reason="FX_RATE_UNAVAILABLE"
+                    blockers.append(f"{instrument.symbol}:{reason}")
+                    self.db.learning_event(
+                        "BLOCKER",
+                        decision.decision_id,
+                        {"reason":reason},
+                    )
+                    self.audit.emit(
+                        "CYCLE_RISK_DECISION",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        allowed=False,
+                        reason=reason,
+                        checks={"quote_to_eur":False},
+                    )
+                    continue
+                method=self.authority.policy.choose(
+                    snap.spread_bps,
+                    decision.signal.net_edge_bps,
+                    f.get("volatility",D("999")),
+                )
+                execution_direction=decision.execution_direction or decision.signal.direction
+                price=snap.ask if execution_direction.value=="LONG" else snap.bid
+                intent=self.intents.build(
+                    decision,
+                    lev,
+                    method["order_type"],
+                    quantity,
+                    price,
+                    reduce_only=decision.reduce_only,
+                )
                 result=self.authority.submit(intent,snap)
                 self.learning.record_order_outcome(intent.client_order_id,result)
-                if result.get("state") in {"ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"}:
+                if result.get("state") in {
+                    "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
+                }:
                     placed+=1
 
             self.audit.emit(
@@ -411,16 +632,21 @@ class TradingRuntime:
                 "INFO",
                 cycle_id=cycle_id,
                 decisions=decisions_count,
+                strategy_rejected=strategy_rejected,
+                rebalance_decisions=rebalance_decisions,
+                risk_rejected=risk_rejected,
                 orders=placed,
                 blockers=len(blockers),
                 no_action_reasons=no_action_reasons,
             )
             stage="PORTFOLIO_FINAL"
+            self.portfolio.set_market_context(self.instruments,latest_spot_payload)
             final_portfolio=self.portfolio.reconcile()
             self.db.save_portfolio(cycle_id,final_portfolio)
-            self.learning.record_cycle(cycle_id,len(selected),placed,blockers)
+            self.learning.record_cycle(cycle_id,decisions_count,placed,blockers)
             try:
                 feedback=self.learning.process_feedback()
+                self._learning_summary=feedback
                 self.audit.emit("LEARNING_POST_CYCLE","INFO",cycle_id=cycle_id,**feedback)
             except Exception as exc:
                 self.audit.emit("LEARNING_POST_CYCLE_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
