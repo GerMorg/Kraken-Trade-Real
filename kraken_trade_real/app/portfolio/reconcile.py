@@ -171,7 +171,24 @@ class PortfolioReconciler:
         if rate is None or rate <= 0:
             return None
         quote_notional = notional_eur / rate
-        return quote_notional / price
+        if instrument.venue != "futures":
+            return quote_notional / price
+
+        contract_size = dec(
+            instrument.metadata.get("contractSize")
+            if isinstance(instrument.metadata, dict)
+            else 0
+        )
+        if contract_size <= 0:
+            return None
+        future_type = str(
+            instrument.metadata.get("type", "")
+            if isinstance(instrument.metadata, dict)
+            else ""
+        ).lower()
+        if "inverse" in future_type:
+            return quote_notional / contract_size
+        return (quote_notional / price) / contract_size
 
     def _choose_valuation_instrument(self, base: str) -> Instrument | None:
         target = canonical_asset(base)
