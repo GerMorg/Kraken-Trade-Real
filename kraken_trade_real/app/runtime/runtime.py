@@ -432,6 +432,14 @@ class TradingRuntime:
             )
 
             stage="GEMINI"
+            gemini_started=time.monotonic()
+            self.audit.emit(
+                "GEMINI_REQUEST_START",
+                "INFO",
+                cycle_id=cycle_id,
+                selected=len(selected),
+                timeout_seconds=int(getattr(self.config,"gemini_timeout_seconds",30)),
+            )
             gemini_instruments=[
                 instrument for instrument in selected
                 if instrument.symbol in position_symbols
@@ -444,9 +452,36 @@ class TradingRuntime:
                 {"symbol":i.symbol,"features":feature_map[i.symbol]}
                 for i in gemini_instruments[:10]
             ]
-            gemini=self.gemini.analyze([n.__dict__ for n in news[:20]],{"markets":gemini_context}) if selected else {"status":"SKIPPED","effect_bps":0}
+            gemini=self.gemini.analyze(
+                [n.__dict__ for n in news[:20]],
+                {"markets":gemini_context},
+            ) if selected else {"status":"SKIPPED","effect_bps":0}
+            gemini_duration=round(time.monotonic()-gemini_started,2)
             gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
-            self.audit.emit("CYCLE_GEMINI","INFO",cycle_id=cycle_id,status=str(gemini.get("status","UNKNOWN")),expected_impact_bps=str(gemini_bps))
+            gemini_status=str(gemini.get("status","UNKNOWN"))
+            if gemini_status=="TIMEOUT":
+                self.audit.emit(
+                    "GEMINI_TIMEOUT",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    duration_seconds=gemini_duration,
+                    timeout_seconds=int(getattr(self.config,"gemini_timeout_seconds",30)),
+                )
+            elif gemini_status=="UNAVAILABLE":
+                self.audit.emit(
+                    "GEMINI_UNAVAILABLE",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    duration_seconds=gemini_duration,
+                )
+            self.audit.emit(
+                "CYCLE_GEMINI",
+                "INFO",
+                cycle_id=cycle_id,
+                status=gemini_status,
+                expected_impact_bps=str(gemini_bps),
+                duration_seconds=gemini_duration,
+            )
 
             stage="DECISIONS"
             model_version=self.registry.active()

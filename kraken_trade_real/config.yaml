@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.9
+version: 0.1.10
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -30,6 +30,7 @@ options:
   gemini_api_key: ""
   gemini_enabled: true
   gemini_model: gemini-3.8-flash
+  gemini_timeout_seconds: 30
   market_scan_interval_seconds: 300
   market_min_liquidity_eur: 50.0
   market_max_spread_bps: 80.0
@@ -76,6 +77,7 @@ schema:
   gemini_api_key: password
   gemini_enabled: bool
   gemini_model: str
+  gemini_timeout_seconds: int
   market_scan_interval_seconds: int
   market_min_liquidity_eur: float
   market_max_spread_bps: float
