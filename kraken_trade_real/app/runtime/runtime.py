@@ -285,7 +285,7 @@ class TradingRuntime:
             placed=0
             decisions_count=0
             last_decision=None
-            no_action_reasons={}
+            no_action_reasons: dict[str,int]={}
             for instrument in selected:
                 snap=snapshots[instrument.symbol]
                 f=feature_map[instrument.symbol]
