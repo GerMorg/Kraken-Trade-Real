@@ -310,29 +310,69 @@ class TradingRuntime:
 
     def _update_tax_report(self, force: bool = False) -> None:
         if not self.config.tax_enabled or not self.config.tax_report_enabled:
+            self._tax_status="DISABLED"
+            self._tax_error=""
             return
-        now = time.time()
-        if not force and now - self._last_tax_sync < 3600:
+        now=time.time()
+        if not force and now-self._last_tax_sync < 3600:
             return
+        stage="tax_start"
         try:
-            added = self.tax.sync_kraken_spot_history(self.gateway)
-            current_year = datetime.now(timezone.utc).year
-            for year in {current_year, current_year - 1}:
-                if year < 2021:
+            self.audit.emit("TAX_REPORT_START","INFO",forced=force)
+            stage="tax_history_sync"
+            added=self.tax.sync_kraken_spot_history(self.gateway)
+            self.audit.emit("TAX_HISTORY_SYNCED","INFO",events_added=added)
+            current_year=datetime.now(timezone.utc).year
+            statuses=[]
+            for year in {current_year,current_year-1}:
+                if year<2021:
                     continue
-                paths = self.tax.write_report(year)
-                report = self.tax.build_report(year)
-                self.db.record_tax_report(year, report, paths)
+                stage=f"tax_report_{year}"
+                paths=self.tax.write_report(year)
+                report=self.tax.build_report(year)
+                self.db.record_tax_report(year,report,paths)
+                status=str(report.get("summary",{}).get("status","UNKNOWN"))
+                statuses.append(status)
                 self.audit.emit(
                     "TAX_REPORT_UPDATED",
                     "INFO",
                     tax_year=year,
                     events_added=added,
-                    status=report["summary"]["status"],
+                    status=status,
                 )
-            self._last_tax_sync = now
+            self._last_tax_sync=now
+            self._tax_status="INCOMPLETE_DATA" if "INCOMPLETE_DATA" in statuses else "READY_FOR_REVIEW"
+            self._tax_error=""
+            self.audit.emit("TAX_REPORT_READY","INFO",status=self._tax_status)
         except Exception as exc:
-            self.audit.emit("TAX_REPORT_FAILED", "WARNING", error=type(exc).__name__)
+            self._tax_status="ERROR"
+            self._tax_error=f"{stage}:{type(exc).__name__}:{str(exc)[:800]}"
+            self.audit.emit(
+                "TAX_REPORT_FAILED",
+                "WARNING",
+                stage=stage,
+                error=f"{type(exc).__name__}:{str(exc)[:800]}",
+                traceback=__import__("traceback").format_exc()[:3500],
+            )
+
+    def _safe_tax_summary(self) -> dict[str,Any]:
+        if not self.config.tax_enabled or not self.config.tax_report_enabled:
+            return {}
+        try:
+            report=self.tax.build_report(datetime.now(timezone.utc).year)
+            summary=report.get("summary",{})
+            return summary if isinstance(summary,dict) else {}
+        except Exception as exc:
+            self.audit.emit(
+                "TAX_REPORT_READ_FAILED",
+                "WARNING",
+                error=f"{type(exc).__name__}:{str(exc)[:500]}",
+            )
+            return {
+                "status":self._tax_status or "ERROR",
+                "indicative_crypto_27_5_tax_eur":"0",
+                "incomplete_event_count":0,
+            }
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
         tax_summary=self._safe_tax_summary()
