@@ -786,6 +786,8 @@ class TradingRuntime:
             return {"cycle_id":cycle_id,"status":"FAILED","error":type(exc).__name__,"stage":stage}
 
     def _watchdog_arm(self, cycle_id: str, stage: str) -> None:
+        if not hasattr(self, "watchdog"):
+            self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         timeout = self.STEP_TIMEOUTS.get(stage, 120.0)
         previous = self.watchdog.snapshot()
         if previous is not None:
@@ -835,7 +837,7 @@ class TradingRuntime:
                 (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
             )
         except OSError:
-            pass
+            os._exit(70)
         try:
             self.recovery.breaker.trip(
                 "RUNTIME_WATCHDOG_TIMEOUT",
