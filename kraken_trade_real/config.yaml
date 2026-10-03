@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.7
+version: 0.1.8
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -34,6 +34,8 @@ options:
   market_min_liquidity_eur: 50.0
   market_max_spread_bps: 80.0
   market_max_data_age_seconds: 30
+  market_history_candidate_limit: 200
+  market_history_cache_seconds: 900
   strategy_min_edge_bps: 25.0
   strategy_min_confidence: 0.58
   risk_max_position_pct: 15.0
@@ -77,6 +79,8 @@ schema:
   market_min_liquidity_eur: float
   market_max_spread_bps: float
   market_max_data_age_seconds: int
+  market_history_candidate_limit: int
+  market_history_cache_seconds: int
   strategy_min_edge_bps: float
   strategy_min_confidence: float
   risk_max_position_pct: float
