@@ -1,13 +1,16 @@
-
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 import time
 from typing import Any
 
-from app.domain.models import PortfolioState
+from app.domain.models import Instrument, PortfolioState
 
 D = Decimal
+
+CASH_ASSETS = {
+    "EUR", "USD", "GBP", "CHF", "CAD", "JPY", "AUD", "NZD",
+}
 
 
 def dec(v: Any) -> D:
@@ -17,11 +20,181 @@ def dec(v: Any) -> D:
         return D(0)
 
 
+def canonical_asset(value: Any) -> str:
+    asset = str(value or "").upper().strip()
+    aliases = {
+        "XBT": "BTC",
+        "XXBT": "BTC",
+        "XETH": "ETH",
+        "XXETH": "ETH",
+        "ZUSD": "USD",
+        "ZEUR": "EUR",
+        "ZGBP": "GBP",
+        "ZCHF": "CHF",
+        "ZCAD": "CAD",
+        "ZJPY": "JPY",
+        "ZAUD": "AUD",
+        "ZNZD": "NZD",
+    }
+    if asset in aliases:
+        return aliases[asset]
+    if asset.startswith("XX") and len(asset) > 2:
+        return asset[2:]
+    if asset.startswith(("X", "Z")) and len(asset) > 3:
+        return asset[1:]
+    return asset
+
+
 class PortfolioReconciler:
     def __init__(self, gateway: Any, db: Any) -> None:
         self.gateway = gateway
         self.db = db
         self.margin_account: dict[str, Any] | None = None
+        self.instruments: list[Instrument] = []
+        self.spot_tickers: dict[str, Any] = {}
+
+    def set_market_context(self, instruments: list[Instrument], spot_tickers: dict[str, Any]) -> None:
+        self.instruments = instruments
+        self.spot_tickers = spot_tickers
+
+    def _ticker_raw(self, instrument: Instrument) -> dict[str, Any] | None:
+        keys = (
+            instrument.instrument_id,
+            instrument.altname,
+            instrument.symbol,
+            instrument.symbol.replace("/", ""),
+        )
+        for key in keys:
+            value = self.spot_tickers.get(key)
+            if isinstance(value, dict):
+                return value
+        wanted = instrument.symbol.replace("/", "").upper()
+        for key, value in self.spot_tickers.items():
+            if str(key).replace("/", "").upper() == wanted and isinstance(value, dict):
+                return value
+        return None
+
+    def _spot_price(self, instrument: Instrument) -> D:
+        raw = self._ticker_raw(instrument)
+        if not raw:
+            return D(0)
+        value = raw.get("c")
+        if isinstance(value, list):
+            value = value[0] if value else None
+        return dec(value)
+
+    def _spot_instruments(self) -> list[Instrument]:
+        if self.instruments:
+            return [
+                instrument
+                for instrument in self.instruments
+                if instrument.venue == "spot" and instrument.tradeable
+            ]
+        rows = self.db.query(
+            """SELECT symbol, instrument_id, altname, base, quote, status
+               FROM instruments WHERE venue='spot'"""
+        )
+        return [
+            Instrument(
+                venue="spot",
+                product_type=__import__("app.domain.states", fromlist=["ProductType"]).ProductType.SPOT,
+                symbol=str(row["symbol"]),
+                instrument_id=str(row["instrument_id"]),
+                altname=str(row["altname"]),
+                base=str(row["base"]),
+                quote=str(row["quote"]),
+                status=str(row["status"]),
+                margin_available=False,
+                long_available=True,
+                short_available=False,
+                leverage_levels=(D("1"),),
+                min_order_qty=D(0),
+                min_cost=D(0),
+                lot_decimals=8,
+                price_decimals=8,
+                tick_size=D("0.00000001"),
+                margin_class="spot",
+            )
+            for row in rows
+        ]
+
+    def quote_to_eur_rate(self, quote: str) -> D | None:
+        source = canonical_asset(quote)
+        if source == "EUR":
+            return D(1)
+        instruments = self._spot_instruments()
+        direct: dict[str, D] = {}
+        graph: dict[str, list[tuple[str, D]]] = {}
+        bridge = {
+            "EUR", "USD", "GBP", "CHF", "CAD", "JPY", "AUD", "NZD",
+            "USDC", "USDT",
+        }
+        for instrument in instruments:
+            price = self._spot_price(instrument)
+            if price <= 0:
+                continue
+            base = canonical_asset(instrument.base)
+            quote_asset = canonical_asset(instrument.quote)
+            graph.setdefault(base, []).append((quote_asset, price))
+            graph.setdefault(quote_asset, []).append((base, D(1) / price))
+            if quote_asset == "EUR" and base == source:
+                direct[source] = price
+            elif base == "EUR" and quote_asset == source:
+                direct[source] = D(1) / price
+        if source in direct:
+            return direct[source]
+        queue: list[tuple[str, D, int]] = [(source, D(1), 0)]
+        visited = {source}
+        while queue:
+            node, rate, depth = queue.pop(0)
+            if node == "EUR":
+                return rate
+            if depth >= 3:
+                continue
+            for nxt, edge in graph.get(node, []):
+                if nxt in visited:
+                    continue
+                if nxt != "EUR" and nxt not in bridge:
+                    continue
+                visited.add(nxt)
+                queue.append((nxt, rate * edge, depth + 1))
+        return None
+
+    def min_cost_eur(self, instrument: Instrument) -> D | None:
+        rate = self.quote_to_eur_rate(instrument.quote)
+        return instrument.min_cost * rate if rate is not None else None
+
+    def quantity_for_eur(self, instrument: Instrument, notional_eur: D, price: D) -> D | None:
+        if price <= 0 or notional_eur <= 0:
+            return None
+        rate = self.quote_to_eur_rate(instrument.quote)
+        if rate is None or rate <= 0:
+            return None
+        quote_notional = notional_eur / rate
+        return quote_notional / price
+
+    def _choose_valuation_instrument(self, base: str) -> Instrument | None:
+        target = canonical_asset(base)
+        preference = {"EUR": 0, "USD": 1, "USDC": 2, "USDT": 3, "GBP": 4, "CHF": 5}
+        candidates = [
+            instrument
+            for instrument in self._spot_instruments()
+            if canonical_asset(instrument.base) == target
+        ]
+        candidates = [
+            instrument
+            for instrument in candidates
+            if self._spot_price(instrument) > 0 and self.quote_to_eur_rate(instrument.quote) is not None
+        ]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda instrument: (
+                preference.get(canonical_asset(instrument.quote), 10),
+                instrument.symbol,
+            ),
+        )
 
     def reconcile(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
@@ -31,56 +204,146 @@ class PortfolioReconciler:
             return PortfolioState()
         try:
             balances = self.gateway.spot_balance()
-            cash = sum(
-                (dec(v) for a, v in balances.items() if str(a).upper() in {"ZEUR", "EUR"}),
-                D(0),
+            for asset, raw_value in balances.items():
+                quantity = dec(raw_value)
+                if quantity == 0:
+                    continue
+                canonical = canonical_asset(asset)
+                if canonical in CASH_ASSETS:
+                    rate = self.quote_to_eur_rate(canonical)
+                    if rate is None:
+                        self.db.event(
+                            "PORTFOLIO_CASH_FX_UNAVAILABLE",
+                            "WARNING",
+                            {"asset": canonical},
+                        )
+                    else:
+                        cash += quantity * rate
+                    continue
+                instrument = self._choose_valuation_instrument(canonical)
+                if instrument is None:
+                    self.db.event(
+                        "PORTFOLIO_ASSET_UNPRICED",
+                        "WARNING",
+                        {"asset": canonical, "quantity": str(quantity)},
+                    )
+                    continue
+                price = self._spot_price(instrument)
+                rate = self.quote_to_eur_rate(instrument.quote)
+                if price <= 0 or rate is None:
+                    continue
+                value_eur = quantity * price * rate
+                positions[instrument.symbol] = value_eur
+                gross += abs(value_eur)
+                net += value_eur
+
+            tb = self.gateway.spot_private(
+                "TradeBalance",
+                {"aclass": "currency", "asset": "ZEUR"},
             )
-            tb = self.gateway.spot_private("TradeBalance", {"aclass": "currency", "asset": "ZEUR"})
             equity = dec(tb.get("eb") or tb.get("tb") or cash)
             realized = dec(tb.get("n"))
         except Exception as exc:
-            self.db.event("PORTFOLIO_SPOT_READ_FAILED", "WARNING", {"error": type(exc).__name__})
-        try:
-            for item in self.gateway.spot_open_positions().values():
-                if isinstance(item, dict):
-                    symbol = str(item.get("pair") or item.get("symbol") or "")
-                    value = dec(item.get("value") or item.get("cost"))
-                    if symbol:
-                        positions[symbol] = value
-                        gross += abs(value)
-                        net += value
-        except Exception as exc:
-            self.db.event("PORTFOLIO_SPOT_POSITIONS_FAILED", "WARNING", {"error": type(exc).__name__})
-        if getattr(self.gateway, "futures_enabled", False):
-          try:
-            accounts = self.gateway.futures_accounts().get("accounts", {})
-            acct: dict[str, Any] = (
-                next(iter(accounts.values()), {}) if isinstance(accounts, dict) else {}
+            self.db.event(
+                "PORTFOLIO_SPOT_READ_FAILED",
+                "WARNING",
+                {"error": type(exc).__name__},
             )
-            self.margin_account = {
-                "free_margin": str(acct.get("availableMargin") or acct.get("freeMargin") or 0),
-                "margin_level_pct": str(acct.get("marginLevel") or 9999),
-            }
-            equity = max(equity, dec(acct.get("portfolioValue") or acct.get("equity") or 0))
-            margin += dec(acct.get("initialMargin") or acct.get("marginUsed") or 0)
-            unreal += dec(acct.get("unrealizedPnl") or 0)
-            rows = self.gateway.futures_open_positions().get("openPositions", [])
-            for item in rows if isinstance(rows, list) else []:
-                if isinstance(item, dict):
+
+        try:
+            open_positions = self.gateway.spot_open_positions()
+            for item in open_positions.values():
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("pair") or item.get("symbol") or "")
+                if not symbol or symbol in positions:
+                    continue
+                instrument = next(
+                    (candidate for candidate in self._spot_instruments()
+                     if candidate.symbol == symbol or candidate.instrument_id == symbol),
+                    None,
+                )
+                value = dec(item.get("value") or item.get("cost"))
+                if instrument is not None:
+                    rate = self.quote_to_eur_rate(instrument.quote)
+                    if rate is not None:
+                        value *= rate
+                if value == 0:
+                    continue
+                if str(item.get("type") or "").lower() == "sell":
+                    value = -abs(value)
+                positions[symbol] = value
+                gross += abs(value)
+                net += value
+        except Exception as exc:
+            self.db.event(
+                "PORTFOLIO_SPOT_POSITIONS_FAILED",
+                "WARNING",
+                {"error": type(exc).__name__},
+            )
+
+        if getattr(self.gateway, "futures_enabled", False):
+            try:
+                accounts = self.gateway.futures_accounts().get("accounts", {})
+                acct: dict[str, Any] = (
+                    next(iter(accounts.values()), {}) if isinstance(accounts, dict) else {}
+                )
+                self.margin_account = {
+                    "free_margin": str(
+                        acct.get("availableMargin") or acct.get("freeMargin") or 0
+                    ),
+                    "margin_level_pct": str(acct.get("marginLevel") or 9999),
+                }
+                equity = max(
+                    equity,
+                    dec(acct.get("portfolioValue") or acct.get("equity") or 0),
+                )
+                margin += dec(acct.get("initialMargin") or acct.get("marginUsed") or 0)
+                unreal += dec(acct.get("unrealizedPnl") or 0)
+                rows = self.gateway.futures_open_positions().get("openPositions", [])
+                for item in rows if isinstance(rows, list) else []:
+                    if not isinstance(item, dict):
+                        continue
                     symbol = str(item.get("symbol") or "")
-                    value = dec(item.get("value") or item.get("size") or item.get("quantity"))
+                    value = dec(
+                        item.get("value") or item.get("size") or item.get("quantity")
+                    )
                     if symbol:
-                        positions[symbol] = value
-                        gross += abs(value)
-                        net += value if str(item.get("side", "buy")).lower() == "buy" else -abs(value)
-          except Exception as exc:
-            self.margin_account = None
-            self.db.event("PORTFOLIO_FUTURES_READ_FAILED", "WARNING", {"error": str(exc)[:300]})
+                        position = value
+                        if str(item.get("side", "buy")).lower() != "buy":
+                            position = -abs(value)
+                        positions[symbol] = position
+                        gross += abs(position)
+                        net += position
+            except Exception as exc:
+                self.margin_account = None
+                self.db.event(
+                    "PORTFOLIO_FUTURES_READ_FAILED",
+                    "WARNING",
+                    {"error": str(exc)[:300]},
+                )
+
         equity = equity if equity > 0 else cash + max(D(0), unreal)
-        peak_row = self.db.one("SELECT MAX(CAST(equity_eur AS REAL)) AS peak FROM portfolio_snapshots")
+        peak_row = self.db.one(
+            "SELECT MAX(CAST(equity_eur AS REAL)) AS peak FROM portfolio_snapshots"
+        )
         peak = dec(peak_row.get("peak") if peak_row else equity)
-        drawdown = (D(1) - equity / peak) * 100 if peak > 0 and equity < peak else D(0)
+        drawdown = (
+            (D(1) - equity / peak) * 100
+            if peak > 0 and equity < peak
+            else D(0)
+        )
         return PortfolioState(
-            equity, cash, positions, gross, net, margin, unreal, realized,
-            unreal + realized, drawdown, 0, time.time()
+            equity,
+            cash,
+            positions,
+            gross,
+            net,
+            margin,
+            unreal,
+            realized,
+            unreal + realized,
+            drawdown,
+            0,
+            time.time(),
         )
