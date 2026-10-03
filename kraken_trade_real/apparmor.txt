@@ -26,6 +26,7 @@ profile kraken_trade_real flags=(attach_disconnected,mediate_deleted) {
   # Application runtime
   /app/** rix,
   /data/** rw,
+  /config/** rw,
   /tmp/** rwk,
 
   # Network access, including DNS
