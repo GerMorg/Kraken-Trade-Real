@@ -236,3 +236,63 @@ def test_unknown_order_with_exchange_open_state_becomes_live(config, db, instrum
     assert row is not None
     assert row["state"] == OrderState.LIVE.value
     assert row["kraken_order_id"] == "O-123"
+
+def test_deterministic_kraken_error_does_not_create_unknown_gate(config, db, instrument):
+    from app.domain.models import MarketSnapshot
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.kraken.client import KrakenError
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    market = MarketSnapshot(
+        instrument.symbol,
+        Decimal("60005"),
+        Decimal("60000"),
+        Decimal("60010"),
+        Decimal("1000"),
+        time.time(),
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+
+    class Gateway:
+        def submit_spot_order(self, **kwargs):
+            raise KrakenError("KRAKEN_PRIVATE:EOrder:Insufficient funds")
+
+    authority = TradingAuthority(
+        config,
+        Gateway(),
+        db,
+        AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    intent = OrderIntent(
+        "intent_deterministic_error",
+        "client_deterministic_error",
+        "decision_deterministic_error",
+        instrument,
+        Direction.LONG,
+        "buy",
+        "limit",
+        Decimal("0.001"),
+        Decimal("60000"),
+        Decimal("1"),
+        True,
+        False,
+        Decimal("30"),
+        Decimal("40"),
+        45,
+        state=OrderState.INTENT_CREATED,
+    )
+
+    result = authority.submit(intent, market)
+    row = db.one(
+        "SELECT state,last_error FROM orders WHERE client_order_id=?",
+        (intent.client_order_id,),
+    )
+
+    assert result["state"] == OrderState.REJECTED.value
+    assert result["reason"] == "KRAKEN_ORDER_REJECTED"
+    assert row is not None
+    assert row["state"] == OrderState.REJECTED.value
+    assert "Insufficient funds" in row["last_error"]
