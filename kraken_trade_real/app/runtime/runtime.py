@@ -330,11 +330,9 @@ class TradingRuntime:
             refreshed=0
             quote_missing=0
             latest_spot_payload=spot_payload
-            latest_future_payload=future_payload
-            if selected:
+                        if selected:
                 refreshed_spot,refreshed_future=self.gateway.public_tickers()
                 latest_spot_payload=refreshed_spot
-                latest_future_payload=refreshed_future
                 refreshed_at=time.time()
                 from dataclasses import replace
                 for instrument in selected:
@@ -698,6 +696,12 @@ class TradingRuntime:
                 daily_pnl_eur="0",
                 drawdown_pct="0",
                 open_positions=0,
+                portfolio_symbols=[],
+                learning_samples=int(self._learning_summary.get("samples",0)),
+                learning_open_predictions=int(self._learning_summary.get("open_predictions",0)),
+                learning_settled_total=int(self._learning_summary.get("settled_total",0)),
+                learning_brier=self._learning_summary.get("brier",0),
+                learning_improvement=self._learning_summary.get("improvement",0),
                 news_status="UNKNOWN",
                 gemini_status="UNKNOWN",
                 model_version="UNKNOWN",
@@ -790,7 +794,14 @@ class TradingRuntime:
             leverage="1",equity_eur=portfolio.equity_eur,gross_eur=portfolio.gross_eur,
             net_eur=portfolio.net_eur,margin_used_eur=portfolio.margin_used_eur,
             daily_pnl_eur=portfolio.daily_pnl_eur,drawdown_pct=portfolio.drawdown_pct,
-            open_positions=len(portfolio.positions),news_status="OK" if self.config.news_enabled else "DISABLED",
+            open_positions=len(portfolio.positions),
+            portfolio_symbols=sorted(portfolio.positions),
+            learning_samples=int(self._learning_summary.get("samples",0)),
+            learning_open_predictions=int(self._learning_summary.get("open_predictions",0)),
+            learning_settled_total=int(self._learning_summary.get("settled_total",0)),
+            learning_brier=self._learning_summary.get("brier",0),
+            learning_improvement=self._learning_summary.get("improvement",0),
+            news_status="OK" if self.config.news_enabled else "DISABLED",
             gemini_status=str(gemini.get("status","UNKNOWN")),model_version=model_version,
             breaker_active=self.recovery.breaker.active,
             tax_status=str(tax_summary.get("status","DISABLED")),
