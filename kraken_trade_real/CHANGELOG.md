@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Bump the Home Assistant app version so Supervisor detects and offers the current main build.
+- Keep the Spot nonce and autonomous learning fixes from 0.1.4 as the current release baseline.
+
 ## 0.1.4
 
 - Disable Kraken Futures by default and require separate Futures credentials when explicitly enabled.
