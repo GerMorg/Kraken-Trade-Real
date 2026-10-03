@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import time
 
 import pytest
 
 from app.domain.states import RuntimeStage
 from app.kraken.client import HTTP, KrakenError, KrakenGateway
-from app.runtime.runtime import TradingRuntime
+from app.runtime.runtime import TradingRuntime, _run_with_hard_timeout
 from app.runtime.state import RuntimeState
 from app.sensors.publisher import SensorPublisher
 
@@ -50,7 +51,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.18"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.20"
     assert captured["timeout"] == 15.0
 
 
@@ -152,7 +153,7 @@ def test_futures_disabled_by_default_and_requires_separate_credentials(tmp_path)
         Config.load(str(path))
 
 
-def test_gateway_does_not_call_futures_when_disabled(monkeypatch):
+def test_gateway_keeps_tokenized_markets_out_of_startup_by_default(monkeypatch):
     gateway = KrakenGateway("spot-key", "spot-secret")
     calls = []
 
@@ -163,18 +164,41 @@ def test_gateway_does_not_call_futures_when_disabled(monkeypatch):
     monkeypatch.setattr(gateway, "spot_public", fake_public)
     spot, futures = gateway.public_instruments()
 
+    assert calls == [("AssetPairs", {}, None)]
+    assert gateway.tokenized_assets_enabled is False
+    assert spot == {}
+    assert futures == {"instruments": []}
+
+
+def test_gateway_can_enable_tokenized_markets_explicitly(monkeypatch):
+    gateway = KrakenGateway(
+        "spot-key",
+        "spot-secret",
+        tokenized_assets_enabled=True,
+    )
+    calls = []
+
+    def fake_public(method, params=None, *, timeout=None):
+        calls.append((method, params or {}, timeout))
+        return {}
+
+    monkeypatch.setattr(gateway, "spot_public", fake_public)
+    gateway.public_instruments()
+
     assert calls[0] == ("AssetPairs", {}, None)
     assert calls[1] == (
         "AssetPairs",
         {"aclass_base": "tokenized_asset"},
         5.0,
     )
-    assert spot == {}
-    assert futures == {"instruments": []}
 
 
 def test_optional_xstock_discovery_failure_does_not_hide_spot_universe(monkeypatch):
-    gateway = KrakenGateway("spot-key", "spot-secret")
+    gateway = KrakenGateway(
+        "spot-key",
+        "spot-secret",
+        tokenized_assets_enabled=True,
+    )
 
     def fake_public(method, params=None, *, timeout=None):
         if params and params.get("aclass_base") == "tokenized_asset":
@@ -255,6 +279,17 @@ def test_spot_query_orders_normalizes_txid_keyed_response(monkeypatch):
         {"status": "open", "vol": "1.0", "txid": "O-123"},
         {"status": "closed", "vol": "2.0", "txid": "O-456"},
     ]
+
+def test_hard_timeout_interrupts_blocking_startup_operation():
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="STARTUP_INSTRUMENTS"):
+        _run_with_hard_timeout(
+            lambda: time.sleep(0.2),
+            0.05,
+            "STARTUP_INSTRUMENTS",
+        )
+    assert time.monotonic() - started < 0.15
+
 
 def test_http_transport_timeout_is_ambiguous(monkeypatch):
     from app.kraken.client import KrakenAmbiguous
