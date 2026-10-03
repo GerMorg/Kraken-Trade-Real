@@ -49,7 +49,7 @@ def _run_with_hard_timeout(
         remaining = signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, previous_handler)
         if previous_timer[0] > 0:
-            restore_after = max(0.0, previous_timer[0] - (timeout - remaining))
+            restore_after = max(0.0, previous_timer[0] - (timeout - remaining[0]))
             signal.setitimer(signal.ITIMER_REAL, restore_after)
 
 
