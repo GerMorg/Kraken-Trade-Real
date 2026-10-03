@@ -178,6 +178,7 @@ class TradingRuntime:
 
             stage="MARKET_DATA"
             market_stage_started=time.monotonic()
+            ticker_captured_at=time.time()
             spot_payload,future_payload=self.gateway.public_tickers()
             ticker_snapshots={}
             for instrument in self.instruments:
@@ -187,6 +188,7 @@ class TradingRuntime:
                     payload,
                     include_history=False,
                     include_orderbook=False,
+                    captured_at=ticker_captured_at,
                 )
                 if snapshot:
                     ticker_snapshots[instrument.symbol]=snapshot
@@ -196,41 +198,102 @@ class TradingRuntime:
                 ticker_snapshots,
                 require_history=False,
             )
+            history_candidates=prefiltered[:self.config.market_history_candidate_limit]
             self.audit.emit(
                 "CYCLE_MARKET_PREFILTER",
                 "INFO",
                 cycle_id=cycle_id,
                 ticker_snapshots=len(ticker_snapshots),
                 candidates=len(prefiltered),
+                history_candidates=len(history_candidates),
             )
 
+            cached=self.db.latest_market_closes([i.symbol for i in history_candidates])
+            cache_max_age=float(self.config.market_history_cache_seconds)
             snapshots={}
             feature_map={}
-            def hydrate(instrument: Any) -> tuple[Any,Any]:
+            history_cached=0
+            history_fetched=0
+            history_insufficient=0
+
+            def hydrate(instrument: Any) -> tuple[Any,Any,str]:
                 payload=spot_payload if instrument.venue=="spot" else future_payload
-                return instrument, self.market_data.snapshot(
+                ticker=ticker_snapshots.get(instrument.symbol)
+                if not ticker:
+                    return instrument,None,"NO_TICKER"
+                cached_row=cached.get(instrument.symbol)
+                now=time.time()
+                if (
+                    cached_row
+                    and now-float(cached_row[0]) <= cache_max_age
+                    and len(cached_row[1]) >= 30
+                ):
+                    from dataclasses import replace
+                    return instrument,replace(ticker,closes=cached_row[1]),"CACHED"
+                return instrument,self.market_data.snapshot(
                     instrument,
                     payload,
                     include_history=True,
                     include_orderbook=False,
-                )
+                    captured_at=ticker_captured_at,
+                ),"FETCHED"
 
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                futures=[executor.submit(hydrate,instrument) for instrument in prefiltered]
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures=[executor.submit(hydrate,instrument) for instrument in history_candidates]
                 for future in as_completed(futures):
-                    instrument,snapshot=future.result()
-                    if snapshot and len(snapshot.closes)>=30:
-                        snapshots[instrument.symbol]=snapshot
-                        feature_map[instrument.symbol]=self.features.calculate(snapshot)
-                        self.db.save_market(snapshot,feature_map[instrument.symbol])
+                    instrument,snapshot,source=future.result()
+                    if not snapshot or len(snapshot.closes)<30:
+                        history_insufficient+=1
+                        continue
+                    if source=="CACHED":
+                        history_cached+=1
+                    else:
+                        history_fetched+=1
+                    snapshots[instrument.symbol]=snapshot
+                    feature_map[instrument.symbol]=self.features.calculate(snapshot)
+                    self.db.save_market(snapshot,feature_map[instrument.symbol])
 
-            fast=self.scanner.fast_filter(
-                self.instruments,
+            ranked=self.scanner.rank(
+                snapshots.keys(),
                 snapshots,
-                require_history=True,
+                feature_map,
             )
-            ranked=self.scanner.rank(fast,snapshots,feature_map)
             selected=ranked[:20]
+
+            quote_refresh_started=time.monotonic()
+            refreshed_spot,refreshed_future=self.gateway.public_tickers()
+            refreshed_at=time.time()
+            refreshed=0
+            quote_missing=0
+            from dataclasses import replace
+            for instrument in selected:
+                payload=refreshed_spot if instrument.venue=="spot" else refreshed_future
+                quote=self.market_data.snapshot(
+                    instrument,
+                    payload,
+                    include_history=False,
+                    include_orderbook=False,
+                    captured_at=refreshed_at,
+                )
+                if not quote:
+                    quote_missing+=1
+                    continue
+                snapshots[instrument.symbol]=replace(
+                    quote,
+                    closes=snapshots[instrument.symbol].closes,
+                )
+                refreshed+=1
+
+            selected=[instrument for instrument in selected if instrument.symbol in snapshots]
+            self.audit.emit(
+                "CYCLE_MARKET_QUOTES_REFRESHED",
+                "INFO",
+                cycle_id=cycle_id,
+                selected_before_refresh=len(ranked[:20]),
+                refreshed=refreshed,
+                missing=quote_missing,
+                duration_seconds=round(time.monotonic()-quote_refresh_started,2),
+            )
 
             def enrich(instrument: Any) -> tuple[Any,Any]:
                 return instrument, self.market_data.enrich_orderbook(
@@ -238,7 +301,7 @@ class TradingRuntime:
                     snapshots[instrument.symbol],
                 )
 
-            with ThreadPoolExecutor(max_workers=6) as executor:
+            with ThreadPoolExecutor(max_workers=8) as executor:
                 futures=[executor.submit(enrich,instrument) for instrument in selected]
                 for future in as_completed(futures):
                     instrument,snapshot=future.result()
@@ -252,7 +315,11 @@ class TradingRuntime:
                 cycle_id=cycle_id,
                 instruments=len(self.instruments),
                 ticker_snapshots=len(ticker_snapshots),
-                history_candidates=len(prefiltered),
+                candidates=len(prefiltered),
+                history_candidates=len(history_candidates),
+                history_cached=history_cached,
+                history_fetched=history_fetched,
+                history_insufficient=history_insufficient,
                 snapshots=len(snapshots),
                 selected=len(selected),
                 duration_seconds=round(time.monotonic()-market_stage_started,2),
@@ -263,12 +330,10 @@ class TradingRuntime:
                 "CYCLE_MARKET_SCAN",
                 "INFO",
                 cycle_id=cycle_id,
-                fast_candidates=len(fast),
+                fast_candidates=len(snapshots),
                 ranked=len(ranked),
                 selected=len(selected),
             )
-            self.audit.emit("CYCLE_MARKET_SCAN","INFO",cycle_id=cycle_id,fast_candidates=len(fast),ranked=len(ranked),selected=len(selected))
-
             stage="NEWS"
             news=self.news.collect() if self.config.news_enabled else []
             self.audit.emit("CYCLE_NEWS","INFO",cycle_id=cycle_id,enabled=self.config.news_enabled,count=len(news))
