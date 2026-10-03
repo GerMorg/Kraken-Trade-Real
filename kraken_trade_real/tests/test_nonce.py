@@ -20,7 +20,7 @@ class FakeHTTP:
 
 
 def test_spot_nonce_is_high_resolution_and_monotonic():
-    gateway = KrakenGateway("key", "secret")
+    gateway = KrakenGateway("key", "c2VjcmV0")
     values = [gateway._next_nonce() for _ in range(100)]
     assert values == sorted(set(values))
     assert values[-1] > int(time.time() * 1000)
@@ -43,7 +43,7 @@ def test_spot_private_requests_are_serialized_and_nonce_increases():
 
 
 def test_futures_private_does_not_add_spot_nonce():
-    gateway = KrakenGateway("key", "secret", futures_enabled=True, futures_api_key="fkey", futures_api_secret="fsecret")
+    gateway = KrakenGateway("key", "secret", futures_enabled=True, futures_api_key="fkey", futures_api_secret="c2VjcmV0")
     fake = FakeHTTP()
     gateway.http = fake
     gateway.futures_private("accounts")
