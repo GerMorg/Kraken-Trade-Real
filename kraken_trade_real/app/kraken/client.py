@@ -32,6 +32,7 @@ class HTTP:
         method: str = "GET",
         data: str | bytes | None = None,
         headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         req = Request(
             url,
@@ -44,7 +45,9 @@ class HTTP:
             method=method,
         )
         try:
-            with urlopen(req, timeout=self.timeout) as response:  # nosec B310
+            with urlopen(
+                req, timeout=self.timeout if timeout is None else max(0.5, float(timeout))
+            ) as response:  # nosec B310
                 raw = response.read()
                 try:
                     payload = json.loads(raw.decode("utf-8"))
@@ -84,6 +87,8 @@ class KrakenGateway:
         # millisecond resolution, while still guaranteeing monotonicity.
         self._nonce = time.time_ns() // 1_000
         self._spot_private_lock = threading.RLock()
+        self.last_public_instrument_warnings: list[str] = []
+        self.last_public_ticker_warnings: list[str] = []
 
     def _next_nonce(self) -> int:
         with self._spot_private_lock:
@@ -91,10 +96,16 @@ class KrakenGateway:
             self._nonce = max(self._nonce + 1, candidate)
             return self._nonce
 
-    def spot_public(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def spot_public(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         query = urlencode(params or {}, doseq=True)
         url = f"{self.SPOT}/0/public/{method}" + (f"?{query}" if query else "")
-        result = self.http.request(url)
+        result = self.http.request(url, timeout=timeout)
         errors = result.get("error")
         if errors:
             detail = ";".join(str(item) for item in errors)[:800]
@@ -150,17 +161,27 @@ class KrakenGateway:
         return result
 
     def public_instruments(self):
-        # AssetPairs defaults to spot currency pairs. xStocks are exposed as a
-        # separate tokenized asset class and must be requested explicitly.
-        spot = self.spot_public("AssetPairs", {"aclass_base": "currency"})
-        tokenized = self.spot_public(
-            "AssetPairs", {"aclass_base": "tokenized_asset"}
-        )
-        tokenized = {
-            str(key): {**value, "aclass_base": "tokenized_asset"}
-            for key, value in (tokenized or {}).items()
-            if isinstance(value, dict)
-        }
+        # Keep the core crypto Spot universe on Kraken's documented default
+        # AssetPairs request. Tokenized assets are optional and must never make
+        # the complete startup path depend on xStocks availability.
+        self.last_public_instrument_warnings = []
+        spot = self.spot_public("AssetPairs")
+        tokenized: dict[str, Any] = {}
+        try:
+            tokenized_raw = self.spot_public(
+                "AssetPairs",
+                {"aclass_base": "tokenized_asset"},
+                timeout=min(self.http.timeout, 5.0),
+            )
+            tokenized = {
+                str(key): {**value, "aclass_base": "tokenized_asset"}
+                for key, value in (tokenized_raw or {}).items()
+                if isinstance(value, dict)
+            }
+        except (KrakenError, KrakenAmbiguous) as exc:
+            warning = f"{type(exc).__name__}:{str(exc)[:300]}"
+            self.last_public_instrument_warnings.append(warning)
+
         merged_spot = dict(spot or {})
         merged_spot.update(tokenized)
         futures = (
@@ -171,10 +192,19 @@ class KrakenGateway:
         return merged_spot, futures
 
     def public_tickers(self):
+        self.last_public_ticker_warnings = []
         spot = self.spot_public("Ticker")
-        tokenized = self.spot_public(
-            "Ticker", {"asset_class": "tokenized_asset"}
-        )
+        tokenized: dict[str, Any] = {}
+        try:
+            tokenized = self.spot_public(
+                "Ticker",
+                {"asset_class": "tokenized_asset"},
+                timeout=min(self.http.timeout, 5.0),
+            )
+        except (KrakenError, KrakenAmbiguous) as exc:
+            self.last_public_ticker_warnings.append(
+                f"{type(exc).__name__}:{str(exc)[:300]}"
+            )
         merged_spot = dict(spot or {})
         merged_spot.update(tokenized or {})
         futures = (

@@ -22,6 +22,20 @@ class _Response:
         return b'{"result":{"ok":true}}'
 
 
+def test_http_request_supports_per_call_timeout(monkeypatch):
+    gateway_http = HTTP(timeout=15.0)
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr("app.kraken.client.urlopen", fake_urlopen)
+    gateway_http.request("https://example.invalid/test", timeout=4.0)
+
+    assert captured["timeout"] == 4.0
+
+
 def test_http_adds_identifying_headers(monkeypatch):
     captured = {}
 
@@ -141,18 +155,50 @@ def test_futures_disabled_by_default_and_requires_separate_credentials(tmp_path)
 def test_gateway_does_not_call_futures_when_disabled(monkeypatch):
     gateway = KrakenGateway("spot-key", "spot-secret")
     calls = []
-    monkeypatch.setattr(
-        gateway,
-        "spot_public",
-        lambda method, params=None: calls.append((method, params or {})) or {},
-    )
+
+    def fake_public(method, params=None, *, timeout=None):
+        calls.append((method, params or {}, timeout))
+        return {}
+
+    monkeypatch.setattr(gateway, "spot_public", fake_public)
     spot, futures = gateway.public_instruments()
-    assert calls == [
-        ("AssetPairs", {"aclass_base": "currency"}),
-        ("AssetPairs", {"aclass_base": "tokenized_asset"}),
-    ]
+
+    assert calls[0] == ("AssetPairs", {}, None)
+    assert calls[1] == (
+        "AssetPairs",
+        {"aclass_base": "tokenized_asset"},
+        5.0,
+    )
     assert spot == {}
     assert futures == {"instruments": []}
+
+
+def test_optional_xstock_discovery_failure_does_not_hide_spot_universe(monkeypatch):
+    gateway = KrakenGateway("spot-key", "spot-secret")
+
+    def fake_public(method, params=None, *, timeout=None):
+        if params and params.get("aclass_base") == "tokenized_asset":
+            from app.kraken.client import KrakenAmbiguous
+            raise KrakenAmbiguous("NETWORK:xstock endpoint timeout")
+        return {"XXBTZEUR": {
+            "altname": "XBTEUR",
+            "wsname": "XBT/EUR",
+            "base": "XXBT",
+            "quote": "ZEUR",
+            "status": "online",
+            "ordermin": "0.0001",
+            "leverage_buy": [],
+            "leverage_sell": [],
+        }}
+
+    monkeypatch.setattr(gateway, "spot_public", fake_public)
+    spot, futures = gateway.public_instruments()
+
+    assert "XXBTZEUR" in spot
+    assert futures == {"instruments": []}
+    assert gateway.last_public_instrument_warnings == [
+        "KrakenAmbiguous:NETWORK:xstock endpoint timeout"
+    ]
 
 
 def test_tax_report_failure_is_diagnostic_and_non_blocking():

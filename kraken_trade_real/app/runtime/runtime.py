@@ -110,6 +110,16 @@ class TradingRuntime:
         self._watchdog_arm("", "STARTUP_INSTRUMENTS")
         try:
             self.instruments=self.discovery.discover()
+            optional_warnings = list(
+                getattr(self.gateway, "last_public_instrument_warnings", [])
+            )
+            if optional_warnings:
+                self.audit.emit(
+                    "STARTUP_OPTIONAL_MARKETS_DEGRADED",
+                    "WARNING",
+                    component="xstocks",
+                    warnings=optional_warnings,
+                )
             if not self.instruments:
                 raise RuntimeError("instrument discovery returned zero instruments")
             self.db.upsert_instruments(self.instruments)
@@ -163,6 +173,16 @@ class TradingRuntime:
         try:
             try:
                 startup_spot_tickers,_=self.gateway.public_tickers()
+                ticker_warnings = list(
+                    getattr(self.gateway, "last_public_ticker_warnings", [])
+                )
+                if ticker_warnings:
+                    self.audit.emit(
+                        "STARTUP_OPTIONAL_MARKETS_DEGRADED",
+                        "WARNING",
+                        component="xstocks_ticker",
+                        warnings=ticker_warnings,
+                    )
                 self.portfolio.set_market_context(self.instruments,startup_spot_tickers)
                 self.audit.emit("STARTUP_PORTFOLIO_MARKET_CONTEXT","INFO",tickers=len(startup_spot_tickers))
             except Exception as exc:

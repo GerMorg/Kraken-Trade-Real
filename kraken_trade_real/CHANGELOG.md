@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19
+
+- Keep core startup dependent only on the documented default Spot AssetPairs request.
+- Make tokenized xStock discovery and ticker retrieval best-effort with a bounded per-call timeout.
+- Preserve the normal crypto universe when xStock API access is unavailable or times out.
+- Publish explicit diagnostics for optional xStock market-data degradation instead of restarting the application.
+
 ## 0.1.18
 
 - Align Spot margin orders with Kraken's pair-specific leverage rules by omitting `leverage=1` and validating supported buy/sell leverage values.
