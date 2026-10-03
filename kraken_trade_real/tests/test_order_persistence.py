@@ -277,7 +277,7 @@ def test_deterministic_kraken_error_does_not_create_unknown_gate(config, db, ins
     )
     intent = OrderIntent(
         "intent_deterministic_error",
-        "client_deterministic_error",
+        "11111111-2222-4333-8444-555555555555",
         "decision_deterministic_error",
         instrument,
         Direction.LONG,
@@ -305,3 +305,77 @@ def test_deterministic_kraken_error_does_not_create_unknown_gate(config, db, ins
     assert row is not None
     assert row["state"] == OrderState.REJECTED.value
     assert "Insufficient funds" in row["last_error"]
+
+
+def test_new_client_order_id_matches_kraken_supported_format():
+    import uuid
+
+    from app.domain.models import is_valid_kraken_client_order_id, new_client_order_id
+
+    client_order_id = new_client_order_id()
+
+    assert str(uuid.UUID(client_order_id)) == client_order_id
+    assert is_valid_kraken_client_order_id(client_order_id)
+    assert len(client_order_id) == 36
+
+
+def test_legacy_invalid_client_order_id_is_cleared_from_unknown_gate(
+    config, db, instrument
+):
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    class Gateway:
+        def lookup_order(self, **kwargs):
+            raise AssertionError("invalid legacy client IDs must not be queried")
+
+    intent = OrderIntent(
+        "intent_legacy_invalid",
+        "client_ceb235528b7640c6a00c0b215c1e0ddb",
+        "decision_legacy_invalid",
+        instrument,
+        Direction.LONG,
+        "buy",
+        "limit",
+        Decimal("0.001"),
+        Decimal("60000"),
+        Decimal("1"),
+        True,
+        False,
+        Decimal("30"),
+        Decimal("40"),
+        45,
+        state=OrderState.UNKNOWN_RECONCILING,
+    )
+    db.save_order_intent(intent)
+    db.update_order_state(
+        intent.client_order_id,
+        OrderState.UNKNOWN_RECONCILING.value,
+        submitted_at=time.time() - 120,
+        last_error="KRAKEN_PRIVATE:EGeneral:Invalid arguments",
+    )
+
+    authority = TradingAuthority(
+        config,
+        Gateway(),
+        db,
+        AuditLogger(False),
+        ExecutionPolicy(
+            config.execution_max_slippage_bps,
+            config.execution_max_reprices,
+        ),
+        ExecutionReconciler(),
+    )
+
+    stats = authority.reconcile_pending([instrument])
+
+    row = db.one(
+        "SELECT state,last_error FROM orders WHERE client_order_id=?",
+        (intent.client_order_id,),
+    )
+    assert stats["resolved"] == 1
+    assert stats["still_unknown"] == 0
+    assert row is not None
+    assert row["state"] == OrderState.REJECTED.value
+    assert row["last_error"] == "INVALID_CLIENT_ORDER_ID_LEGACY"
