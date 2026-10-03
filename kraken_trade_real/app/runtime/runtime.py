@@ -206,14 +206,22 @@ class TradingRuntime:
             )
             self._publish_runtime_status()
         except Exception as exc:
-            operation=getattr(self.gateway, "last_public_instrument_stage", "UNKNOWN")
-            detail=f"instrument discovery:{type(exc).__name__}:{str(exc)[:500]}:operation={operation}"
+            operation=self._startup_instrument_operation
+            kraken_operation=getattr(
+                self.gateway, "last_public_instrument_stage", "UNKNOWN"
+            )
+            detail=(
+                f"instrument startup:{type(exc).__name__}:"
+                f"{str(exc)[:500]}:operation={operation}:"
+                f"kraken_operation={kraken_operation}"
+            )
             self.recovery.issue("KRAKEN_UNAVAILABLE",detail)
             self.audit.emit(
                 "STARTUP_INSTRUMENTS_FAILED",
                 "ERROR",
                 error=detail,
                 operation=operation,
+                kraken_operation=kraken_operation,
             )
             self.state.set(RuntimeStage.DEGRADED,"INSTRUMENT_DISCOVERY_FAILED")
             self._publish_runtime_status()
