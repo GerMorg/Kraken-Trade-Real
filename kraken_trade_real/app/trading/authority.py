@@ -5,7 +5,7 @@ from decimal import Decimal
 import time
 from typing import Any, Iterable
 
-from app.domain.models import Instrument, OrderIntent
+from app.domain.models import Instrument, OrderIntent, is_valid_kraken_client_order_id
 from app.domain.states import OrderState
 from app.kraken.client import KrakenAmbiguous, KrakenError
 
@@ -90,6 +90,25 @@ class TradingAuthority:
                 stats["still_unknown"] += 1
                 continue
 
+            if not is_valid_kraken_client_order_id(client_order_id):
+                self.db.update_order_state(
+                    client_order_id,
+                    OrderState.REJECTED.value,
+                    last_error="INVALID_CLIENT_ORDER_ID_LEGACY",
+                )
+                stats["resolved"] += 1
+                self.audit.emit(
+                    "ORDER_RECONCILED",
+                    "WARNING",
+                    client_order_id=client_order_id,
+                    symbol=symbol,
+                    previous_state=state,
+                    new_state=OrderState.REJECTED.value,
+                    outcome="INVALID_CLIENT_ORDER_ID_LEGACY",
+                    age_seconds=round(age_seconds, 2),
+                )
+                continue
+
             stats["checked"] += 1
             try:
                 found = self.gateway.lookup_order(
@@ -162,6 +181,24 @@ class TradingAuthority:
 
     def submit(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         self.db.save_order_intent(intent)
+        if not is_valid_kraken_client_order_id(intent.client_order_id):
+            self.db.update_order_state(
+                intent.client_order_id,
+                OrderState.REJECTED.value,
+                last_error="INVALID_CLIENT_ORDER_ID",
+            )
+            self.audit.emit(
+                "ORDER_REJECTED_EXCHANGE",
+                "WARNING",
+                intent_id=intent.intent_id,
+                error_type="InvalidClientOrderId",
+                error="INVALID_CLIENT_ORDER_ID",
+            )
+            return {
+                "state": OrderState.REJECTED.value,
+                "reason": "INVALID_CLIENT_ORDER_ID",
+                "reconciled": True,
+            }
         checks = self._preflight(intent, market)
         if not checks["allowed"]:
             self.db.update_order_state(
@@ -436,6 +473,22 @@ class TradingAuthority:
                 or row.get("created_at")
                 or time.time()
             )
+            if not is_valid_kraken_client_order_id(client_order_id):
+                self.db.update_order_state(
+                    client_order_id,
+                    OrderState.REJECTED.value,
+                    last_error="INVALID_CLIENT_ORDER_ID_LEGACY",
+                )
+                self.audit.emit(
+                    "PREFLIGHT_ORDER_CLEARED",
+                    "WARNING",
+                    symbol=instrument.symbol,
+                    client_order_id=client_order_id,
+                    previous_state=state,
+                    outcome="INVALID_CLIENT_ORDER_ID_LEGACY",
+                    age_seconds=round(age_seconds, 2),
+                )
+                continue
             try:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,

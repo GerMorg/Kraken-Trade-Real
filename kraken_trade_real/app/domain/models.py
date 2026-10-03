@@ -74,4 +74,21 @@ class NewsItem:
         return hashlib.sha256(json.dumps([source,title.strip().lower(),url.strip()],sort_keys=True).encode()).hexdigest()
 
 def new_id(prefix:str)->str:return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def new_client_order_id() -> str:
+    """Return a Kraken-compatible client order identifier."""
+    return str(uuid.uuid4())
+
+
+def is_valid_kraken_client_order_id(value: str) -> bool:
+    """Validate the documented Kraken Spot client-order-id formats."""
+    value = str(value)
+    if not value:
+        return False
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, AttributeError):
+        return len(value) <= 18 and all(32 <= ord(char) <= 126 for char in value)
 def digest_config(data:Any)->str:return hashlib.sha256(json.dumps(data,sort_keys=True,default=str,separators=(",",":")).encode()).hexdigest()
