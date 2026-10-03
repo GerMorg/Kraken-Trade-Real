@@ -104,19 +104,17 @@ class Database:
         with self.connect() as con: con.executemany(sql,rows)
 
     def latest_market_closes(self, symbols: list[str]) -> dict[str, tuple[float, tuple[Decimal,...]]]:
-        if not symbols:
+        wanted=set(symbols)
+        if not wanted:
             return {}
-        placeholders = ",".join("?" for _ in symbols)
-        rows = self.query(
-            f"""  # nosec B608 - only placeholder count is interpolated; symbols stay bound parameters.
-            SELECT symbol, captured_at, closes_json
-            FROM market_history_cache
-            WHERE symbol IN ({placeholders})
-            """,
-            tuple(symbols),
+        rows=self.query(
+            "SELECT symbol, captured_at, closes_json FROM market_history_cache"
         )
         result: dict[str, tuple[float, tuple[Decimal,...]]] = {}
         for row in rows:
+            symbol=str(row.get("symbol",""))
+            if symbol not in wanted:
+                continue
             try:
                 values=json.loads(row.get("closes_json") or "[]")
             except (TypeError,ValueError):
@@ -124,7 +122,7 @@ class Database:
             if not isinstance(values,list):
                 values=[]
             closes=tuple(Decimal(str(value)) for value in values if value not in (None,""))
-            result[str(row.get("symbol",""))]=(float(row.get("captured_at",0)), closes)
+            result[symbol]=(float(row.get("captured_at",0)), closes)
         return result
 
     def save_market_history_cache(
