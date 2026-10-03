@@ -259,7 +259,7 @@ class TradingRuntime:
                     self.db.save_market(snapshot,feature_map[instrument.symbol])
 
             ranked=self.scanner.rank(
-                snapshots.keys(),
+                [instrument for instrument in history_candidates if instrument.symbol in snapshots],
                 snapshots,
                 feature_map,
             )
