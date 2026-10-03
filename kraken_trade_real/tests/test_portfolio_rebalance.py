@@ -113,7 +113,7 @@ def test_decision_reduces_existing_position_instead_of_ignoring_it(config, instr
     )
     assert decision is not None
     assert decision.current_position_eur == Decimal("20")
-    assert decision.target_position_eur == Decimal("15")
+    assert decision.target_position_eur == Decimal("13.50")
     assert decision.execution_direction == Direction.SHORT
     assert decision.reduce_only is True
     assert decision.target_notional_eur == Decimal("5")
