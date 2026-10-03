@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.17
+
+- Generate Kraken Spot-compatible client order identifiers as UUIDs instead of the legacy `client_<32hex>` format, which exceeds Kraken's 18-character free-text limit.
+- Reject invalid client order identifiers before any exchange submission so malformed identifiers cannot create new reconciliation gates.
+- Automatically clear legacy `UNKNOWN_RECONCILING` orders carrying invalid client identifiers as deterministic rejected orders instead of repeatedly calling `QueryOrders` with invalid arguments.
+- Add regression coverage for client-order-id validation, generation and legacy duplicate-gate cleanup.
+- Bump application/package/User-Agent version to 0.1.17.
+
+
 ## 0.1.16
 
 - Distinguish deterministic Kraken API/order rejections from genuinely ambiguous transport failures; deterministic rejections are stored as REJECTED and cannot poison the duplicate-open-order gate.
