@@ -30,8 +30,11 @@ class DecisionEngine:
             return None
         candidates.sort(key=lambda s:(s.net_edge_bps,s.confidence),reverse=True)
         signal=candidates[0]
+        calibrated_confidence = max(
+            D("0.0"), min(D("1.0"), signal.confidence * confidence_scale)
+        )
         target=portfolio.equity_eur*D(str(self.config.risk_max_position_pct))/100
-        target*=max(D("0.25"),min(D("1"),signal.confidence))
+        target*=max(D("0.25"),min(D("1"),calibrated_confidence))
         min_cost=instrument.min_cost
         if target<min_cost:
             return None
