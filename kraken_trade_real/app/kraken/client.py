@@ -75,7 +75,7 @@ class KrakenGateway:
         # fresh process is safely above timestamps previously generated in
         # millisecond resolution, while still guaranteeing monotonicity.
         self._nonce = time.time_ns() // 1_000
-        self._spot_private_lock = threading.Lock()
+        self._spot_private_lock = threading.RLock()
 
     def _next_nonce(self) -> int:
         with self._spot_private_lock:
