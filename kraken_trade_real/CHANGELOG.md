@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+
+- Prevent a tax-report KeyError from breaking startup or later runtime processing.
+- Isolate learning-feedback failures so the autonomous trading cycle continues and logs the exact failure.
+- Add explicit cycle-stage AppLogs and top-level runtime protection against silent process termination.
+- Make tax-report rendering and persisted tax rows tolerant of missing optional fields.
+
 ## 0.1.5
 
 - Bump the Home Assistant app version so Supervisor detects and offers the current main build.
