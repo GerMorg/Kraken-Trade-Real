@@ -13,7 +13,8 @@ class FakeHTTP:
 
     def request(self, url, *, method="GET", data=None, headers=None):
         with self.lock:
-            self.calls.append(int(dict(part.split("=", 1) for part in data.split("&"))["nonce"]))
+            if data and "nonce=" in data:
+                self.calls.append(int(dict(part.split("=", 1) for part in data.split("&"))["nonce"]))
         time.sleep(0.001)
         return {"result": {"ok": True}}
 
