@@ -64,12 +64,12 @@ class KrakenGateway:
     SPOT = "https://api.kraken.com"
     FUTURES = "https://futures.kraken.com/derivatives"
 
-    def __init__(self, api_key: str, api_secret: str, timeout: float = 15.0, futures_enabled: bool = False, futures_api_key: str = "", futures_api_secret: str = "") -> None:
+    def __init__(self, api_key: str, api_secret: str, timeout: float = 15.0, futures_enabled: bool = False, futures_api_key: str | None = None, futures_api_secret: str | None = None) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
         self.futures_enabled = futures_enabled
-        self.futures_api_key = futures_api_key
-        self.futures_api_secret = futures_api_secret
+        self.futures_api_key = futures_api_key or ""
+        self.futures_api_secret = futures_api_secret or ""
         self.http = HTTP(timeout)
         self._nonce = int(time.time() * 1000)
         self._lock = threading.Lock()
