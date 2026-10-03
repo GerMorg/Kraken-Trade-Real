@@ -43,6 +43,7 @@ def build_runtime() -> TradingRuntime:
         config.gemini_enabled,
         db,
         config.gemini_timeout_seconds,
+        config.gemini_fallback_models,
     )
     signals = SignalEngine()
     decisions = DecisionEngine(config)

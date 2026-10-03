@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11
+
+- Add automatic Gemini model fallback for quota exhaustion, rate limits, timeouts and model availability failures.
+- Try the configured primary Gemini model followed by stable Flash/Flash-Lite fallbacks without changing trading decisions or authority.
+- Add detailed Gemini model-attempt, quota, fallback and exhaustion diagnostics.
+- When every Gemini model fails, return zero AI market impact and continue the normal trading, risk and learning cycle instead of stopping.
+
 ## 0.1.10
 
 - Bound Gemini model requests with a configurable 30-second client/request timeout.
