@@ -19,6 +19,7 @@ class Config:
     gemini_api_key: str
     gemini_enabled: bool
     gemini_model: str
+    gemini_fallback_models: str
     gemini_timeout_seconds: int
     market_scan_interval_seconds: int
     market_min_liquidity_eur: float
@@ -102,6 +103,7 @@ class Config:
             gemini_api_key=str(raw.get("gemini_api_key", os.getenv("GEMINI_API_KEY", ""))).strip(),
             gemini_enabled=b("gemini_enabled", True),
             gemini_model=str(raw.get("gemini_model", "gemini-3.8-flash")).strip(),
+            gemini_fallback_models=str(raw.get("gemini_fallback_models", "gemini-3.5-flash-lite,gemini-3.6-flash,gemini-2.5-flash-lite")).strip(),
             gemini_timeout_seconds=i("gemini_timeout_seconds", 30, 5),
             market_scan_interval_seconds=i("market_scan_interval_seconds", 300, 30),
             market_min_liquidity_eur=f("market_min_liquidity_eur", 50.0, 0.0),
