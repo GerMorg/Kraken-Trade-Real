@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.14
+
+- Count daily order limits and cooldowns from real submission attempts only, not from locally created or rejected order intents.
+- Record submitted_at only when execution enters the exchange-submission state and treat ambiguous submission state as an open order.
+- Add regression coverage for false daily-limit and cooldown blocks.
+- Deduplicate Spot EUR/USD quote pairs for the same base asset during detailed market selection while always preserving held positions.
+- Add a total deadline to Home Assistant sensor publication.
+- Add a runtime watchdog with stage-specific deadlines and heartbeat diagnostics; a wedged process fails closed so Home Assistant can restart it.
+- Recover stale RUNNING cycles after a process restart and expose explicit watchdog/step diagnostics.
+- Bump application/package/User-Agent version to 0.1.14.
+
 ## 0.1.13
 
 - Add a hard POSIX watchdog around Gemini client initialization and model requests so a stuck SDK/transport cannot block the trading cycle indefinitely.

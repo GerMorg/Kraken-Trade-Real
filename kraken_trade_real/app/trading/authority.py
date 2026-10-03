@@ -1,6 +1,7 @@
 from __future__ import annotations
 from decimal import Decimal
 from datetime import datetime,timezone
+import time
 from typing import Any
 from app.domain.models import OrderIntent
 from app.domain.states import OrderState
@@ -14,13 +15,13 @@ class TradingAuthority:
         checks=self._preflight(intent,market)
         if not checks["allowed"]:
             self.db.update_order_state(intent.client_order_id,OrderState.REJECTED.value,last_error=checks["reason"])
-            self.audit.emit("ORDER_BLOCKED","WARNING",intent_id=intent.intent_id,reason=checks["reason"])
+            self.audit.emit("ORDER_BLOCKED","WARNING",intent_id=intent.intent_id,reason=checks["reason"],gate="PREFLIGHT",detail=checks.get("detail",{}))
             return {"state":OrderState.REJECTED.value,"reason":checks["reason"]}
         if not (self.config.live_enabled and not self.config.kill_switch):
             self.db.update_order_state(intent.client_order_id,OrderState.REJECTED.value,last_error="LIVE_TRADING_DISABLED")
             self.audit.emit("ORDER_BLOCKED","INFO",intent_id=intent.intent_id,reason="LIVE_TRADING_DISABLED")
             return {"state":OrderState.REJECTED.value,"reason":"LIVE_TRADING_DISABLED"}
-        self.db.update_order_state(intent.client_order_id,OrderState.SUBMITTING.value)
+        self.db.update_order_state(intent.client_order_id,OrderState.SUBMITTING.value,submitted_at=time.time())
         try:
             if intent.instrument.product_type.value=="DERIVATIVE":
                 response=self.gateway.submit_futures_order(
@@ -58,13 +59,14 @@ class TradingAuthority:
         if intent.quantity<intent.instrument.min_order_qty:return {"allowed":False,"reason":"MIN_ORDER_QTY"}
         if intent.limit_price and intent.quantity*intent.limit_price<intent.instrument.min_cost:return {"allowed":False,"reason":"MIN_ORDER_COST"}
         if intent.leverage>intent.instrument.max_leverage:return {"allowed":False,"reason":"LEVERAGE_INSTRUMENT_LIMIT"}
-        open_orders=self.db.query("SELECT client_order_id FROM orders WHERE symbol=? AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED')",(intent.instrument.symbol,))
-        if open_orders:return {"allowed":False,"reason":"DUPLICATE_OPEN_ORDER"}
-        count=self.db.one("SELECT COUNT(*) AS n FROM orders WHERE created_at>=strftime('%s','now','start of day')")
-        if count and int(count["n"])>=self.config.execution_max_orders_per_day:return {"allowed":False,"reason":"DAILY_ORDER_LIMIT"}
-        recent=self.db.query("""SELECT created_at FROM orders WHERE symbol=? AND direction=? ORDER BY created_at DESC LIMIT 1""",
-                             (intent.instrument.symbol,intent.direction.value))
-        if recent and time_since(recent[0]["created_at"])<60:return {"allowed":False,"reason":"ORDER_COOLDOWN"}
+        open_orders=self.db.query("SELECT client_order_id,state FROM orders WHERE symbol=? AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",(intent.instrument.symbol,))
+        if open_orders:return {"allowed":False,"reason":"DUPLICATE_OPEN_ORDER","detail":{"open_states":[str(row.get("state","")) for row in open_orders]}}
+        count=self.db.one("SELECT COUNT(*) AS n FROM orders WHERE submitted_at IS NOT NULL AND submitted_at>=strftime('%s','now','start of day')")
+        if count and int(count["n"])>=self.config.execution_max_orders_per_day:return {"allowed":False,"reason":"DAILY_ORDER_LIMIT","detail":{"submitted_today":int(count["n"]),"limit":self.config.execution_max_orders_per_day}}
+        recent=self.db.query("""SELECT submitted_at,state FROM orders WHERE symbol=? AND direction=? AND submitted_at IS NOT NULL ORDER BY submitted_at DESC LIMIT 1""",(intent.instrument.symbol,intent.direction.value))
+        if recent:
+            age=time_since(recent[0]["submitted_at"])
+            if age<60:return {"allowed":False,"reason":"ORDER_COOLDOWN","detail":{"age_seconds":round(age,3),"state":str(recent[0].get("state",""))}}
         chosen=self.policy.choose(market.spread_bps,intent.expected_edge_bps,self._volatility(market))
         estimated=self._volatility(market)*D(2)
         ok,reason=self.policy.validate(chosen,intent.expected_edge_bps,estimated)

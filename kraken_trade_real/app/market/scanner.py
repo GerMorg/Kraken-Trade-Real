@@ -48,3 +48,33 @@ class MarketScanner:
             spread=max(D("0.1"), f.get("spread_bps", D("9999")))
             return trend*D("5")+momentum*D("2")+liquidity-spread/D("100")
         return sorted(candidates, key=score, reverse=True)
+
+
+    @staticmethod
+    def _canonical_asset(value: str) -> str:
+        asset = str(value or "").upper().strip()
+        aliases = {"XBT":"BTC","XXBT":"BTC","XETH":"ETH","XXETH":"ETH"}
+        if asset in aliases: return aliases[asset]
+        if asset.startswith("XX") and len(asset)>2: return asset[2:]
+        if asset.startswith(("X","Z")) and len(asset)>3: return asset[1:]
+        return asset
+
+    def select_for_cycle(self, ranked: Iterable[Instrument], *, limit: int = 20, preserve_symbols: set[str] | frozenset[str] = frozenset()) -> tuple[list[Instrument], int]:
+        limit=max(0,int(limit)); selected=[]; selected_symbols=set(); seen_keys=set(); duplicates_removed=0
+        def key_for(instrument: Instrument):
+            if instrument.venue=="spot" and instrument.quote.upper() in {"EUR","USD","ZEUR","ZUSD"}:
+                return ("SPOT_BASE",self._canonical_asset(instrument.base))
+            return ("INSTRUMENT",instrument.symbol)
+        ranked_list=list(ranked)
+        for instrument in ranked_list:
+            if instrument.symbol not in preserve_symbols or instrument.symbol in selected_symbols: continue
+            selected.append(instrument); selected_symbols.add(instrument.symbol); seen_keys.add(key_for(instrument))
+        slots=0
+        for instrument in ranked_list:
+            if instrument.symbol in selected_symbols: continue
+            if slots>=limit: break
+            key=key_for(instrument)
+            if key in seen_keys:
+                duplicates_removed+=1; continue
+            selected.append(instrument); selected_symbols.add(instrument.symbol); seen_keys.add(key); slots+=1
+        return selected,duplicates_removed

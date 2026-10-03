@@ -38,7 +38,6 @@ class Database:
         schema=Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self.connect() as con:
             con.executescript(schema)
-            con.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES('schema_version','2')")
             # Idempotent upgrades from the first development snapshot.
             cols={row[1] for row in con.execute("PRAGMA table_info(instruments)")}
             for name,definition in {
@@ -50,6 +49,8 @@ class Database:
                 if name not in cols: con.execute(f"ALTER TABLE instruments ADD COLUMN {name} {definition}")
             ocols={row[1] for row in con.execute("PRAGMA table_info(orders)")}
             if "post_only" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN post_only INTEGER NOT NULL DEFAULT 0")
+            if "submitted_at" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN submitted_at REAL")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','3')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -181,6 +182,9 @@ class Database:
     def update_order_state(self,client_order_id:str,state:str,**extra:Any)->None:
         order_id=extra.get("kraken_order_id")
         last_error=extra.get("last_error")
+        submitted_at=extra.get("submitted_at")
+        if submitted_at is not None:
+            self.execute("UPDATE orders SET state=?, submitted_at=? WHERE client_order_id=?",(state,submitted_at,client_order_id))
         if order_id is not None and last_error is not None:
             self.execute("UPDATE orders SET state=?, kraken_order_id=?, last_error=? WHERE client_order_id=?",
                          (state,order_id,last_error,client_order_id))

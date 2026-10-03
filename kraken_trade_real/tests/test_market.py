@@ -75,3 +75,25 @@ def test_market_history_cache_round_trip(db):
     cached = db.latest_market_closes(["XBT/EUR"])
     assert cached["XBT/EUR"][0] == captured_at
     assert cached["XBT/EUR"][1] == closes
+
+
+def test_market_selection_deduplicates_eur_usd_quote_pairs(instrument):
+    from dataclasses import replace
+    from app.market.scanner import MarketScanner
+    eur=instrument
+    usd=replace(instrument,symbol="XBT/USD",instrument_id="XXBTZUSD",quote="USD")
+    eth=replace(instrument,symbol="ETH/EUR",instrument_id="XETHZEUR",base="XETH",quote="EUR")
+    selected,removed=MarketScanner(1,100,60).select_for_cycle([usd,eur,eth],limit=3)
+    assert {item.symbol for item in selected} == {"XBT/USD","ETH/EUR"}
+    assert removed == 1
+
+
+def test_market_selection_always_preserves_held_position(instrument):
+    from dataclasses import replace
+    from app.market.scanner import MarketScanner
+    usd=replace(instrument,symbol="XBT/USD",instrument_id="XXBTZUSD",quote="USD")
+    selected,removed=MarketScanner(1,100,60).select_for_cycle(
+        [usd,instrument],limit=1,preserve_symbols={"XBT/EUR"}
+    )
+    assert [item.symbol for item in selected] == ["XBT/EUR"]
+    assert removed == 1

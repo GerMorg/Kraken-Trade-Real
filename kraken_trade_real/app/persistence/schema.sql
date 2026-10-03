@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS orders(
   decision_id TEXT NOT NULL, symbol TEXT NOT NULL, direction TEXT NOT NULL, side TEXT NOT NULL,
   order_type TEXT NOT NULL, quantity TEXT NOT NULL, limit_price TEXT, leverage TEXT NOT NULL,
   margin INTEGER NOT NULL, reduce_only INTEGER NOT NULL, post_only INTEGER NOT NULL,
-  state TEXT NOT NULL, kraken_order_id TEXT, expected_edge_bps TEXT NOT NULL,
+  state TEXT NOT NULL, submitted_at REAL, kraken_order_id TEXT, expected_edge_bps TEXT NOT NULL,
   max_slippage_bps TEXT NOT NULL, expires_seconds INTEGER NOT NULL, last_error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_symbol_created ON orders(symbol,created_at);

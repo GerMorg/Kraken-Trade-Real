@@ -161,7 +161,7 @@ class NewsEngine:
         with urlopen(
             Request(
                 url,
-                headers={"User-Agent": "Kraken-Trade-Real/0.1.9"},
+                headers={"User-Agent": "Kraken-Trade-Real/0.1.14"},
             ),
             timeout=self.source_timeout_seconds,
         ) as resp:  # nosec B310
