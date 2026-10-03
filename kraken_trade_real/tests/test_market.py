@@ -65,3 +65,13 @@ def test_market_scanner_supports_ticker_prefilter_without_history(instrument):
     assert scanner.fast_filter(
         [instrument], {instrument.symbol: snap}, require_history=True
     ) == []
+
+
+def test_market_history_cache_round_trip(db):
+    from time import time
+    closes = (Decimal("1"), Decimal("2"), Decimal("3"))
+    captured_at = time()
+    db.save_market_history_cache("XBT/EUR", captured_at, closes)
+    cached = db.latest_market_closes(["XBT/EUR"])
+    assert cached["XBT/EUR"][0] == captured_at
+    assert cached["XBT/EUR"][1] == closes

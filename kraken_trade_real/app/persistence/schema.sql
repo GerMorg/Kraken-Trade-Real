@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS market_snapshots(
 );
 CREATE INDEX IF NOT EXISTS idx_market_symbol_time ON market_snapshots(symbol,captured_at);
 
+CREATE TABLE IF NOT EXISTS market_history_cache(
+  symbol TEXT PRIMARY KEY, captured_at REAL NOT NULL, closes_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS news_items(
   news_id TEXT PRIMARY KEY, published_at REAL NOT NULL, source TEXT NOT NULL, url TEXT NOT NULL,
   title TEXT NOT NULL, summary TEXT NOT NULL, topics_json TEXT NOT NULL, affected_assets_json TEXT NOT NULL,

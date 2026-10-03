@@ -6,6 +6,8 @@ def test_real_trading_defaults_to_disabled():
     assert cfg.live_enabled is False
     assert cfg.kill_switch is True
     assert cfg.risk_max_leverage >= 1
+    assert cfg.market_history_candidate_limit >= 20
+    assert cfg.market_history_cache_seconds >= 60
 
 
 def test_config_rejects_inconsistent_risk(tmp_path):

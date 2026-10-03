@@ -103,6 +103,39 @@ class Database:
     def executemany(self,sql:str,rows:list[tuple[Any,...]])->None:
         with self.connect() as con: con.executemany(sql,rows)
 
+    def latest_market_closes(self, symbols: list[str]) -> dict[str, tuple[float, tuple[Decimal,...]]]:
+        wanted=set(symbols)
+        if not wanted:
+            return {}
+        rows=self.query(
+            "SELECT symbol, captured_at, closes_json FROM market_history_cache"
+        )
+        result: dict[str, tuple[float, tuple[Decimal,...]]] = {}
+        for row in rows:
+            symbol=str(row.get("symbol",""))
+            if symbol not in wanted:
+                continue
+            try:
+                values=json.loads(row.get("closes_json") or "[]")
+            except (TypeError,ValueError):
+                values=[]
+            if not isinstance(values,list):
+                values=[]
+            closes=tuple(Decimal(str(value)) for value in values if value not in (None,""))
+            result[symbol]=(float(row.get("captured_at",0)), closes)
+        return result
+
+    def save_market_history_cache(
+        self, symbol: str, captured_at: float, closes: tuple[Decimal,...]
+    ) -> None:
+        self.execute(
+            """INSERT INTO market_history_cache(symbol,captured_at,closes_json)
+               VALUES(?,?,?)
+               ON CONFLICT(symbol) DO UPDATE SET
+               captured_at=excluded.captured_at,closes_json=excluded.closes_json""",
+            (symbol, captured_at, json.dumps([str(x) for x in closes])),
+        )
+
     def save_market(self,snapshot:MarketSnapshot,features:dict[str,Any])->None:
         self.execute("""INSERT INTO market_snapshots(captured_at,symbol,price,bid,ask,volume_24h,age_seconds,
           spread_bps,closes_json,depths_bid_json,depths_ask_json,funding_rate,open_interest,basis_bps,
