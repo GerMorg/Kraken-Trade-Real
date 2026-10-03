@@ -294,7 +294,6 @@ class MarketScanner:
             selected.append(instrument)
             selected_symbols.add(instrument.symbol)
             seen_keys.add(key)
-            slots += 1
         return selected, duplicates_removed
 
     @classmethod
