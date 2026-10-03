@@ -132,6 +132,16 @@ class GeminiAnalyzer:
                 failure={"model":model,"reason":category,"error":type(exc).__name__}
                 failures.append(failure)
                 self.db.event("GEMINI_MODEL_FAILED","WARNING",failure)
+                if category=="TIMEOUT":
+                    self.db.event(
+                        "GEMINI_TIMEOUT",
+                        "WARNING",
+                        {
+                            "model":model,
+                            "timeout_seconds":self.timeout_seconds,
+                            "attempt":len(attempted),
+                        },
+                    )
                 if category=="QUOTA_EXHAUSTED":
                     self.db.event(
                         "GEMINI_QUOTA_EXHAUSTED",
