@@ -36,7 +36,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.4"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.6"
     assert captured["timeout"] == 15.0
 
 
@@ -146,3 +146,36 @@ def test_gateway_does_not_call_futures_when_disabled(monkeypatch):
     assert calls == ["AssetPairs"]
     assert spot == {}
     assert futures == {"instruments": []}
+
+
+def test_tax_report_failure_is_diagnostic_and_non_blocking():
+    events = []
+
+    class FakeConfig:
+        tax_enabled = True
+        tax_report_enabled = True
+
+    class FakeAudit:
+        def emit(self, code, level="INFO", **payload):
+            events.append((code, level, payload))
+
+    class FakeTax:
+        def sync_kraken_spot_history(self, gateway):
+            raise KeyError("missing-tax-field")
+
+    runtime = TradingRuntime.__new__(TradingRuntime)
+    runtime.config = FakeConfig()
+    runtime.audit = FakeAudit()
+    runtime.tax = FakeTax()
+    runtime.gateway = object()
+    runtime._last_tax_sync = 0.0
+    runtime._tax_status = "UNKNOWN"
+    runtime._tax_error = ""
+
+    runtime._update_tax_report(force=True)
+
+    assert runtime._tax_status == "ERROR"
+    assert "KeyError" in runtime._tax_error
+    assert events[-1][0] == "TAX_REPORT_FAILED"
+    assert events[-1][2]["stage"] == "tax_history_sync"
+    assert "KeyError" in events[-1][2]["traceback"]
