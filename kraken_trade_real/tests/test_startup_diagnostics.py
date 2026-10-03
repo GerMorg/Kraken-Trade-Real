@@ -22,6 +22,20 @@ class _Response:
         return b'{"result":{"ok":true}}'
 
 
+def test_http_request_supports_per_call_timeout(monkeypatch):
+    gateway_http = HTTP(timeout=15.0)
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr("app.kraken.client.urlopen", fake_urlopen)
+    gateway_http.request("https://example.invalid/test", timeout=4.0)
+
+    assert captured["timeout"] == 4.0
+
+
 def test_http_adds_identifying_headers(monkeypatch):
     captured = {}
 
@@ -164,7 +178,8 @@ def test_optional_xstock_discovery_failure_does_not_hide_spot_universe(monkeypat
 
     def fake_public(method, params=None, *, timeout=None):
         if params and params.get("aclass_base") == "tokenized_asset":
-            raise TimeoutError("xstock endpoint timeout")
+            from app.kraken.client import KrakenAmbiguous
+            raise KrakenAmbiguous("NETWORK:xstock endpoint timeout")
         return {"XXBTZEUR": {
             "altname": "XBTEUR",
             "wsname": "XBT/EUR",
