@@ -52,7 +52,7 @@ def test_market_scanner_supports_ticker_prefilter_without_history(instrument):
         Decimal("60000"),
         Decimal("60010"),
         Decimal("1000"),
-        0,
+        __import__("time").time(),
         (),
     )
     scanner = __import__("app.market.scanner", fromlist=["MarketScanner"]).MarketScanner(
