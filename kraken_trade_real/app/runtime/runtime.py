@@ -151,6 +151,7 @@ class TradingRuntime:
         cycle_id=new_id("cycle")
         self.state.cycle_id=cycle_id
         self.db.start_cycle(cycle_id,self.config_hash)
+        self.learning.process_feedback()
         self.state.set(RuntimeStage.RUNNING)
         blockers=[]
         try:
@@ -177,6 +178,7 @@ class TradingRuntime:
             ) if selected else {"status":"SKIPPED","effect_bps":0}
             gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
             model_version=self.registry.active()
+            model_parameters=self.registry.parameters(model_version)
             placed=0
             last_decision=None
             for instrument in selected:
@@ -188,7 +190,8 @@ class TradingRuntime:
                     instrument,snap,f,regime,news_bps,gemini_bps
                 )
                 decision=self.decisions.choose(
-                    instrument,long_signal,short_signal,portfolio,model_version,self.config_hash
+                    instrument,long_signal,short_signal,portfolio,model_version,
+                    self.config_hash,model_parameters
                 )
                 if not decision:
                     self.learning.record_cycle(cycle_id,0,0,["NO_ACTION"])
@@ -201,6 +204,9 @@ class TradingRuntime:
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
                 risk=self.risk.evaluate(decision,portfolio,snap)
                 self.db.save_decision(decision)
+                self.db.save_prediction(
+                    new_id("prediction"), decision, float(decision.signal.confidence)
+                )
                 if not risk.allowed:
                     blockers.append(f"{instrument.symbol}:{risk.reason}")
                     self.db.learning_event("BLOCKER",decision.decision_id,{"reason":risk.reason,"checks":risk.checks})
@@ -218,6 +224,7 @@ class TradingRuntime:
                     placed+=1
             self.db.save_portfolio(cycle_id,portfolio)
             self.learning.record_cycle(cycle_id,len(selected),placed,blockers)
+            self.learning.process_feedback()
             self.db.finish_cycle(cycle_id,"COMPLETED",";".join(blockers[:5]))
             self.state.selected_symbol=last_decision.instrument.symbol if last_decision else ""
             self.state.last_edge_bps=str(last_decision.signal.net_edge_bps if last_decision else 0)

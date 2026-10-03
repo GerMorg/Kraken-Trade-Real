@@ -22,6 +22,21 @@ class ModelRegistry:
         row=self.db.one("SELECT version FROM model_versions WHERE family=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",(family,))
         return row["version"] if row else "baseline-v1"
 
+    def parameters(self, version: str | None = None, family: str = "decision") -> dict:
+        row = self.db.one(
+            "SELECT parameters_json FROM model_versions WHERE version=?"
+            if version else
+            "SELECT parameters_json FROM model_versions WHERE family=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",
+            (version,) if version else (family,),
+        )
+        if not row:
+            return {}
+        try:
+            value = json.loads(row["parameters_json"])
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
     def register_candidate(self, version: str, family: str, parent: str, parameters: dict, metrics: dict) -> None:
         self.db.execute(
             "INSERT OR REPLACE INTO model_versions(version,family,status,created_at,parent_version,parameters_json,metrics_json,reason) VALUES(?,?,?,?,?,?,?,?)",

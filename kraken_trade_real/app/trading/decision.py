@@ -16,17 +16,25 @@ class DecisionEngine:
         self.config=config
 
     def choose(self, instrument: Instrument, long_signal: Signal, short_signal: Signal,
-               portfolio: PortfolioState, model_version: str, config_hash: str) -> Decision | None:
-        candidates=[long_signal,short_signal]
-        candidates=[s for s in candidates
-                    if s.net_edge_bps>=D(str(self.config.strategy_min_edge_bps))
-                    and s.confidence>=D(str(self.config.strategy_min_confidence))]
+               portfolio: PortfolioState, model_version: str, config_hash: str, model_parameters: dict[str, Any] | None = None) -> Decision | None:
+        parameters = model_parameters or {}
+        confidence_scale = D(str(parameters.get("confidence_scale", "1")))
+        confidence_scale = max(D("0.5"), min(D("1.5"), confidence_scale))
+        candidates = [long_signal, short_signal]
+        candidates = [
+            s for s in candidates
+            if s.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
+            and s.confidence * confidence_scale >= D(str(self.config.strategy_min_confidence))
+        ]
         if not candidates:
             return None
         candidates.sort(key=lambda s:(s.net_edge_bps,s.confidence),reverse=True)
         signal=candidates[0]
+        calibrated_confidence = max(
+            D("0.0"), min(D("1.0"), signal.confidence * confidence_scale)
+        )
         target=portfolio.equity_eur*D(str(self.config.risk_max_position_pct))/100
-        target*=max(D("0.25"),min(D("1"),signal.confidence))
+        target*=max(D("0.25"),min(D("1"),calibrated_confidence))
         min_cost=instrument.min_cost
         if target<min_cost:
             return None

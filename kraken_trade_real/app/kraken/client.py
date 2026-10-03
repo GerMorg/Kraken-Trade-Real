@@ -71,12 +71,16 @@ class KrakenGateway:
         self.futures_api_key = futures_api_key or ""
         self.futures_api_secret = futures_api_secret or ""
         self.http = HTTP(timeout)
-        self._nonce = int(time.time() * 1000)
-        self._lock = threading.Lock()
+        # Kraken persists the last nonce per API key. Use microseconds so a
+        # fresh process is safely above timestamps previously generated in
+        # millisecond resolution, while still guaranteeing monotonicity.
+        self._nonce = time.time_ns() // 1_000
+        self._spot_private_lock = threading.RLock()
 
     def _next_nonce(self) -> int:
-        with self._lock:
-            self._nonce = max(self._nonce + 1, int(time.time() * 1000))
+        with self._spot_private_lock:
+            candidate = time.time_ns() // 1_000
+            self._nonce = max(self._nonce + 1, candidate)
             return self._nonce
 
     def spot_public(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -90,23 +94,26 @@ class KrakenGateway:
         return result.get("result") or {}
 
     def spot_private(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        path = f"/0/private/{method}"
-        body = dict(params or {})
-        body["nonce"] = self._next_nonce()
-        encoded = urlencode(body, doseq=True)
-        result = self.http.request(
-            self.SPOT + path,
-            method="POST",
-            data=encoded,
-            headers={
-                "API-Key": self.api_key,
-                "API-Sign": sign_spot(path, body, self.api_secret),
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
-        if result.get("error"):
-            raise KrakenError("KRAKEN_PRIVATE:" + ";".join(str(x) for x in result.get("error", []))[:700])
-        return result.get("result") or {}
+        # Serialize the complete authenticated request. A higher nonce that
+        # arrives first can make an older in-flight request invalid at Kraken.
+        with self._spot_private_lock:
+            path = f"/0/private/{method}"
+            body = dict(params or {})
+            body["nonce"] = self._next_nonce()
+            encoded = urlencode(body, doseq=True)
+            result = self.http.request(
+                self.SPOT + path,
+                method="POST",
+                data=encoded,
+                headers={
+                    "API-Key": self.api_key,
+                    "API-Sign": sign_spot(path, body, self.api_secret),
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            if result.get("error"):
+                raise KrakenError("KRAKEN_PRIVATE:" + ";".join(str(x) for x in result.get("error", []))[:700])
+            return result.get("result") or {}
 
     def futures_public(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         query = urlencode(params or {}, doseq=True)
@@ -119,7 +126,6 @@ class KrakenGateway:
             raise KrakenError("FUTURES_DISABLED_OR_CREDENTIALS_MISSING")
         endpoint = f"/api/v3/{method}"
         body = dict(params or {})
-        body.setdefault("nonce", self._next_nonce())
         encoded = urlencode(body, doseq=True)
         result = self.http.request(
             self.FUTURES + endpoint,
