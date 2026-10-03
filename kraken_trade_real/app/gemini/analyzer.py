@@ -169,4 +169,5 @@ class GeminiAnalyzer:
             "fallback_used":len(attempted)>1,
             "failures":failures,
             "reason":"ALL_MODELS_FAILED",
+            "timeout_seconds":self.timeout_seconds if status=="TIMEOUT" else 0,
         }
