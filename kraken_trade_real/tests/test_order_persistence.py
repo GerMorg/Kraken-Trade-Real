@@ -261,12 +261,18 @@ def test_deterministic_kraken_error_does_not_create_unknown_gate(config, db, ins
         def submit_spot_order(self, **kwargs):
             raise KrakenError("KRAKEN_PRIVATE:EOrder:Insufficient funds")
 
+    from dataclasses import replace
+
+    test_config = replace(config, live_enabled=True, kill_switch=False)
     authority = TradingAuthority(
-        config,
+        test_config,
         Gateway(),
         db,
         AuditLogger(False),
-        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionPolicy(
+            test_config.execution_max_slippage_bps,
+            test_config.execution_max_reprices,
+        ),
         ExecutionReconciler(),
     )
     intent = OrderIntent(
