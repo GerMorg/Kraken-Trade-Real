@@ -643,6 +643,7 @@ class TradingRuntime:
             decisions_count=0
             strategy_rejected=0
             risk_rejected=0
+            order_blocked=0
             rebalance_decisions=0
             last_decision=None
             no_action_reasons: dict[str,int]={}
@@ -823,6 +824,23 @@ class TradingRuntime:
                     "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
                 }:
                     placed+=1
+                else:
+                    order_blocked+=1
+                    gate_reason=str(
+                        result.get("reason")
+                        or result.get("state")
+                        or "ORDER_BLOCKED"
+                    )
+                    no_action_reasons[gate_reason]=no_action_reasons.get(gate_reason,0)+1
+                    blockers.append(f"{instrument.symbol}:{gate_reason}")
+                    self.audit.emit(
+                        "CYCLE_ORDER_BLOCKED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        reason=gate_reason,
+                        state=str(result.get("state","")),
+                    )
 
             self.audit.emit(
                 "CYCLE_DECISIONS",
@@ -832,6 +850,7 @@ class TradingRuntime:
                 strategy_rejected=strategy_rejected,
                 rebalance_decisions=rebalance_decisions,
                 risk_rejected=risk_rejected,
+                order_blocked=order_blocked,
                 orders=placed,
                 blockers=len(blockers),
                 no_action_reasons=no_action_reasons,
