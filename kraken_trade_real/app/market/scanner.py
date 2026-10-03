@@ -10,24 +10,9 @@ from app.domain.models import Instrument, MarketSnapshot
 
 D = Decimal
 
-# Current Kraken xStocks universe. This is used only for classification/coverage
-# diagnostics; actual API availability remains determined by instrument discovery.
-KNOWN_XSTOCKS = frozenset({
-    "AAPLX","ABBVX","ABTX","ACNX","ADBEX","AMATX","AMBRX","AMDX","AMZNX","ANETX",
-    "APLDX","APPX","ASMLX","ASTSX","AVGOX","AVGOX","AZNX","BACX","BMNRX","BRK.BX",
-    "BSPX","BTBTX","BTGOX","CEGX","CLSKX","CMCSAX","COINX","COPXX","CORZX","CRCLX",
-    "CRMX","CRWDX","CSCOX","CVXX","DELLX","DFDVX","DHRX","ETNX","FGDLX","FLBLX",
-    "FLQMX","FSMLX","GEVX","GLDX","GLXYX","GMEX","GOOGLX","GSX","HDX","HONX",
-    "HOODX","HUTX","IBMX","IEMGX","IJRX","INTCX","IQMX","ITAX","IWMX","JNJX",
-    "JPMX","KLACX","KOX","KRAQX","LITEX","LINX","LLYX","LRCXX","MARAX","MAX",
-    "MCDX","MDTX","METAX","MOOX","MRKX","MRVLX","MSFTX","MSTRX","MUX","NFLXX",
-    "NVDAX","NVOX","OKLOX","OPENX","ORCLX","PALLX","PANWX","PEPX","PFEX","PGX",
-    "PLTRX","PLX","PPLTX","PWRX","PYPLX","QQQX","RBLXX","RIOTX","SBETX","SCHFX",
-    "SGOVX","SKHYX","SLVX","SMCIX","SMHX","SMRX","SNDKX","SPCEX","SPCX","SPYX",
-    "STRCX","TBLLX","TERX","TMOX","TMUSX","TONXX","TQQQX","TSLAX","TSMX","UBERX",
-    "UNHX","URAX","USARX","USPXX","UUUUX","VCXX","VGKX","VRTX","VTIX","VTX","VUGX",
-    "VXUSX","WBDX","WMTX","WULFX","XLEX","XOMX","XOPX","YLDEX",
-})
+# Kraken identifies xStocks by an "x" suffix. Keep only known crypto
+# false-positives here; all other discovery/eligibility facts come from Kraken.
+XSTOCK_SUFFIX_EXCEPTIONS = frozenset({"FLUX"})
 
 FAMILY_ORDER = ("XSTOCK", "STOCK", "DERIVATIVE", "CRYPTO", "OTHER")
 
@@ -44,7 +29,17 @@ class MarketScanner:
             return "DERIVATIVE"
 
         base = str(instrument.base or "").upper().strip()
-        if base in KNOWN_XSTOCKS:
+        identifiers = {
+            base,
+            str(getattr(instrument, "altname", "") or "").upper().strip(),
+            str(instrument.symbol).split("/", 1)[0].upper().strip(),
+        }
+        if any(
+            value.endswith("X")
+            and len(value) >= 4
+            and value not in XSTOCK_SUFFIX_EXCEPTIONS
+            for value in identifiers
+        ):
             return "XSTOCK"
 
         # Kraken's AssetPairs payload is allowed to carry asset-class/product
