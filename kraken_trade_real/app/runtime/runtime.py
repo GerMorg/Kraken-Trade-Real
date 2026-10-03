@@ -151,6 +151,7 @@ class TradingRuntime:
         cycle_id=new_id("cycle")
         self.state.cycle_id=cycle_id
         self.db.start_cycle(cycle_id,self.config_hash)
+        self.learning.process_feedback()
         self.state.set(RuntimeStage.RUNNING)
         blockers=[]
         try:
@@ -177,6 +178,7 @@ class TradingRuntime:
             ) if selected else {"status":"SKIPPED","effect_bps":0}
             gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
             model_version=self.registry.active()
+            model_parameters=self.registry.parameters(model_version)
             placed=0
             last_decision=None
             for instrument in selected:
