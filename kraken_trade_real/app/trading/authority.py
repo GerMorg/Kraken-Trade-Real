@@ -260,6 +260,11 @@ class TradingAuthority:
                     margin=intent.margin,
                     reduce_only=intent.reduce_only,
                     post_only=intent.post_only,
+                    asset_class=(
+                        "tokenized_asset"
+                        if intent.instrument.metadata.get("asset_class") == "tokenized_asset"
+                        else None
+                    ),
                 )
                 ids = response.get("txid", []) if isinstance(response, dict) else []
                 order_id = ids[0] if ids else response.get("order_id") if isinstance(response, dict) else None
@@ -360,6 +365,15 @@ class TradingAuthority:
                 "reconciled": True,
             }
 
+    @staticmethod
+    def _supported_leverage_levels(instrument: Instrument, side: str) -> tuple[D, ...]:
+        raw = instrument.metadata.get(f"leverage_{side}")
+        if isinstance(raw, (list, tuple)):
+            parsed = tuple(D(str(value)) for value in raw if str(value))
+            if parsed:
+                return parsed
+        return instrument.leverage_levels
+
     def _preflight(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         if not self.config.kraken_enabled:
             return {"allowed": False, "reason": "KRAKEN_DISABLED"}
@@ -375,7 +389,28 @@ class TradingAuthority:
             return {"allowed": False, "reason": "MIN_ORDER_QTY"}
         if intent.limit_price and intent.quantity * intent.limit_price < intent.instrument.min_cost:
             return {"allowed": False, "reason": "MIN_ORDER_COST"}
-        if intent.leverage > intent.instrument.max_leverage:
+        if intent.leverage < D("1"):
+            return {"allowed": False, "reason": "LEVERAGE_BELOW_ONE"}
+        if (
+            intent.instrument.product_type.value != "DERIVATIVE"
+            and intent.leverage > D("1")
+        ):
+            if not intent.instrument.margin_available:
+                return {"allowed": False, "reason": "MARGIN_NOT_AVAILABLE"}
+            supported = self._supported_leverage_levels(
+                intent.instrument, intent.side.lower()
+            )
+            if intent.leverage not in supported:
+                return {
+                    "allowed": False,
+                    "reason": "LEVERAGE_UNSUPPORTED_BY_INSTRUMENT",
+                    "detail": {
+                        "requested": str(intent.leverage),
+                        "supported": [str(level) for level in supported],
+                        "side": intent.side.lower(),
+                    },
+                }
+        elif intent.leverage > intent.instrument.max_leverage:
             return {"allowed": False, "reason": "LEVERAGE_INSTRUMENT_LIMIT"}
 
         open_orders = self.db.query(
