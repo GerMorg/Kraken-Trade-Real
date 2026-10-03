@@ -29,6 +29,7 @@ class MarketData:
         *,
         include_history: bool = True,
         include_orderbook: bool = True,
+        captured_at: float | None = None,
     ) -> MarketSnapshot | None:
         raw = self._find(instrument, ticker_payload)
         if not raw:
@@ -58,7 +59,7 @@ class MarketData:
             bid,
             ask,
             volume,
-            time.time(),
+            time.time() if captured_at is None else captured_at,
             tuple(closes[-250:]),
             bids,
             asks,
