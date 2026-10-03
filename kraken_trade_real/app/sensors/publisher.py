@@ -16,7 +16,7 @@ class SensorPublisher:
         self.base_url=base_url.rstrip("/")
 
     def publish(self, states: dict[str,Any]) -> dict[str,Any]:
-        stats = {"enabled": self.enabled, "attempted": 0, "published": 0, "failed": 0, "last_error": ""}
+        stats: dict[str, Any] = {"enabled": self.enabled, "attempted": 0, "published": 0, "failed": 0, "last_error": ""}
         if not self.enabled:
             return stats
         for entity_id, state in states.items():
