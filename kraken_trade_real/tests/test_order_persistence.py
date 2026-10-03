@@ -129,7 +129,7 @@ def test_stale_unknown_order_is_reconciled_to_exchange_confirmed_no_order(
         def lookup_order(self, **kwargs):
             return []
 
-    market = MarketSnapshot(
+    MarketSnapshot(
         instrument.symbol,
         Decimal("60005"),
         Decimal("60000"),
