@@ -102,7 +102,19 @@ class Database:
             metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",rows)
 
     def executemany(self,sql:str,rows:list[tuple[Any,...]])->None:
-        with self.connect() as con: con.executemany(sql,rows)
+        if not rows:
+            return
+        with self.connect() as con:
+            # sqlite is configured for autocommit, so executemany() would
+            # otherwise commit every row separately. That is prohibitively
+            # slow for a full Kraken universe on HA storage.
+            con.execute("BEGIN")
+            try:
+                con.executemany(sql,rows)
+                con.commit()
+            except BaseException:
+                con.rollback()
+                raise
 
     def latest_market_closes(self, symbols: list[str]) -> dict[str, tuple[float, tuple[Decimal,...]]]:
         wanted=set(symbols)
