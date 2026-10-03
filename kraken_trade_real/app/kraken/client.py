@@ -64,9 +64,12 @@ class KrakenGateway:
     SPOT = "https://api.kraken.com"
     FUTURES = "https://futures.kraken.com/derivatives"
 
-    def __init__(self, api_key: str, api_secret: str, timeout: float = 15.0) -> None:
+    def __init__(self, api_key: str, api_secret: str, timeout: float = 15.0, futures_enabled: bool = False, futures_api_key: str = "", futures_api_secret: str = "") -> None:
         self.api_key = api_key
         self.api_secret = api_secret
+        self.futures_enabled = futures_enabled
+        self.futures_api_key = futures_api_key
+        self.futures_api_secret = futures_api_secret
         self.http = HTTP(timeout)
         self._nonce = int(time.time() * 1000)
         self._lock = threading.Lock()
@@ -102,7 +105,7 @@ class KrakenGateway:
             },
         )
         if result.get("error"):
-            raise KrakenError("KRAKEN_PRIVATE")
+            raise KrakenError("KRAKEN_PRIVATE:" + ";".join(str(x) for x in result.get("error", []))[:700])
         return result.get("result") or {}
 
     def futures_public(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -112,6 +115,8 @@ class KrakenGateway:
         )
 
     def futures_private(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not self.futures_enabled or not self.futures_api_key or not self.futures_api_secret:
+            raise KrakenError("FUTURES_DISABLED_OR_CREDENTIALS_MISSING")
         endpoint = f"/api/v3/{method}"
         body = dict(params or {})
         body.setdefault("nonce", self._next_nonce())
@@ -121,8 +126,8 @@ class KrakenGateway:
             method="POST",
             data=encoded,
             headers={
-                "APIKey": self.api_key,
-                "Authent": sign_futures(endpoint, encoded, self.api_secret),
+                "APIKey": self.futures_api_key,
+                "Authent": sign_futures(endpoint, encoded, self.futures_api_secret),
                 "Content-Type": "application/x-www-form-urlencoded",
             },
         )
@@ -131,10 +136,14 @@ class KrakenGateway:
         return result
 
     def public_instruments(self):
-        return self.spot_public("AssetPairs"), self.futures_public("instruments")
+        spot = self.spot_public("AssetPairs")
+        futures = self.futures_public("instruments") if self.futures_enabled else {"instruments": []}
+        return spot, futures
 
     def public_tickers(self):
-        return self.spot_public("Ticker"), self.futures_public("tickers")
+        spot = self.spot_public("Ticker")
+        futures = self.futures_public("tickers") if self.futures_enabled else {"tickers": []}
+        return spot, futures
 
     def public_status(self):
         return self.spot_public("SystemStatus")
