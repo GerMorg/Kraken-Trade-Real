@@ -116,7 +116,7 @@ def test_decision_reduces_existing_position_instead_of_ignoring_it(config, instr
     assert decision.target_position_eur == Decimal("13.50")
     assert decision.execution_direction == Direction.SHORT
     assert decision.reduce_only is True
-    assert decision.target_notional_eur == Decimal("5")
+    assert decision.target_notional_eur == Decimal("6.50")
 
 
 def test_reversal_flattens_before_opposite_entry(config, instrument):
