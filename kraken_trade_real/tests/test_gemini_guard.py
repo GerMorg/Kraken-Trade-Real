@@ -1,3 +1,8 @@
+import signal
+import time
+
+import pytest
+
 from app.gemini import GeminiAnalyzer
 
 
@@ -122,3 +127,12 @@ def test_gemini_all_models_exhausted_returns_zero_impact(db):
     assert result["reason"] == "ALL_MODELS_FAILED"
     row = db.one("SELECT code FROM events WHERE code='GEMINI_FALLBACK_EXHAUSTED' ORDER BY id DESC LIMIT 1")
     assert row is not None
+
+@pytest.mark.skipif(not hasattr(signal,"SIGALRM"),reason="hard timeout uses POSIX SIGALRM")
+def test_gemini_hard_timeout_interrupts_blocking_operation(db):
+    analyzer=GeminiAnalyzer("", "gemini-3.8-flash", False, db)
+    started=time.monotonic()
+    with pytest.raises(TimeoutError,match="hard timeout"):
+        analyzer._run_hard_timeout(lambda: time.sleep(1),0.05)
+    assert time.monotonic()-started < 0.5
+
