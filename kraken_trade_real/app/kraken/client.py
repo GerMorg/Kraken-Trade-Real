@@ -38,25 +38,32 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.15",
+                "User-Agent": "Kraken-Trade-Real/0.1.16",
                 **(headers or {}),
             },
             method=method,
         )
         try:
             with urlopen(req, timeout=self.timeout) as response:  # nosec B310
-                payload = json.loads(response.read().decode("utf-8"))
+                raw = response.read()
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise KrakenAmbiguous("INVALID_HTTP_RESPONSE") from exc
         except HTTPError as exc:
             try:
                 detail = exc.read(512).decode("utf-8", errors="replace").replace("\n", " ")[:400]
             except OSError:
                 detail = ""
             suffix = f":{detail}" if detail else ""
+            if exc.code >= 500:
+                raise KrakenAmbiguous(f"HTTP_{exc.code}{suffix}") from exc
             raise KrakenError(f"HTTP_{exc.code}{suffix}") from exc
-        except URLError as exc:
-            raise KrakenAmbiguous(f"NETWORK:{exc.reason}") from exc
+        except (TimeoutError, URLError) as exc:
+            reason = getattr(exc, "reason", str(exc))
+            raise KrakenAmbiguous(f"NETWORK:{reason}") from exc
         if not isinstance(payload, dict):
-            raise KrakenError("INVALID_JSON_ROOT")
+            raise KrakenAmbiguous("INVALID_JSON_ROOT")
         return payload
 
 

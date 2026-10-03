@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.16
+
+- Distinguish deterministic Kraken API/order rejections from genuinely ambiguous transport failures; deterministic rejections are stored as REJECTED and cannot poison the duplicate-open-order gate.
+- Treat timeouts, transport failures, HTTP 5xx responses and invalid HTTP payloads as ambiguous so uncertain submissions remain conservatively reconciled.
+- Reconcile ambiguous/submitting orders for the specific symbol again during preflight before applying DUPLICATE_OPEN_ORDER, so stale gates cannot survive merely because the cycle-wide reconciliation backlog was limited.
+- Expand stale-order reconciliation coverage from 3 to 20 records per cycle and expose detailed exchange error diagnostics.
+- Add regression coverage for deterministic exchange rejection and transport ambiguity classification.
+- Bump application/package/User-Agent version to 0.1.16.
+
 ## 0.1.15
 
 - Reconcile stale `SUBMITTING` and `UNKNOWN_RECONCILING` submissions against Kraken before new orders are evaluated; ambiguous states are never cleared by age alone.

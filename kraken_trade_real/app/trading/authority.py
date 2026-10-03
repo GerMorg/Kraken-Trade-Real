@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from app.domain.models import Instrument, OrderIntent
 from app.domain.states import OrderState
+from app.kraken.client import KrakenAmbiguous, KrakenError
 
 
 D = Decimal
@@ -236,17 +237,21 @@ class TradingAuthority:
                 "kraken_order_id": order_id,
                 "response": response,
             }
-        except Exception as exc:
+        except KrakenAmbiguous as exc:
+            # Transport/time-out failures are genuinely ambiguous and remain
+            # blocked until the exact client order id can be reconciled.
+            error_text = str(exc)[:700] or type(exc).__name__
             self.db.update_order_state(
                 intent.client_order_id,
                 OrderState.UNKNOWN_RECONCILING.value,
-                last_error=type(exc).__name__,
+                last_error=error_text,
             )
             self.audit.emit(
                 "ORDER_RECONCILING",
                 "ERROR",
                 intent_id=intent.intent_id,
-                error=type(exc).__name__,
+                error_type=type(exc).__name__,
+                error=error_text,
             )
             try:
                 found = self.gateway.lookup_order(
@@ -265,7 +270,6 @@ class TradingAuthority:
                         "kraken_order_id": order_id,
                         "reconciled": state != OrderState.UNKNOWN_RECONCILING,
                     }
-                # Successful exchange query with no matching record.
                 self.db.update_order_state(
                     intent.client_order_id,
                     OrderState.REJECTED.value,
@@ -296,6 +300,28 @@ class TradingAuthority:
                     "state": OrderState.UNKNOWN_RECONCILING.value,
                     "reconciled": False,
                 }
+        except KrakenError as exc:
+            # A Kraken API/application error is a deterministic submission
+            # failure. It must not become a permanent open-order gate.
+            error_text = str(exc)[:700] or type(exc).__name__
+            self.db.update_order_state(
+                intent.client_order_id,
+                OrderState.REJECTED.value,
+                last_error=error_text,
+            )
+            self.audit.emit(
+                "ORDER_REJECTED_EXCHANGE",
+                "WARNING",
+                intent_id=intent.intent_id,
+                error_type=type(exc).__name__,
+                error=error_text,
+            )
+            return {
+                "state": OrderState.REJECTED.value,
+                "reason": "KRAKEN_ORDER_REJECTED",
+                "exchange_error": error_text,
+                "reconciled": True,
+            }
 
     def _preflight(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         if not self.config.kraken_enabled:
@@ -316,10 +342,15 @@ class TradingAuthority:
             return {"allowed": False, "reason": "LEVERAGE_INSTRUMENT_LIMIT"}
 
         open_orders = self.db.query(
-            "SELECT client_order_id,state FROM orders WHERE symbol=? "
+            "SELECT client_order_id,state,submitted_at,created_at FROM orders WHERE symbol=? "
             "AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",
             (intent.instrument.symbol,),
         )
+        if open_orders:
+            open_orders = self._reconcile_symbol_open_orders(
+                intent.instrument,
+                open_orders,
+            )
         if open_orders:
             return {
                 "allowed": False,
@@ -384,6 +415,91 @@ class TradingAuthority:
             "reason": reason if not ok else "PRECHECK_OK",
             "method": chosen["method"],
         }
+
+    def _reconcile_symbol_open_orders(
+        self,
+        instrument: Instrument,
+        open_orders: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        remaining: list[dict[str, Any]] = []
+        for row in open_orders:
+            state = str(row.get("state", ""))
+            if state not in {"SUBMITTING", "UNKNOWN_RECONCILING"}:
+                remaining.append(row)
+                continue
+            client_order_id = str(row.get("client_order_id", ""))
+            if not client_order_id:
+                remaining.append(row)
+                continue
+            age_seconds = time_since(
+                row.get("submitted_at")
+                or row.get("created_at")
+                or time.time()
+            )
+            try:
+                found = self.gateway.lookup_order(
+                    client_order_id=client_order_id,
+                    instrument=instrument,
+                )
+                if found:
+                    resolved_state, order_id = self.reconciler.reconcile(found)
+                    if resolved_state != OrderState.UNKNOWN_RECONCILING:
+                        self.db.update_order_state(
+                            client_order_id,
+                            resolved_state.value,
+                            kraken_order_id=order_id,
+                        )
+                        self.audit.emit(
+                            "PREFLIGHT_ORDER_RECONCILED",
+                            "INFO",
+                            symbol=instrument.symbol,
+                            client_order_id=client_order_id,
+                            previous_state=state,
+                            new_state=resolved_state.value,
+                            kraken_order_id=order_id or "",
+                            age_seconds=round(age_seconds, 2),
+                        )
+                        if resolved_state in {
+                            OrderState.SUBMITTING,
+                            OrderState.ACKNOWLEDGED,
+                            OrderState.LIVE,
+                            OrderState.PARTIALLY_FILLED,
+                            OrderState.UNKNOWN_RECONCILING,
+                        }:
+                            remaining.append(
+                                {
+                                    "client_order_id": client_order_id,
+                                    "state": resolved_state.value,
+                                }
+                            )
+                        continue
+                self.db.update_order_state(
+                    client_order_id,
+                    OrderState.REJECTED.value,
+                    last_error="EXCHANGE_CONFIRMED_NO_ORDER",
+                )
+                self.audit.emit(
+                    "PREFLIGHT_ORDER_CLEARED",
+                    "WARNING",
+                    symbol=instrument.symbol,
+                    client_order_id=client_order_id,
+                    previous_state=state,
+                    outcome="EXCHANGE_CONFIRMED_NO_ORDER",
+                    age_seconds=round(age_seconds, 2),
+                )
+            except Exception as exc:
+                self.audit.emit(
+                    "PREFLIGHT_ORDER_RECONCILIATION_FAILED",
+                    "WARNING",
+                    symbol=instrument.symbol,
+                    client_order_id=client_order_id,
+                    previous_state=state,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:700],
+                    age_seconds=round(age_seconds, 2),
+                )
+                remaining.append(row)
+        return remaining
 
     @staticmethod
     def _volatility(market: Any) -> D:
