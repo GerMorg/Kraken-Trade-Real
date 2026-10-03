@@ -249,6 +249,11 @@ class TradingRuntime:
                         history_cached+=1
                     else:
                         history_fetched+=1
+                        self.db.save_market_history_cache(
+                            instrument.symbol,
+                            time.time(),
+                            snapshot.closes,
+                        )
                     snapshots[instrument.symbol]=snapshot
                     feature_map[instrument.symbol]=self.features.calculate(snapshot)
                     self.db.save_market(snapshot,feature_map[instrument.symbol])
