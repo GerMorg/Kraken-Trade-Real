@@ -325,7 +325,14 @@ class TradingAuthority:
                 "allowed": False,
                 "reason": "DUPLICATE_OPEN_ORDER",
                 "detail": {
-                    "open_states": [str(row.get("state", "")) for row in open_orders]
+                    "open_states": [str(row.get("state", "")) for row in open_orders],
+                    "open_orders": [
+                        {
+                            "client_order_id": str(row.get("client_order_id", "")),
+                            "state": str(row.get("state", "")),
+                        }
+                        for row in open_orders
+                    ],
                 },
             }
 
