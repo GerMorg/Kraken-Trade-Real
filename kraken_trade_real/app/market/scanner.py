@@ -239,6 +239,7 @@ class MarketScanner:
         selected: list[Instrument] = []
         selected_symbols: set[str] = set()
         seen_keys: set[tuple[str, str]] = set()
+        counted_duplicate_symbols: set[str] = set()
         duplicates_removed = 0
 
         def key_for(instrument: Instrument) -> tuple[str, str]:
@@ -267,7 +268,9 @@ class MarketScanner:
                     continue
                 key = key_for(instrument)
                 if key in seen_keys:
-                    duplicates_removed += 1
+                    if instrument.symbol not in counted_duplicate_symbols:
+                        duplicates_removed += 1
+                        counted_duplicate_symbols.add(instrument.symbol)
                     continue
                 selected.append(instrument)
                 selected_symbols.add(instrument.symbol)
