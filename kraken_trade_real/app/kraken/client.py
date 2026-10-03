@@ -70,6 +70,7 @@ class HTTP:
 class KrakenGateway:
     SPOT = "https://api.kraken.com"
     FUTURES = "https://futures.kraken.com/derivatives"
+    FUTURES_CHARTS = "https://futures.kraken.com/api/charts/v1"
 
     def __init__(self, api_key: str, api_secret: str, timeout: float = 15.0, futures_enabled: bool = False, futures_api_key: str | None = None, futures_api_secret: str | None = None) -> None:
         self.api_key = api_key
@@ -149,14 +150,59 @@ class KrakenGateway:
         return result
 
     def public_instruments(self):
-        spot = self.spot_public("AssetPairs")
-        futures = self.futures_public("instruments") if self.futures_enabled else {"instruments": []}
-        return spot, futures
+        # AssetPairs defaults to spot currency pairs. xStocks are exposed as a
+        # separate tokenized asset class and must be requested explicitly.
+        spot = self.spot_public("AssetPairs", {"aclass_base": "currency"})
+        tokenized = self.spot_public(
+            "AssetPairs", {"aclass_base": "tokenized_asset"}
+        )
+        tokenized = {
+            str(key): {**value, "aclass_base": "tokenized_asset"}
+            for key, value in (tokenized or {}).items()
+            if isinstance(value, dict)
+        }
+        merged_spot = dict(spot or {})
+        merged_spot.update(tokenized)
+        futures = (
+            self.futures_public("instruments")
+            if self.futures_enabled
+            else {"instruments": []}
+        )
+        return merged_spot, futures
 
     def public_tickers(self):
         spot = self.spot_public("Ticker")
-        futures = self.futures_public("tickers") if self.futures_enabled else {"tickers": []}
-        return spot, futures
+        tokenized = self.spot_public(
+            "Ticker", {"asset_class": "tokenized_asset"}
+        )
+        merged_spot = dict(spot or {})
+        merged_spot.update(tokenized or {})
+        futures = (
+            self.futures_public("tickers")
+            if self.futures_enabled
+            else {"tickers": []}
+        )
+        return merged_spot, futures
+
+    def futures_chart_candles(
+        self,
+        *,
+        symbol: str,
+        tick_type: str = "trade",
+        resolution: str = "1m",
+        count: int = 250,
+    ) -> dict[str, Any]:
+        if tick_type not in {"spot", "mark", "trade"}:
+            raise KrakenError("INVALID_FUTURES_CANDLE_TICK_TYPE")
+        if resolution not in {
+            "1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d", "1w"
+        }:
+            raise KrakenError("INVALID_FUTURES_CANDLE_RESOLUTION")
+        params = {"count": max(0, min(int(count), 5000))}
+        query = urlencode(params)
+        return self.http.request(
+            f"{self.FUTURES_CHARTS}/{tick_type}/{symbol}/{resolution}?{query}"
+        )
 
     def public_status(self):
         return self.spot_public("SystemStatus")
@@ -201,6 +247,7 @@ class KrakenGateway:
         margin: bool = False,
         reduce_only: bool = False,
         post_only: bool = False,
+        asset_class: str | None = None,
     ):
         body = {
             "pair": instrument_id,
@@ -211,13 +258,45 @@ class KrakenGateway:
         }
         if price is not None:
             body["price"] = str(price)
-        if margin:
+        if asset_class == "tokenized_asset":
+            body["asset_class"] = "tokenized_asset"
+        if margin and leverage > Decimal("1"):
             body["leverage"] = str(leverage)
+        elif not margin and leverage > Decimal("1"):
+            raise KrakenError(
+                "INVALID_MARGIN_ARGUMENT: leverage requires a margin order"
+            )
         if reduce_only and margin:
             body["reduce_only"] = "true"
         if post_only:
+            if order_type != "limit":
+                raise KrakenError(
+                    "INVALID_POST_ONLY_ARGUMENT: Spot post-only requires ordertype=limit"
+                )
             body["oflags"] = "post"
         return self.spot_private("AddOrder", body)
+
+    @staticmethod
+    def _normalize_futures_order_type(order_type: str, post_only: bool) -> str:
+        raw = str(order_type).strip().lower()
+        if post_only:
+            if raw not in {"limit", "lmt", "post"}:
+                raise KrakenError(
+                    "INVALID_FUTURES_ORDER_TYPE: post-only requires a limit order"
+                )
+            return "post"
+        mapping = {
+            "limit": "lmt",
+            "lmt": "lmt",
+            "market": "mkt",
+            "mkt": "mkt",
+            "ioc": "ioc",
+            "fok": "fok",
+            "post": "post",
+        }
+        if raw not in mapping:
+            raise KrakenError(f"INVALID_FUTURES_ORDER_TYPE:{raw}")
+        return mapping[raw]
 
     def submit_futures_order(
         self,
@@ -232,7 +311,7 @@ class KrakenGateway:
         post_only: bool = False,
     ):
         body = {
-            "orderType": order_type,
+            "orderType": self._normalize_futures_order_type(order_type, post_only),
             "symbol": instrument_id,
             "side": side.lower(),
             "size": str(quantity),
@@ -242,8 +321,6 @@ class KrakenGateway:
             body["limitPrice"] = str(price)
         if reduce_only:
             body["reduceOnly"] = "true"
-        if post_only:
-            body["postOnly"] = "true"
         return self.futures_private("sendorder", body)
 
     def lookup_order(self, *, client_order_id: str, instrument: Any):
