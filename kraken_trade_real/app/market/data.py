@@ -46,7 +46,7 @@ class MarketData:
             else raw.get("volume") or raw.get("vol24h")
         )
         closes = (
-            self._spot_ohlc(instrument.instrument_id)
+            self._spot_ohlc(instrument)
             if instrument.venue == "spot" and include_history
             else self._future_candles(instrument.instrument_id)
             if instrument.venue != "spot" and include_history
@@ -113,9 +113,15 @@ class MarketData:
             d(r.get("last") or r.get("lastTradePrice")),
         )
 
-    def _spot_ohlc(self, pair: str) -> list[D]:
+    def _spot_ohlc(self, instrument: Instrument) -> list[D]:
         try:
-            r = self.gateway.spot_public("OHLC", {"pair": pair, "interval": 60})
+            params: dict[str, Any] = {
+                "pair": instrument.instrument_id,
+                "interval": 60,
+            }
+            if instrument.metadata.get("asset_class") == "tokenized_asset":
+                params["asset_class"] = "tokenized_asset"
+            r = self.gateway.spot_public("OHLC", params)
         except Exception:
             return []
         rows = next((v for v in r.values() if isinstance(v, list)), [])
@@ -128,8 +134,11 @@ class MarketData:
 
     def _future_candles(self, symbol: str) -> list[D]:
         try:
-            r = self.gateway.futures_public(
-                "candles", {"symbol": symbol, "interval": 1}
+            r = self.gateway.futures_chart_candles(
+                symbol=symbol,
+                tick_type="trade",
+                resolution="1m",
+                count=250,
             )
         except Exception:
             return []
@@ -147,7 +156,16 @@ class MarketData:
         try:
             r = (
                 self.gateway.spot_public(
-                    "Depth", {"pair": i.instrument_id, "count": 25}
+                    "Depth",
+                    {
+                        "pair": i.instrument_id,
+                        "count": 25,
+                        **(
+                            {"asset_class": "tokenized_asset"}
+                            if i.metadata.get("asset_class") == "tokenized_asset"
+                            else {}
+                        ),
+                    },
                 )
                 if i.venue == "spot"
                 else self.gateway.futures_public(

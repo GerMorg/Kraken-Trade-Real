@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.18
+
+- Align Spot margin orders with Kraken's pair-specific leverage rules by omitting `leverage=1` and validating supported buy/sell leverage values.
+- Add explicit `asset_class=tokenized_asset` handling for xStock AssetPairs, Ticker, OHLC, Depth, and AddOrder requests.
+- Normalize Futures order types to Kraken's `lmt`, `mkt`, and `post` values and remove the unsupported `postOnly` field.
+- Replace the obsolete Futures candle request with Kraken's Charts API and normalize Futures instrument metadata and contract-unit sizing.
+- Propagate post-only execution policy into submitted order intents.
+- Add regression tests for all corrected Kraken argument paths.
+
 ## 0.1.17
 
 - Generate Kraken Spot-compatible client order identifiers as UUIDs instead of the legacy `client_<32hex>` format, which exceeds Kraken's 18-character free-text limit.

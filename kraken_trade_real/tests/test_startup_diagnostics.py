@@ -36,7 +36,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.17"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.18"
     assert captured["timeout"] == 15.0
 
 
@@ -141,9 +141,16 @@ def test_futures_disabled_by_default_and_requires_separate_credentials(tmp_path)
 def test_gateway_does_not_call_futures_when_disabled(monkeypatch):
     gateway = KrakenGateway("spot-key", "spot-secret")
     calls = []
-    monkeypatch.setattr(gateway, "spot_public", lambda method: calls.append(method) or {})
+    monkeypatch.setattr(
+        gateway,
+        "spot_public",
+        lambda method, params=None: calls.append((method, params or {})) or {},
+    )
     spot, futures = gateway.public_instruments()
-    assert calls == ["AssetPairs"]
+    assert calls == [
+        ("AssetPairs", {"aclass_base": "currency"}),
+        ("AssetPairs", {"aclass_base": "tokenized_asset"}),
+    ]
     assert spot == {}
     assert futures == {"instruments": []}
 

@@ -54,10 +54,11 @@ class FakeGateway:
     def futures_public(self, method, params=None):
         if method=="instruments": return self.instrument_payload[1]
         if method=="tickers": return self.public_tickers()[1]
-        if method=="candles":
-            return {"candles":[{"close":str(60000+i)} for i in range(1,61)]}
         if method=="status": return {"result":"success","status":"online"}
         return {"result":"success"}
+
+    def futures_chart_candles(self, **kwargs):
+        return {"candles":[{"close":str(60000+i)} for i in range(1,61)]}
 
     def spot_balance(self): return {"ZEUR":"50.0"}
 

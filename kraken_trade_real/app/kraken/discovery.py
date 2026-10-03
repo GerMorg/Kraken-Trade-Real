@@ -46,10 +46,14 @@ class InstrumentDiscovery:
             quote = str(raw.get("quote") or "")
             if not symbol or not base or not quote:
                 continue
-            levels_raw = raw.get("leverage_buy") or raw.get("leverage_sell") or [1]
-            leverage = tuple(sorted({_d(x, "1") for x in levels_raw}))
-            margin_available = bool(raw.get("leverage_buy") or raw.get("leverage_sell"))
+            buy_levels = tuple(_d(x, "1") for x in (raw.get("leverage_buy") or []))
+            sell_levels = tuple(_d(x, "1") for x in (raw.get("leverage_sell") or []))
+            leverage = tuple(sorted(set(buy_levels + sell_levels)))
+            margin_available = bool(buy_levels or sell_levels)
             pair_decimals = int(raw.get("pair_decimals") or 8)
+            metadata = dict(raw)
+            if metadata.get("aclass_base") == "tokenized_asset":
+                metadata["asset_class"] = "tokenized_asset"
             found.append(
                 Instrument(
                     venue="spot",
@@ -62,7 +66,7 @@ class InstrumentDiscovery:
                     status=status,
                     margin_available=margin_available,
                     long_available=True,
-                    short_available=margin_available,
+                    short_available=bool(sell_levels),
                     leverage_levels=leverage or (Decimal("1"),),
                     min_order_qty=_d(raw.get("ordermin")),
                     min_cost=_d(raw.get("costmin")),
@@ -70,7 +74,7 @@ class InstrumentDiscovery:
                     price_decimals=pair_decimals,
                     tick_size=Decimal("1").scaleb(-pair_decimals),
                     margin_class="spot-margin" if margin_available else "spot",
-                    metadata=dict(raw),
+                    metadata=metadata,
                 )
             )
         return found
@@ -84,13 +88,34 @@ class InstrumentDiscovery:
             if not isinstance(raw, dict):
                 continue
             symbol = _symbol(raw, derivative=True)
-            status = str(raw.get("tradeable") or raw.get("status") or "active")
+            tradeable_raw = raw.get("tradeable")
+            if isinstance(tradeable_raw, bool):
+                status = "online" if tradeable_raw else "offline"
+            else:
+                status = str(tradeable_raw or raw.get("status") or "active")
             if not symbol:
                 continue
-            long_ok = raw.get("type") in (None, "futures", "perpetual", "flexible")
-            short_ok = raw.get("type") in (None, "futures", "perpetual", "flexible")
-            max_lev = _d(raw.get("maxLeverage") or raw.get("max_leverage"), "1")
-            max_lev_int = max(1, min(20, int(float(max_lev))))
+            future_type = str(raw.get("type") or "").lower()
+            derivative_type = (
+                "futures" in future_type
+                or future_type in {"perpetual", "flexible", "futures"}
+            )
+            long_ok = bool(raw.get("tradeable")) and derivative_type
+            short_ok = bool(raw.get("tradeable")) and derivative_type
+            max_lev = _d(raw.get("maxLeverage") or raw.get("max_leverage"), "0")
+            if max_lev <= 1:
+                margin_levels = raw.get("retailMarginLevels") or raw.get("marginLevels") or []
+                first_level = (
+                    margin_levels[0]
+                    if isinstance(margin_levels, list)
+                    and margin_levels
+                    and isinstance(margin_levels[0], dict)
+                    else {}
+                )
+                initial_margin = _d(first_level.get("initialMargin"), "0")
+                if initial_margin > 0:
+                    max_lev = Decimal("1") / initial_margin
+            max_lev_int = max(1, min(20, int(max_lev)))
             lev_levels = tuple(Decimal(i) for i in range(1, max_lev_int + 1))
             base = str(raw.get("underlying") or raw.get("base") or "")
             quote = str(raw.get("quoteCurrency") or raw.get("quote") or "USD")
@@ -108,7 +133,7 @@ class InstrumentDiscovery:
                     long_available=bool(long_ok),
                     short_available=bool(short_ok),
                     leverage_levels=lev_levels,
-                    min_order_qty=_d(raw.get("contractSize") or raw.get("minOrderSize")),
+                    min_order_qty=_d(raw.get("minOrderSize") or raw.get("contractSize")),
                     min_cost=_d(raw.get("minOrderSize") or "0"),
                     lot_decimals=8,
                     price_decimals=8,
