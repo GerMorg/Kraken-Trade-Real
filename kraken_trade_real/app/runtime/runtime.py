@@ -307,9 +307,11 @@ class TradingRuntime:
                     snapshots[instrument.symbol],
                 )
 
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures=[executor.submit(enrich,instrument) for instrument in selected]
-                for future in as_completed(futures):
+            with ThreadPoolExecutor(max_workers=8) as orderbook_executor:
+                orderbook_futures=[
+                    orderbook_executor.submit(enrich,instrument) for instrument in selected
+                ]
+                for future in as_completed(orderbook_futures):
                     instrument,snapshot=future.result()
                     snapshots[instrument.symbol]=snapshot
                     feature_map[instrument.symbol]=self.features.calculate(snapshot)
