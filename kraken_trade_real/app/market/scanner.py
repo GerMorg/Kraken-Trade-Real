@@ -15,7 +15,13 @@ class MarketScanner:
         self.max_spread = D(str(max_spread_bps))
         self.freshness_seconds = freshness_seconds
 
-    def fast_filter(self, instruments: Iterable[Instrument], snapshots: dict[str, MarketSnapshot]) -> list[Instrument]:
+    def fast_filter(
+        self,
+        instruments: Iterable[Instrument],
+        snapshots: dict[str, MarketSnapshot],
+        *,
+        require_history: bool = True,
+    ) -> list[Instrument]:
         candidates=[]
         for instrument in instruments:
             snap=snapshots.get(instrument.symbol)
@@ -27,7 +33,7 @@ class MarketScanner:
                 continue
             if snap.volume_24h < self.min_liquidity and instrument.product_type.value != "DERIVATIVE":
                 continue
-            if len(snap.closes) < 30:
+            if require_history and len(snap.closes) < 30:
                 continue
             candidates.append(instrument)
         return sorted(candidates, key=lambda i: snapshots[i.symbol].volume_24h, reverse=True)

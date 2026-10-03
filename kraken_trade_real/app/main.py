@@ -64,6 +64,7 @@ def build_runtime() -> TradingRuntime:
     sensors = SensorPublisher(config.sensors_enabled, os.getenv("SUPERVISOR_TOKEN"))
     tax = AustrianTaxLedger(
         db,
+        report_dir="/config/reports/tax",
         provider_tax_classification=config.tax_provider_classification,
     )
     intents = OrderIntentBuilder(
@@ -80,6 +81,7 @@ def build_runtime() -> TradingRuntime:
 def main() -> None:
     runtime = build_runtime()
     runtime.startup()
+    next_cycle_at = time.monotonic()
     while True:
         try:
             result = runtime.run_cycle()
@@ -96,7 +98,19 @@ def main() -> None:
                 error=f"{type(exc).__name__}:{str(exc)[:800]}",
                 traceback=__import__("traceback").format_exc()[:3500],
             )
-        time.sleep(max(1, runtime.config.market_scan_interval_seconds))
+        interval = max(1, runtime.config.market_scan_interval_seconds)
+        next_cycle_at += interval
+        sleep_for = next_cycle_at - time.monotonic()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+        else:
+            runtime.audit.emit(
+                "MAIN_LOOP_INTERVAL_OVERRUN",
+                "WARNING",
+                interval_seconds=interval,
+                overdue_seconds=round(-sleep_for, 2),
+            )
+            next_cycle_at = time.monotonic()
 
 
 if __name__ == "__main__":

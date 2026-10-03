@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.6
+version: 0.1.7
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -16,7 +16,7 @@ hassio_role: default
 apparmor: true
 init: false
 map:
-  - type: app_config
+  - type: addon_config
     read_only: false
 options:
   kraken_api_key: ""

@@ -69,7 +69,7 @@ class AustrianTaxLedger:
     def __init__(
         self,
         db: Any | None = None,
-        report_dir: str = "/data/reports/tax",
+        report_dir: str = "/config/reports/tax",
         provider_tax_classification: str = "FOREIGN",
     ) -> None:
         self.db = db

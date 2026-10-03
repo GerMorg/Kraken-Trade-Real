@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from datetime import datetime, timezone
 import time
@@ -176,24 +177,96 @@ class TradingRuntime:
                 blockers.append(self.recovery.breaker.reason)
 
             stage="MARKET_DATA"
+            market_stage_started=time.monotonic()
             spot_payload,future_payload=self.gateway.public_tickers()
-            snapshots={}
-            feature_map={}
-            captured=0
+            ticker_snapshots={}
             for instrument in self.instruments:
                 payload=spot_payload if instrument.venue=="spot" else future_payload
-                snapshot=self.market_data.snapshot(instrument,payload)
+                snapshot=self.market_data.snapshot(
+                    instrument,
+                    payload,
+                    include_history=False,
+                    include_orderbook=False,
+                )
                 if snapshot:
+                    ticker_snapshots[instrument.symbol]=snapshot
+
+            prefiltered=self.scanner.fast_filter(
+                self.instruments,
+                ticker_snapshots,
+                require_history=False,
+            )
+            self.audit.emit(
+                "CYCLE_MARKET_PREFILTER",
+                "INFO",
+                cycle_id=cycle_id,
+                ticker_snapshots=len(ticker_snapshots),
+                candidates=len(prefiltered),
+            )
+
+            snapshots={}
+            feature_map={}
+            def hydrate(instrument: Any) -> tuple[Any,Any]:
+                payload=spot_payload if instrument.venue=="spot" else future_payload
+                return instrument, self.market_data.snapshot(
+                    instrument,
+                    payload,
+                    include_history=True,
+                    include_orderbook=False,
+                )
+
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures=[executor.submit(hydrate,instrument) for instrument in prefiltered]
+                for future in as_completed(futures):
+                    instrument,snapshot=future.result()
+                    if snapshot and len(snapshot.closes)>=30:
+                        snapshots[instrument.symbol]=snapshot
+                        feature_map[instrument.symbol]=self.features.calculate(snapshot)
+                        self.db.save_market(snapshot,feature_map[instrument.symbol])
+
+            fast=self.scanner.fast_filter(
+                self.instruments,
+                snapshots,
+                require_history=True,
+            )
+            ranked=self.scanner.rank(fast,snapshots,feature_map)
+            selected=ranked[:20]
+
+            def enrich(instrument: Any) -> tuple[Any,Any]:
+                return instrument, self.market_data.enrich_orderbook(
+                    instrument,
+                    snapshots[instrument.symbol],
+                )
+
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures=[executor.submit(enrich,instrument) for instrument in selected]
+                for future in as_completed(futures):
+                    instrument,snapshot=future.result()
                     snapshots[instrument.symbol]=snapshot
                     feature_map[instrument.symbol]=self.features.calculate(snapshot)
                     self.db.save_market(snapshot,feature_map[instrument.symbol])
-                    captured+=1
-            self.audit.emit("CYCLE_MARKET_DATA","INFO",cycle_id=cycle_id,instruments=len(self.instruments),snapshots=captured)
+
+            self.audit.emit(
+                "CYCLE_MARKET_DATA",
+                "INFO",
+                cycle_id=cycle_id,
+                instruments=len(self.instruments),
+                ticker_snapshots=len(ticker_snapshots),
+                history_candidates=len(prefiltered),
+                snapshots=len(snapshots),
+                selected=len(selected),
+                duration_seconds=round(time.monotonic()-market_stage_started,2),
+            )
 
             stage="MARKET_SCAN"
-            fast=self.scanner.fast_filter(self.instruments,snapshots)
-            ranked=self.scanner.rank(fast,snapshots,feature_map)
-            selected=ranked[:20]
+            self.audit.emit(
+                "CYCLE_MARKET_SCAN",
+                "INFO",
+                cycle_id=cycle_id,
+                fast_candidates=len(fast),
+                ranked=len(ranked),
+                selected=len(selected),
+            )
             self.audit.emit("CYCLE_MARKET_SCAN","INFO",cycle_id=cycle_id,fast_candidates=len(fast),ranked=len(ranked),selected=len(selected))
 
             stage="NEWS"
@@ -212,15 +285,32 @@ class TradingRuntime:
             placed=0
             decisions_count=0
             last_decision=None
+            no_action_reasons: dict[str,int]={}
             for instrument in selected:
                 snap=snapshots[instrument.symbol]
                 f=feature_map[instrument.symbol]
                 regime=self.regimes.detect(f)
                 news_bps=self.news.effect_for(instrument.symbol,news)
                 long_signal,short_signal=self.signals.evaluate(instrument,snap,f,regime,news_bps,gemini_bps)
-                decision=self.decisions.choose(instrument,long_signal,short_signal,portfolio,model_version,self.config_hash,model_parameters)
+                decision=self.decisions.choose(
+                    instrument,
+                    long_signal,
+                    short_signal,
+                    portfolio,
+                    model_version,
+                    self.config_hash,
+                    model_parameters,
+                )
                 if not decision:
-                    self.learning.record_cycle(cycle_id,0,0,[f"{instrument.symbol}:NO_ACTION"])
+                    reason=self.decisions.rejection_reason(
+                        instrument,
+                        long_signal,
+                        short_signal,
+                        portfolio,
+                        model_parameters,
+                    )
+                    no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                    self.learning.record_cycle(cycle_id,0,0,[f"{instrument.symbol}:{reason}"])
                     continue
                 decisions_count+=1
                 confidence=decision.signal.confidence if decision.signal.direction.value=="LONG" else short_signal.confidence
@@ -243,7 +333,15 @@ class TradingRuntime:
                 if result.get("state") in {"ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"}:
                     placed+=1
 
-            self.audit.emit("CYCLE_DECISIONS","INFO",cycle_id=cycle_id,decisions=decisions_count,orders=placed,blockers=len(blockers))
+            self.audit.emit(
+                "CYCLE_DECISIONS",
+                "INFO",
+                cycle_id=cycle_id,
+                decisions=decisions_count,
+                orders=placed,
+                blockers=len(blockers),
+                no_action_reasons=no_action_reasons,
+            )
             stage="PORTFOLIO_FINAL"
             final_portfolio=self.portfolio.reconcile()
             self.db.save_portfolio(cycle_id,final_portfolio)
@@ -259,7 +357,14 @@ class TradingRuntime:
             self.state.last_confidence=str(last_decision.signal.confidence if last_decision else 0)
             self.state.set(RuntimeStage.READY,blockers[0] if blockers else "")
             self._publish(final_portfolio,gemini,model_version)
-            self.audit.emit("CYCLE_COMPLETED","INFO",cycle_id=cycle_id,selected=len(selected),orders=placed,blockers=blockers[:5])
+            self.audit.emit(
+                "CYCLE_COMPLETED",
+                "INFO",
+                cycle_id=cycle_id,
+                selected=len(selected),
+                orders=placed,
+                blockers=blockers[:5],
+            )
             return {"cycle_id":cycle_id,"status":"COMPLETED","placed":placed,"selected":len(selected),"blockers":blockers}
         except Exception as exc:
             detail=f"{stage}:{type(exc).__name__}:{str(exc)[:800]}"
@@ -339,6 +444,9 @@ class TradingRuntime:
                     tax_year=year,
                     events_added=added,
                     status=status,
+                    report_json=paths.get("json",""),
+                    report_csv=paths.get("csv",""),
+                    report_markdown=paths.get("markdown",""),
                 )
             self._last_tax_sync=now
             self._tax_status="INCOMPLETE_DATA" if "INCOMPLETE_DATA" in statuses else "READY_FOR_REVIEW"
@@ -387,7 +495,7 @@ class TradingRuntime:
             gemini_status=str(gemini.get("status","UNKNOWN")),model_version=model_version,
             breaker_active=self.recovery.breaker.active,
             tax_status=str(tax_summary.get("status","DISABLED")),
-            tax_estimated_27_5_eur=tax_summary.get("indicative_27_5_tax_eur","0"),
+            tax_estimated_27_5_eur=tax_summary.get("indicative_crypto_27_5_tax_eur","0"),
             tax_incomplete_events=int(tax_summary.get("incomplete_event_count",0)),
             tax_year=datetime.now(timezone.utc).year,
         ))
