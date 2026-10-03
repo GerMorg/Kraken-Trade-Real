@@ -428,7 +428,7 @@ class TradingRuntime:
                 enabled=self.config.news_enabled,
                 count=len(news),
                 duration_seconds=round(time.monotonic()-news_started,2),
-                **news_status,
+                **{k:v for k,v in news_status.items() if k!="duration_seconds"},
             )
 
             stage="GEMINI"
@@ -697,11 +697,11 @@ class TradingRuntime:
                 drawdown_pct="0",
                 open_positions=0,
                 portfolio_symbols=[],
-                learning_samples=int(self._learning_summary.get("samples",0)),
-                learning_open_predictions=int(self._learning_summary.get("open_predictions",0)),
-                learning_settled_total=int(self._learning_summary.get("settled_total",0)),
-                learning_brier=self._learning_summary.get("brier",0),
-                learning_improvement=self._learning_summary.get("improvement",0),
+                learning_samples=int(getattr(self,"_learning_summary",{}).get("samples",0)),
+                learning_open_predictions=int(getattr(self,"_learning_summary",{}).get("open_predictions",0)),
+                learning_settled_total=int(getattr(self,"_learning_summary",{}).get("settled_total",0)),
+                learning_brier=getattr(self,"_learning_summary",{}).get("brier",0),
+                learning_improvement=getattr(self,"_learning_summary",{}).get("improvement",0),
                 news_status="UNKNOWN",
                 gemini_status="UNKNOWN",
                 model_version="UNKNOWN",
