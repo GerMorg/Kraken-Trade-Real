@@ -107,21 +107,16 @@ class Database:
         if not symbols:
             return {}
         placeholders = ",".join("?" for _ in symbols)
-        sql = f"""
-            SELECT m.symbol, m.captured_at, m.closes_json
-            FROM market_snapshots m
-            JOIN (
-                SELECT symbol, MAX(captured_at) AS captured_at
-                FROM market_snapshots
-                WHERE symbol IN ({placeholders})
-                GROUP BY symbol
-            ) latest
-              ON latest.symbol=m.symbol AND latest.captured_at=m.captured_at
-            WHERE m.symbol IN ({placeholders})
-        """
-        params = tuple(symbols) + tuple(symbols)
+        rows = self.query(
+            f"""
+            SELECT symbol, captured_at, closes_json
+            FROM market_history_cache
+            WHERE symbol IN ({placeholders})
+            """,
+            tuple(symbols),
+        )
         result: dict[str, tuple[float, tuple[Decimal,...]]] = {}
-        for row in self.query(sql, params):
+        for row in rows:
             try:
                 values=json.loads(row.get("closes_json") or "[]")
             except (TypeError,ValueError):
@@ -131,6 +126,17 @@ class Database:
             closes=tuple(Decimal(str(value)) for value in values if value not in (None,""))
             result[str(row.get("symbol",""))]=(float(row.get("captured_at",0)), closes)
         return result
+
+    def save_market_history_cache(
+        self, symbol: str, captured_at: float, closes: tuple[Decimal,...]
+    ) -> None:
+        self.execute(
+            """INSERT INTO market_history_cache(symbol,captured_at,closes_json)
+               VALUES(?,?,?)
+               ON CONFLICT(symbol) DO UPDATE SET
+               captured_at=excluded.captured_at,closes_json=excluded.closes_json""",
+            (symbol, captured_at, json.dumps([str(x) for x in closes])),
+        )
 
     def save_market(self,snapshot:MarketSnapshot,features:dict[str,Any])->None:
         self.execute("""INSERT INTO market_snapshots(captured_at,symbol,price,bid,ask,volume_24h,age_seconds,
