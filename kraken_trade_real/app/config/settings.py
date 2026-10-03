@@ -47,6 +47,7 @@ class Config:
     learning_auto_promotion: bool
     news_enabled: bool
     news_refresh_minutes: int
+    news_source_timeout_seconds: int
     sensors_enabled: bool
     log_file_enabled: bool
     tax_enabled: bool
@@ -128,6 +129,7 @@ class Config:
             learning_auto_promotion=b("learning_auto_promotion", True),
             news_enabled=b("news_enabled", True),
             news_refresh_minutes=i("news_refresh_minutes", 10, 1),
+            news_source_timeout_seconds=i("news_source_timeout_seconds", 10, 3),
             sensors_enabled=b("sensors_enabled", True),
             log_file_enabled=b("log_file_enabled", True),
             tax_enabled=b("tax_enabled", True),
