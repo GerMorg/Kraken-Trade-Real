@@ -206,7 +206,7 @@ class KrakenGateway:
             body["price"] = str(price)
         if margin:
             body["leverage"] = str(leverage)
-        if reduce_only:
+        if reduce_only and margin:
             body["reduce_only"] = "true"
         if post_only:
             body["oflags"] = "post"
