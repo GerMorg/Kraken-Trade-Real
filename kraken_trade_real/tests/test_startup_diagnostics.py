@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 import time
 
@@ -279,6 +280,27 @@ def test_spot_query_orders_normalizes_txid_keyed_response(monkeypatch):
         {"status": "open", "vol": "1.0", "txid": "O-123"},
         {"status": "closed", "vol": "2.0", "txid": "O-456"},
     ]
+
+def test_bulk_executemany_uses_one_transaction(db, monkeypatch):
+    traces = []
+    original_connect = db.connect
+
+    @contextmanager
+    def traced_connect():
+        with original_connect() as con:
+            con.set_trace_callback(traces.append)
+            yield con
+
+    monkeypatch.setattr(db, "connect", traced_connect)
+    rows = [(f"bulk-test-{i}", str(i)) for i in range(20)]
+    db.executemany(
+        "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+        rows,
+    )
+
+    assert sum(trace == "BEGIN" for trace in traces) == 1
+    assert sum(trace == "COMMIT" for trace in traces) == 1
+
 
 def test_hard_timeout_interrupts_blocking_startup_operation():
     started = time.monotonic()
