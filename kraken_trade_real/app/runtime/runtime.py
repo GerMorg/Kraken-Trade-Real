@@ -233,7 +233,7 @@ class TradingRuntime:
 
     def _publish_runtime_status(self) -> None:
         try:
-            self.sensors.publish(self.sensors.states(
+            publish_result = self.sensors.publish(self.sensors.states(
                 status=self.state.stage.value,
                 stage=self.state.stage.value,
                 cycle_id=self.state.cycle_id,
@@ -258,8 +258,7 @@ class TradingRuntime:
                 tax_incomplete_events=0,
                 tax_year=datetime.now(timezone.utc).year,
             ))
-            self.audit.emit("HA_SENSOR_PUBLISH_ATTEMPTED","INFO",
-                            enabled=bool(getattr(self.sensors,"enabled",False)))
+            self.audit.emit("HA_SENSOR_PUBLISH_RESULT","INFO",**publish_result)
         except Exception as exc:
             self.audit.emit("HA_SENSOR_PUBLISH_FAILED","WARNING",
                             error=f"{type(exc).__name__}:{str(exc)[:500]}")
