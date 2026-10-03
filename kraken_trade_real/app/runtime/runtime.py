@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -9,12 +11,21 @@ from typing import Any
 from app.domain.models import digest_config, new_id
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
+from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
 
 
 D=Decimal
 
 
 class TradingRuntime:
+    STEP_TIMEOUTS = {
+        "STARTUP_CONFIG": 30.0, "STARTUP_API": 45.0, "STARTUP_INSTRUMENTS": 90.0,
+        "STARTUP_AUTH": 60.0, "STARTUP_PORTFOLIO": 120.0, "STARTUP_TAX": 180.0,
+        "CYCLE_START": 30.0, "LEARNING_FEEDBACK": 45.0, "MARKET_DATA": 180.0,
+        "MARKET_SCAN": 30.0, "NEWS": 30.0, "GEMINI": 180.0, "DECISIONS": 180.0,
+        "PORTFOLIO_FINAL": 120.0,
+    }
+
     def __init__(self, config: Any, db: Any, audit: AuditLogger, gateway: Any,
                  discovery: Any, market_data: Any, features: Any, regimes: Any,
                  scanner: Any, news: Any, gemini: Any, signals: Any, decisions: Any,
@@ -50,18 +61,25 @@ class TradingRuntime:
         self._tax_error=""
         self._learning_summary: dict[str,Any] = {"status":"UNKNOWN","samples":0,"settled":0,"settled_total":0,"open_predictions":0}
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
+        self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
 
     def startup(self) -> bool:
         self.state.set(RuntimeStage.CONFIG_LOADED)
+        self._watchdog_arm("", "STARTUP_CONFIG")
         self.audit.emit("STARTUP_CONFIG_LOADED","INFO",config_hash=self.config_hash)
         self._publish_runtime_status()
+        try:
+            self._recover_stale_cycles()
+        except Exception as exc:
+            self.audit.emit("STALE_CYCLE_RECOVERY_FAILED","WARNING",error=f"{type(exc).__name__}:{str(exc)[:500]}")
         if not self.config.kraken_enabled:
             self.state.set(RuntimeStage.SAFE_MODE,"KRAKEN_DISABLED")
             self.audit.emit("STARTUP_KRAKEN_DISABLED","WARNING",blocker="KRAKEN_DISABLED")
             self._publish_runtime_status()
             return False
+        self._watchdog_arm("", "STARTUP_API")
         try:
             server_time = self.gateway.spot_public("Time")
             self.state.set(RuntimeStage.API_CHECKED)
@@ -87,6 +105,7 @@ class TradingRuntime:
             self._publish_runtime_status()
             return False
 
+        self._watchdog_arm("", "STARTUP_INSTRUMENTS")
         try:
             self.instruments=self.discovery.discover()
             if not self.instruments:
@@ -103,6 +122,7 @@ class TradingRuntime:
             return False
 
         if self.gateway.api_key:
+            self._watchdog_arm("", "STARTUP_AUTH")
             try:
                 # Validate the Spot key with a read-only account endpoint first.
                 self.gateway.spot_balance()
@@ -128,6 +148,7 @@ class TradingRuntime:
                 self._publish_runtime_status()
                 return False
 
+        self._watchdog_arm("", "STARTUP_PORTFOLIO")
         try:
             try:
                 startup_spot_tickers,_=self.gateway.public_tickers()
@@ -149,11 +170,13 @@ class TradingRuntime:
             self._publish_runtime_status()
             return False
 
+        self._watchdog_arm("", "STARTUP_TAX")
         self._update_tax_report(force=True)
         self.registry.active()
         self.state.set(RuntimeStage.MARKET_READY)
         self.state.set(RuntimeStage.MODELS_READY)
         self.state.set(RuntimeStage.READY)
+        self._watchdog_clear("")
         self.audit.emit("STARTUP_READY","INFO",instruments=len(self.instruments))
         self._publish_runtime_status()
         return True
@@ -167,6 +190,7 @@ class TradingRuntime:
         stage="CYCLE_START"
         blockers=[]
         self.state.cycle_id=cycle_id
+        self._watchdog_arm(cycle_id, stage)
         try:
             self.db.start_cycle(cycle_id,self.config_hash)
             cycle_started=True
@@ -175,6 +199,7 @@ class TradingRuntime:
             self._publish_runtime_status()
 
             stage="LEARNING_FEEDBACK"
+            self._watchdog_arm(cycle_id, stage)
             try:
                 feedback=self.learning.process_feedback()
                 self._learning_summary=feedback
@@ -183,6 +208,7 @@ class TradingRuntime:
                 self.audit.emit("LEARNING_FEEDBACK_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
 
             stage="MARKET_DATA"
+            self._watchdog_arm(cycle_id, stage)
             market_stage_started=time.monotonic()
             ticker_captured_at=time.time()
             spot_payload,future_payload=self.gateway.public_tickers()
@@ -281,6 +307,7 @@ class TradingRuntime:
                 futures=[executor.submit(hydrate,instrument) for instrument in history_candidates]
                 for future in as_completed(futures):
                     instrument,snapshot,source=future.result()
+                    self._watchdog_heartbeat(cycle_id, stage)
                     if not snapshot or len(snapshot.closes)<30:
                         history_insufficient+=1
                         continue
@@ -302,7 +329,11 @@ class TradingRuntime:
                 snapshots,
                 feature_map,
             )
-            selected=ranked[:20]
+            selected,quote_duplicates_removed=self.scanner.select_for_cycle(
+                ranked,
+                limit=20,
+                preserve_symbols=position_symbols,
+            )
             selected_symbols={instrument.symbol for instrument in selected}
             for instrument in position_instruments:
                 if instrument.symbol in snapshots and instrument.symbol not in selected_symbols:
@@ -388,6 +419,7 @@ class TradingRuntime:
                 ]
                 for orderbook_future in as_completed(orderbook_futures):
                     instrument,snapshot=orderbook_future.result()
+                    self._watchdog_heartbeat(cycle_id, stage)
                     snapshots[instrument.symbol]=snapshot
                     feature_map[instrument.symbol]=self.features.calculate(snapshot)
                     self.db.save_market(snapshot,feature_map[instrument.symbol])
@@ -409,6 +441,7 @@ class TradingRuntime:
             )
 
             stage="MARKET_SCAN"
+            self._watchdog_arm(cycle_id, stage)
             self.audit.emit(
                 "CYCLE_MARKET_SCAN",
                 "INFO",
@@ -416,8 +449,10 @@ class TradingRuntime:
                 fast_candidates=len(snapshots),
                 ranked=len(ranked),
                 selected=len(selected),
+                quote_duplicates_removed=quote_duplicates_removed,
             )
             stage="NEWS"
+            self._watchdog_arm(cycle_id, stage)
             news_started=time.monotonic()
             news=self.news.collect() if self.config.news_enabled else []
             news_status=getattr(self.news,"last_status",{})
@@ -432,6 +467,7 @@ class TradingRuntime:
             )
 
             stage="GEMINI"
+            self._watchdog_arm(cycle_id, stage)
             gemini_started=time.monotonic()
             self.audit.emit(
                 "GEMINI_REQUEST_START",
@@ -511,6 +547,7 @@ class TradingRuntime:
             )
 
             stage="DECISIONS"
+            self._watchdog_arm(cycle_id, stage)
             model_version=self.registry.active()
             model_parameters=self.registry.parameters(model_version)
             placed=0
@@ -681,6 +718,7 @@ class TradingRuntime:
                     reduce_only=decision.reduce_only,
                 )
                 result=self.authority.submit(intent,snap)
+                self._watchdog_heartbeat(cycle_id, stage)
                 self.learning.record_order_outcome(intent.client_order_id,result)
                 if result.get("state") in {
                     "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
@@ -700,6 +738,7 @@ class TradingRuntime:
                 no_action_reasons=no_action_reasons,
             )
             stage="PORTFOLIO_FINAL"
+            self._watchdog_arm(cycle_id, stage)
             self.portfolio.set_market_context(self.instruments,latest_spot_payload)
             final_portfolio=self.portfolio.reconcile()
             self.db.save_portfolio(cycle_id,final_portfolio)
@@ -711,6 +750,7 @@ class TradingRuntime:
             except Exception as exc:
                 self.audit.emit("LEARNING_POST_CYCLE_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
             self.db.finish_cycle(cycle_id,"COMPLETED",";".join(blockers[:5]))
+            self._watchdog_clear(cycle_id)
             self.state.selected_symbol=last_decision.instrument.symbol if last_decision else ""
             self.state.last_edge_bps=str(last_decision.signal.net_edge_bps if last_decision else 0)
             self.state.last_confidence=str(last_decision.signal.confidence if last_decision else 0)
@@ -727,6 +767,7 @@ class TradingRuntime:
             return {"cycle_id":cycle_id,"status":"COMPLETED","placed":placed,"selected":len(selected),"blockers":blockers}
         except Exception as exc:
             detail=f"{stage}:{type(exc).__name__}:{str(exc)[:800]}"
+            self._watchdog_clear(cycle_id)
             self.audit.emit("CYCLE_FAILED","ERROR",cycle_id=cycle_id,stage=stage,error=f"{type(exc).__name__}:{str(exc)[:800]}",traceback=__import__("traceback").format_exc()[:3500])
             self.recovery.issue("RUNTIME_CYCLE_FAILURE",detail)
             if cycle_started:
