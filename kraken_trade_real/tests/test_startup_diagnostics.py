@@ -36,7 +36,7 @@ def test_http_adds_identifying_headers(monkeypatch):
 
     assert result["result"]["ok"] is True
     assert captured["request"].get_header("Accept") == "application/json"
-    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.14"
+    assert captured["request"].get_header("User-agent") == "Kraken-Trade-Real/0.1.15"
     assert captured["timeout"] == 15.0
 
 
