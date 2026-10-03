@@ -197,7 +197,7 @@ def test_optional_xstock_discovery_failure_does_not_hide_spot_universe(monkeypat
     assert "XXBTZEUR" in spot
     assert futures == {"instruments": []}
     assert gateway.last_public_instrument_warnings == [
-        "TimeoutError:xstock endpoint timeout"
+        "KrakenAmbiguous:NETWORK:xstock endpoint timeout"
     ]
 
 
