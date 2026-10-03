@@ -3,7 +3,9 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 import hashlib
 import json
-from typing import Any
+import signal
+import threading
+from typing import Any, Callable
 
 
 class GeminiResult(BaseModel):
@@ -29,6 +31,8 @@ class GeminiAnalyzer:
         self.timeout_seconds=max(5,min(120,int(timeout_seconds)))
         self.models=self._model_pool(self.model,fallback_models)
         self._client=None
+        self._client_init_timeout_seconds=min(10.0,float(self.timeout_seconds))
+        self._client_error=""
         self.last_model=""
 
     @staticmethod
@@ -61,18 +65,59 @@ class GeminiAnalyzer:
             return "UNAVAILABLE"
         return "ERROR"
 
+    @staticmethod
+    def _run_hard_timeout(operation:Callable[[],Any],timeout_seconds:float)->Any:
+        if (
+            timeout_seconds <= 0
+            or not hasattr(signal,"SIGALRM")
+            or threading.current_thread() is not threading.main_thread()
+        ):
+            return operation()
+        previous_handler=signal.getsignal(signal.SIGALRM)
+
+        def handler(signum,frame):
+            raise TimeoutError(f"operation exceeded hard timeout of {timeout_seconds:.1f}s")
+
+        signal.signal(signal.SIGALRM,handler)
+        signal.setitimer(signal.ITIMER_REAL,timeout_seconds)
+        try:
+            return operation()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL,0)
+            signal.signal(signal.SIGALRM,previous_handler)
+
+    def _build_client(self):
+        from google import genai
+        from google.genai import types
+        return genai.Client(
+            api_key=self.api_key,
+            http_options=types.HttpOptions(
+                timeout=self.timeout_seconds*1000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
+
     def _client_for_use(self):
-        if not self.enabled or not self.api_key:return None
+        if not self.enabled or not self.api_key:
+            return None
         if self._client is None:
-            from google import genai
-            from google.genai import types
-            self._client=genai.Client(
-                api_key=self.api_key,
-                http_options=types.HttpOptions(
-                    timeout=self.timeout_seconds*1000,
-                    retry_options=types.HttpRetryOptions(attempts=1),
-                ),
-            )
+            self._client_error=""
+            init_timeout=self._client_init_timeout_seconds
+            self.db.event("GEMINI_CLIENT_INIT_START","INFO",{"timeout_seconds":init_timeout})
+            try:
+                self._client=self._run_hard_timeout(self._build_client,init_timeout)
+            except TimeoutError:
+                self._client_error="TIMEOUT"
+                self.db.event("GEMINI_CLIENT_INIT_TIMEOUT","ERROR",{"timeout_seconds":init_timeout})
+                return None
+            except Exception as exc:
+                self._client_error="ERROR"
+                self.db.event(
+                    "GEMINI_CLIENT_INIT_FAILED","ERROR",
+                    {"error":f"{type(exc).__name__}:{str(exc)[:800]}"},
+                )
+                return None
+            self.db.event("GEMINI_CLIENT_READY","INFO",{})
         return self._client
 
     def analyze(self,news:list[dict[str,Any]],market_context:dict[str,Any])->dict[str,Any]:
