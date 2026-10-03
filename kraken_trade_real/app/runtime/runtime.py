@@ -438,6 +438,7 @@ class TradingRuntime:
                 "INFO",
                 cycle_id=cycle_id,
                 selected=len(selected),
+                configured_models=list(getattr(self.gemini,"models",[])),
                 timeout_seconds=int(getattr(self.config,"gemini_timeout_seconds",30)),
             )
             gemini_instruments=[
@@ -459,6 +460,27 @@ class TradingRuntime:
             gemini_duration=round(time.monotonic()-gemini_started,2)
             gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
             gemini_status=str(gemini.get("status","UNKNOWN"))
+            gemini_model=str(gemini.get("model",""))
+            attempted_models=list(gemini.get("attempted_models",[]))
+            fallback_used=bool(gemini.get("fallback_used",False))
+            gemini_reason=str(gemini.get("reason",""))
+            if fallback_used:
+                self.audit.emit(
+                    "GEMINI_MODEL_FALLBACK",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    primary_model=attempted_models[0] if attempted_models else "",
+                    selected_model=gemini_model,
+                    attempted_models=attempted_models,
+                )
+            if gemini_status=="QUOTA_EXHAUSTED":
+                self.audit.emit(
+                    "GEMINI_QUOTA_EXHAUSTED",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    attempted_models=attempted_models,
+                    continuation="ZERO_IMPACT_AND_CONTINUE",
+                )
             if gemini_status=="TIMEOUT":
                 self.audit.emit(
                     "GEMINI_TIMEOUT",
@@ -467,18 +489,23 @@ class TradingRuntime:
                     duration_seconds=gemini_duration,
                     timeout_seconds=int(getattr(self.config,"gemini_timeout_seconds",30)),
                 )
-            elif gemini_status=="UNAVAILABLE":
+            elif gemini_status in {"UNAVAILABLE","MODEL_UNAVAILABLE","DEGRADED"}:
                 self.audit.emit(
                     "GEMINI_UNAVAILABLE",
                     "WARNING",
                     cycle_id=cycle_id,
                     duration_seconds=gemini_duration,
+                    reason=gemini_reason,
                 )
             self.audit.emit(
                 "CYCLE_GEMINI",
                 "INFO",
                 cycle_id=cycle_id,
                 status=gemini_status,
+                model=gemini_model,
+                attempted_models=attempted_models,
+                fallback_used=fallback_used,
+                reason=gemini_reason,
                 expected_impact_bps=str(gemini_bps),
                 duration_seconds=gemini_duration,
             )
