@@ -771,7 +771,6 @@ class TradingRuntime:
                         if decision.execution_direction else ""
                     ),
                     reduce_only=decision.reduce_only,
-                    post_only=bool(method.get("post_only", False)),
                 )
                 if not risk.allowed:
                     risk_rejected+=1
@@ -820,6 +819,7 @@ class TradingRuntime:
                     quantity,
                     price,
                     reduce_only=decision.reduce_only,
+                    post_only=bool(method.get("post_only", False)),
                 )
                 result=self.authority.submit(intent,snap)
                 self._watchdog_heartbeat(cycle_id, stage)
