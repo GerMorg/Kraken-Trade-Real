@@ -71,10 +71,12 @@ class _Gateway:
 
 
 class _Authority:
-    def __init__(self, gateway):
+    def __init__(self, gateway, db):
         self.gateway = gateway
+        self.db = db
 
     def submit_funding_order(self, intent, timeout_seconds=30.0):
+        self.db.save_order_intent(intent)
         self.gateway.calls.append({"intent": intent})
         return {"state": OrderState.FILLED.value, "kraken_order_id": "FX-1"}
 
@@ -92,7 +94,7 @@ def _manager(portfolio=None, db=None, gateway=None, instruments=None):
     portfolio = portfolio or _Portfolio()
     db = db or _DB()
     gateway = gateway or _Gateway()
-    authority = _Authority(gateway)
+    authority = _Authority(gateway, db)
     return FXConversionManager(_Config(), db, _Audit(), authority, portfolio, instruments), db, gateway
 
 
