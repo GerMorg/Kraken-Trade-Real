@@ -218,7 +218,7 @@ class FXConversionManager:
             return {"ready": False, "reason": "FX_SOURCE_FUNDS_UNAVAILABLE",
                     "source_asset": source, "available_source": str(source_available),
                     "required_source": str(source_required)}
-        if self._daily_count() > int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
+        if self._daily_count() >= int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
             return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
         result = self._execute(
             self._make_intent(fx, side, quantity, f"fx_{cycle_id}", dependent_edge_bps),
