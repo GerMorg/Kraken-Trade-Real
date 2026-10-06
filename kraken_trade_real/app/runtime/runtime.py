@@ -14,6 +14,7 @@ from app.domain.models import digest_config, new_id
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
+from app.trading.fx import FXConversionManager
 
 
 D=Decimal
@@ -92,6 +93,7 @@ class TradingRuntime:
         self.registry=registry
         self.sensors=sensors
         self.tax=tax
+        self.fx=FXConversionManager(config, db, audit, gateway, portfolio, self.instruments)
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
@@ -184,6 +186,7 @@ class TradingRuntime:
                     count=len(self.instruments),
                 )
                 self.db.upsert_instruments(self.instruments)
+            self.fx.set_instruments(self.instruments)
                 self._startup_instrument_operation = "COMPLETE"
                 self.audit.emit(
                     "STARTUP_INSTRUMENT_PERSIST_COMPLETED",
@@ -344,6 +347,7 @@ class TradingRuntime:
             ticker_captured_at=time.time()
             spot_payload,future_payload=self.gateway.public_tickers()
             self.portfolio.set_market_context(self.instruments,spot_payload)
+            self.fx.set_instruments(self.instruments)
             portfolio=self.portfolio.reconcile()
             self.audit.emit(
                 "CYCLE_PORTFOLIO_RECONCILED",
@@ -957,23 +961,47 @@ class TradingRuntime:
                     required_quote = quantity * snap.price
                     available_quote = self.portfolio.cash_balance(instrument.quote)
                     if available_quote + D("0.00000001") < required_quote:
-                        reason="SPOT_QUOTE_FUNDS_UNAVAILABLE"
-                        blockers.append(f"{instrument.symbol}:{reason}")
-                        no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                        fx_result = self.fx.ensure_quote_funds(
+                            quote=instrument.quote,
+                            required_quote=required_quote,
+                            cycle_id=cycle_id,
+                            source_preference="EUR",
+                        )
+                        if not fx_result["ready"]:
+                            reason=str(fx_result["reason"])
+                            blockers.append(f"{instrument.symbol}:{reason}")
+                            no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                            continue
                         self.audit.emit(
-                            "CYCLE_ORDER_BLOCKED",
-                            "WARNING",
+                            "CYCLE_FX_FUNDING_READY",
+                            "INFO",
                             cycle_id=cycle_id,
                             symbol=instrument.symbol,
-                            reason=reason,
-                            detail={
-                                "quote_asset": str(instrument.quote),
-                                "required_quote": str(required_quote),
-                                "available_quote": str(available_quote),
-                                "required_eur": str(decision.target_notional_eur),
-                            },
+                            quote_asset=str(instrument.quote),
+                            required_quote=str(required_quote),
+                            conversion=fx_result,
                         )
-                        continue
+                        # Refresh the portfolio after the confirmed FX fill.
+                        self.portfolio.set_market_context(self.instruments,latest_spot_payload)
+                        self.portfolio.reconcile()
+                        available_quote = self.portfolio.cash_balance(instrument.quote)
+                        if available_quote + D("0.00000001") < required_quote:
+                            reason="FX_FUNDING_INSUFFICIENT_AFTER_FILL"
+                            blockers.append(f"{instrument.symbol}:{reason}")
+                            no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                            self.audit.emit(
+                                "CYCLE_ORDER_BLOCKED",
+                                "ERROR",
+                                cycle_id=cycle_id,
+                                symbol=instrument.symbol,
+                                reason=reason,
+                                detail={
+                                    "required_quote":str(required_quote),
+                                    "available_quote":str(available_quote),
+                                    "fx":fx_result,
+                                },
+                            )
+                            continue
                 method=self.authority.policy.choose(
                     snap.spread_bps,
                     decision.signal.net_edge_bps,
