@@ -152,7 +152,7 @@ class FXConversionManager:
                     continue
                 if needed_qty * bid < instrument.min_cost:
                     continue
-                if self._daily_count() > int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
+                if self._daily_count() >= int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
                     return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
                 result = self._execute(
                     self._make_intent(instrument, "sell", needed_qty, f"fund_{cycle_id}", dependent_edge_bps, True),
@@ -169,7 +169,7 @@ class FXConversionManager:
                 needed_qty = min(balance_qty, bridge_required / bid)
                 if needed_qty < instrument.min_order_qty or needed_qty * bid < instrument.min_cost:
                     continue
-                if self._daily_count() > int(getattr(self.config, "execution_max_orders_per_day", 10)) - 2:
+                if self._daily_count() >= int(getattr(self.config, "execution_max_orders_per_day", 10)) - 2:
                     return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
                 sell = self._execute(
                     self._make_intent(instrument, "sell", needed_qty, f"fund_{cycle_id}", dependent_edge_bps, True),
