@@ -199,27 +199,26 @@ class FXConversionManager:
         source_available = self.portfolio.cash_balance(source)
         missing = max(D("0"), required - available)
         cost_bps = self._fx_cost_bps()
+        target_with_reserve = missing * (D("1") + cost_bps / D("10000"))
         if target == "USD":
             ask = self._price(fx, "buy")
             if ask <= 0:
                 return {"ready": False, "reason": "EUR_USD_PRICE_UNAVAILABLE"}
-            target_with_reserve = missing * (D("1") + cost_bps / D("10000"))
             quantity = target_with_reserve / ask
             side = "buy"
+            source_required = quantity * ask
         else:
-            bid = self._price(fx, "sell")
-            if bid <= 0:
+            ask = self._price(fx, "buy")
+            if ask <= 0:
                 return {"ready": False, "reason": "EUR_USD_PRICE_UNAVAILABLE"}
-            target_with_reserve = missing * (D("1") + cost_bps / D("10000"))
+            # Buy EUR with USD; Kraken volume is EUR (the base asset).
             quantity = target_with_reserve
-            side = "sell"
-            # EUR/USD sell quantity is EUR; reserve enough USD to acquire required EUR.
-            if source_available > 0:
-                quantity = min(quantity, source_available / bid * (D("1") + cost_bps / D("10000")))
-        if source_available <= 0 or (side == "buy" and source_available < quantity):
+            side = "buy"
+            source_required = quantity * ask
+        if source_available <= 0 or source_available < source_required:
             return {"ready": False, "reason": "FX_SOURCE_FUNDS_UNAVAILABLE",
                     "source_asset": source, "available_source": str(source_available),
-                    "required_source": str(quantity)}
+                    "required_source": str(source_required)}
         if self._daily_count() > int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
             return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
         result = self._execute(
