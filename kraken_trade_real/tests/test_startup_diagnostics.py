@@ -274,6 +274,7 @@ def test_spot_query_orders_normalizes_txid_keyed_response(monkeypatch):
         instrument=SimpleNamespace(
             product_type=SimpleNamespace(value="SPOT")
         ),
+        kraken_order_id="O-123",
     )
 
     assert result == [
