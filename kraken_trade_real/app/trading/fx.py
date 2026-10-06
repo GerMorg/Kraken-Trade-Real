@@ -239,6 +239,9 @@ class FXConversionManager:
         if available >= required_quote:
             return {"ready": True, "converted": False, "reason": "QUOTE_FUNDS_AVAILABLE",
                     "available_quote": str(available)}
+        # Funding must leave one order slot for the dependent trade.
+        if self._daily_count() >= int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
+            return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
 
         # Direct cash conversion first. This is deliberately preferred to selling a position.
         if target in {"EUR", "USD"}:
