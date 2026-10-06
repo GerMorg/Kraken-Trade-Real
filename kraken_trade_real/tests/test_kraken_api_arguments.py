@@ -339,3 +339,46 @@ def test_authority_rejects_unleveraged_spot_margin_short(config, db, instrument)
     check = authority._preflight(intent, market)
     assert check["allowed"] is False
     assert check["reason"] == "SPOT_MARGIN_SHORT_REQUIRES_LEVERAGE"
+
+
+def test_spot_lookup_order_uses_kraken_order_id_not_client_order_id():
+    gateway = KrakenGateway("", "")
+    captured = {}
+
+    def fake_private(method, params=None):
+        captured["method"] = method
+        captured["params"] = dict(params or {})
+        return {"O-HISTORICAL": {"status": "closed", "vol": "1", "vol_exec": "1"}}
+
+    gateway.spot_private = fake_private
+    instrument = Instrument(
+        venue="spot",
+        product_type=ProductType.SPOT,
+        symbol="BTC/USD",
+        instrument_id="XXBTZUSD",
+        altname="XBTUSD",
+        base="BTC",
+        quote="USD",
+        status="online",
+        margin_available=False,
+        long_available=True,
+        short_available=False,
+        leverage_levels=(Decimal("1"),),
+        min_order_qty=Decimal("0.0001"),
+        min_cost=Decimal("1"),
+        lot_decimals=8,
+        price_decimals=2,
+        tick_size=Decimal("0.01"),
+        margin_class="spot",
+        metadata={},
+    )
+
+    found = gateway.lookup_order(
+        client_order_id="11111111-2222-4333-8444-555555555563",
+        instrument=instrument,
+        kraken_order_id="O-HISTORICAL",
+    )
+
+    assert captured["method"] == "QueryOrders"
+    assert captured["params"] == {"txid": "O-HISTORICAL"}
+    assert found[0]["txid"] == "O-HISTORICAL"
