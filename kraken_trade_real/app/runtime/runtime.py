@@ -829,20 +829,54 @@ class TradingRuntime:
                     portfolio.gross_eur/portfolio.equity_eur*100
                     if portfolio.equity_eur else D("999")
                 )
+                margin_account = (
+                    self.portfolio.futures_margin_account
+                    if instrument.product_type.value == "DERIVATIVE"
+                    else self.portfolio.spot_margin_account
+                )
+                margin_level_pct = (
+                    D(str(margin_account.get("margin_level_pct") or 0))
+                    if isinstance(margin_account, dict)
+                    else None
+                )
+                execution_direction = decision.execution_direction or decision.signal.direction
+                require_margin = (
+                    instrument.product_type.value == "SPOT_MARGIN"
+                    and execution_direction.value == "SHORT"
+                    and decision.current_position_eur == 0
+                )
                 lev=self.leverage.choose(
                     instrument,
                     f,
                     confidence,
                     gross_pct,
-                    self.portfolio.margin_account,
+                    margin_level_pct,
                     self.config.risk_max_leverage,
+                    require_margin=require_margin,
                 )
+                if require_margin and lev < D("2"):
+                    reason="SPOT_MARGIN_SHORT_NOT_ELIGIBLE"
+                    blockers.append(f"{instrument.symbol}:{reason}")
+                    no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                    self.audit.emit(
+                        "CYCLE_ORDER_BLOCKED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        reason=reason,
+                        detail={
+                            "max_supported_leverage": str(instrument.max_leverage),
+                            "configured_max_leverage": str(self.config.risk_max_leverage),
+                            "margin_level_pct": str(margin_level_pct or 0),
+                        },
+                    )
+                    continue
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
                 risk=self.risk.evaluate(
                     decision,
                     portfolio,
                     snap,
-                    self.portfolio.margin_account,
+                    margin_account,
                 )
                 self.db.save_decision(decision)
                 prediction_id=new_id("prediction")
@@ -874,6 +908,7 @@ class TradingRuntime:
                     current_position_eur=str(decision.current_position_eur),
                     target_position_eur=str(decision.target_position_eur),
                     trade_notional_eur=str(decision.target_notional_eur),
+                    leverage=str(decision.leverage),
                     execution_direction=(
                         decision.execution_direction.value
                         if decision.execution_direction else ""
@@ -913,6 +948,32 @@ class TradingRuntime:
                         checks={"quote_to_eur":False},
                     )
                     continue
+                if (
+                    instrument.venue == "spot"
+                    and execution_direction.value == "LONG"
+                    and decision.target_position_eur > decision.current_position_eur
+                    and lev <= D("1")
+                ):
+                    required_quote = quantity * snap.price
+                    available_quote = self.portfolio.cash_balance(instrument.quote)
+                    if available_quote + D("0.00000001") < required_quote:
+                        reason="SPOT_QUOTE_FUNDS_UNAVAILABLE"
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                        self.audit.emit(
+                            "CYCLE_ORDER_BLOCKED",
+                            "WARNING",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            reason=reason,
+                            detail={
+                                "quote_asset": str(instrument.quote),
+                                "required_quote": str(required_quote),
+                                "available_quote": str(available_quote),
+                                "required_eur": str(decision.target_notional_eur),
+                            },
+                        )
+                        continue
                 method=self.authority.policy.choose(
                     snap.spread_bps,
                     decision.signal.net_edge_bps,

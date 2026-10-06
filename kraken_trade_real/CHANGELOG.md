@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.23
+
+- Fix Spot-Margin USD short execution: a new short position on a margin-capable Spot pair must use an actual Kraken margin leverage level; the runtime no longer silently falls back to an unleveraged Spot sell that can fail with insufficient funds.
+- Reconcile Kraken Spot margin health from TradeBalance and route the correct Spot/Futures margin account into leverage and risk evaluation.
+- Track per-asset Spot cash so non-margin USD quote purchases are blocked locally when the required USD quote balance is unavailable, instead of reaching Kraken and failing there.
+- Reconcile all still-open order states, including ACKNOWLEDGED/LIVE/PARTIALLY_FILLED, so stale acknowledged orders cannot permanently block rebalancing.
+- Interpret Kraken QueryOrders status "closed" using executed volume so completed orders become FILLED and partially executed closed orders become PARTIALLY_FILLED.
+- Prevent automatic learning promotion when the candidate's absolute calibration quality remains poor despite relative improvement.
+- Add regression tests for USD margin payloads, order reconciliation and calibration quality gates.
+- Bump application/package/Home Assistant add-on and Kraken User-Agent version to 0.1.23.
+
 ## 0.1.22
 
 - Fix a position-management deadlock where held positions were evaluated but discarded by the new-entry MIN_EDGE gate before a reduce-only decision could be created.

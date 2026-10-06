@@ -50,6 +50,9 @@ class PortfolioReconciler:
         self.gateway = gateway
         self.db = db
         self.margin_account: dict[str, Any] | None = None
+        self.spot_margin_account: dict[str, Any] | None = None
+        self.futures_margin_account: dict[str, Any] | None = None
+        self.cash_balances: dict[str, D] = {}
         self.instruments: list[Instrument] = []
         self.spot_tickers: dict[str, Any] = {}
 
@@ -160,6 +163,10 @@ class PortfolioReconciler:
                 queue.append((nxt, rate * edge, depth + 1))
         return None
 
+    def cash_balance(self, asset: str) -> D:
+        """Return the current spot cash balance in canonical asset units."""
+        return self.cash_balances.get(canonical_asset(asset), D("0"))
+
     def min_cost_eur(self, instrument: Instrument) -> D | None:
         rate = self.quote_to_eur_rate(instrument.quote)
         return instrument.min_cost * rate if rate is not None else None
@@ -216,8 +223,11 @@ class PortfolioReconciler:
     def reconcile(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
         positions: dict[str, D] = {}
+        self.cash_balances = {}
+        self.spot_margin_account = None
+        self.futures_margin_account = None
+        self.margin_account = None
         if not self.gateway.api_key:
-            self.margin_account = None
             return PortfolioState()
         try:
             balances = self.gateway.spot_balance()
@@ -226,6 +236,9 @@ class PortfolioReconciler:
                 if quantity == 0:
                     continue
                 canonical = canonical_asset(asset)
+                self.cash_balances[canonical] = (
+                    self.cash_balances.get(canonical, D("0")) + quantity
+                )
                 if canonical in CASH_ASSETS:
                     rate = self.quote_to_eur_rate(canonical)
                     if rate is None:
@@ -260,6 +273,26 @@ class PortfolioReconciler:
             )
             equity = dec(tb.get("eb") or tb.get("tb") or cash)
             realized = dec(tb.get("n"))
+            spot_equity = dec(tb.get("e") or equity)
+            used_margin = max(D("0"), dec(tb.get("m")))
+            free_margin = dec(tb.get("mf"))
+            if free_margin <= 0 and spot_equity > used_margin:
+                free_margin = spot_equity - used_margin
+            margin_level = dec(tb.get("ml"))
+            if margin_level <= 0:
+                margin_level = (
+                    spot_equity / used_margin * D("100")
+                    if used_margin > 0
+                    else D("9999")
+                )
+            self.spot_margin_account = {
+                "source": "spot",
+                "free_margin": str(max(D("0"), free_margin)),
+                "margin_level_pct": str(margin_level),
+                "equity_eur": str(spot_equity),
+                "used_margin_eur": str(used_margin),
+            }
+            self.margin_account = self.spot_margin_account
         except Exception as exc:
             self.db.event(
                 "PORTFOLIO_SPOT_READ_FAILED",
@@ -305,12 +338,14 @@ class PortfolioReconciler:
                 acct: dict[str, Any] = (
                     next(iter(accounts.values()), {}) if isinstance(accounts, dict) else {}
                 )
-                self.margin_account = {
+                self.futures_margin_account = {
+                    "source": "futures",
                     "free_margin": str(
                         acct.get("availableMargin") or acct.get("freeMargin") or 0
                     ),
                     "margin_level_pct": str(acct.get("marginLevel") or 9999),
                 }
+                self.margin_account = self.futures_margin_account
                 equity = max(
                     equity,
                     dec(acct.get("portfolioValue") or acct.get("equity") or 0),

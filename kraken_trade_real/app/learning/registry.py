@@ -6,6 +6,9 @@ from typing import Any
 
 
 class ModelRegistry:
+    MAX_PROMOTED_BRIER = 0.25
+    MAX_PROMOTED_ECE = 0.15
+
     def __init__(self, db: Any) -> None:
         self.db=db
         self.ensure()
@@ -48,8 +51,27 @@ class ModelRegistry:
         if not row:
             return False
         metrics=json.loads(row["metrics_json"])
-        if int(metrics.get("samples",0))<min_samples or float(metrics.get("improvement",0))<min_improvement:
-            self.db.learning_event("MODEL_NOT_PROMOTED",version,metrics)
+        invalid_quality = (
+            float(metrics.get("brier", 1.0)) > self.MAX_PROMOTED_BRIER
+            or float(metrics.get("ece", 1.0)) > self.MAX_PROMOTED_ECE
+        )
+        if (
+            int(metrics.get("samples",0)) < min_samples
+            or float(metrics.get("improvement",0)) < min_improvement
+            or invalid_quality
+        ):
+            self.db.learning_event(
+                "MODEL_NOT_PROMOTED",
+                version,
+                {
+                    **metrics,
+                    "quality_gate": {
+                        "max_brier": self.MAX_PROMOTED_BRIER,
+                        "max_ece": self.MAX_PROMOTED_ECE,
+                        "failed": invalid_quality,
+                    },
+                },
+            )
             return False
         with self.db.connect() as con:
             con.execute("UPDATE model_versions SET status='RETIRED' WHERE family=? AND status='ACTIVE'",(row["family"],))
