@@ -9,3 +9,13 @@ def test_model_registry_requires_minimum_samples(db):
     r.register_candidate("candidate-v2","decision","baseline-v1",{"x":1},{"samples":10,"improvement":1})
     assert r.promote("candidate-v2",min_improvement=.05,min_samples=100) is False
     assert r.active()=="baseline-v1"
+
+
+def test_model_registry_rejects_poor_absolute_quality(db):
+    r=ModelRegistry(db)
+    r.register_candidate(
+        "candidate-poor-quality", "decision", "baseline-v1", {"x":1},
+        {"samples":1000,"improvement":0.3,"brier":0.31,"ece":0.20},
+    )
+    assert r.promote("candidate-poor-quality",min_improvement=.05,min_samples=1000) is False
+    assert r.active()=="baseline-v1"
