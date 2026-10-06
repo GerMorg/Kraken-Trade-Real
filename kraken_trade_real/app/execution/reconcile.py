@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from app.domain.states import OrderState
 
 
@@ -15,6 +17,15 @@ class ExecutionReconciler:
     def state_from_exchange(self, payload: object) -> OrderState:
         if isinstance(payload, dict):
             status=str(payload.get("status") or payload.get("state") or "").lower()
+            if status == "closed":
+                try:
+                    requested = Decimal(str(payload.get("vol") or "0"))
+                    executed = Decimal(str(payload.get("vol_exec") or "0"))
+                except (TypeError, ValueError):
+                    requested = executed = Decimal("0")
+                if requested > 0 and 0 < executed < requested:
+                    return OrderState.PARTIALLY_FILLED
+                return OrderState.FILLED
             if status in self.TERMINAL:
                 return self.TERMINAL[status]
             if status in {"partially_filled","partial"}:
