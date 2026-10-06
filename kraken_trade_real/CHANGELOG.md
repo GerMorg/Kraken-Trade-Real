@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.25
+
+- Fix Spot order reconciliation to use the persisted Kraken transaction/order ID with QueryOrders instead of the unsupported cl_ord_id query argument.
+- Preserve ambiguous state when a historical order has no Kraken order ID; only an exact open-order match can resolve it safely.
+- Pass persisted Kraken order IDs through stale-order and preflight reconciliation.
+- Add regression coverage for the Kraken Spot reconciliation query contract.
+
 ## 0.1.24
 
 - Replace the previous non-EUR quote-currency blocker with automatic quote funding for Spot trades.
