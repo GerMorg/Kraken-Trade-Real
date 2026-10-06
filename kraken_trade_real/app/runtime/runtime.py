@@ -908,6 +908,7 @@ class TradingRuntime:
                     current_position_eur=str(decision.current_position_eur),
                     target_position_eur=str(decision.target_position_eur),
                     trade_notional_eur=str(decision.target_notional_eur),
+                    leverage=str(decision.leverage),
                     execution_direction=(
                         decision.execution_direction.value
                         if decision.execution_direction else ""
