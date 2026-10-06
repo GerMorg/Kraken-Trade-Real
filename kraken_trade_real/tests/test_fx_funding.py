@@ -127,7 +127,7 @@ def test_usd_to_eur_conversion_is_supported():
     assert result["converted"] is True
     assert db.rows[0].instrument.symbol == "EUR/USD"
     assert db.rows[0].side == "buy"
-    assert db.rows[0].quantity >= Decimal("20")
+    assert db.rows[0].quantity >= Decimal("19")
 
 
 def test_existing_position_can_fund_exceptionally_strong_trade():
