@@ -410,3 +410,49 @@ def test_legacy_invalid_client_order_id_is_cleared_from_unknown_gate(
     assert row is not None
     assert row["state"] == OrderState.REJECTED.value
     assert row["last_error"] == "INVALID_CLIENT_ORDER_ID_LEGACY"
+
+
+def test_acknowledged_order_is_reconciled_and_closed_fill_is_terminal(config, db, instrument):
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    class Gateway:
+        def lookup_order(self, **kwargs):
+            return [{"status": "closed", "txid": "O-CLOSED", "vol": "1", "vol_exec": "1"}]
+
+    intent = OrderIntent(
+        "intent_ack_closed",
+        "11111111-2222-4333-8444-555555555561",
+        "decision_ack_closed",
+        instrument,
+        Direction.LONG, "buy", "limit",
+        Decimal("0.001"), Decimal("60000"), Decimal("1"),
+        True, False, Decimal("30"), Decimal("40"), 45,
+        state=OrderState.ACKNOWLEDGED,
+    )
+    db.save_order_intent(intent)
+    db.update_order_state(
+        intent.client_order_id,
+        OrderState.ACKNOWLEDGED.value,
+        submitted_at=time.time() - 120,
+    )
+
+    authority = TradingAuthority(
+        config,
+        Gateway(),
+        db,
+        AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    stats = authority.reconcile_pending([instrument])
+    row = db.one(
+        "SELECT state,kraken_order_id FROM orders WHERE client_order_id=?",
+        (intent.client_order_id,),
+    )
+    assert stats["checked"] == 1
+    assert stats["resolved"] == 1
+    assert row is not None
+    assert row["state"] == OrderState.FILLED.value
+    assert row["kraken_order_id"] == "O-CLOSED"
