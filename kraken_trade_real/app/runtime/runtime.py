@@ -186,7 +186,7 @@ class TradingRuntime:
                     count=len(self.instruments),
                 )
                 self.db.upsert_instruments(self.instruments)
-            self.fx.set_instruments(self.instruments)
+                self.fx.set_instruments(self.instruments)
                 self._startup_instrument_operation = "COMPLETE"
                 self.audit.emit(
                     "STARTUP_INSTRUMENT_PERSIST_COMPLETED",
