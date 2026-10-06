@@ -69,7 +69,7 @@ class TradingAuthority:
         instrument_map = {instrument.symbol: instrument for instrument in instruments}
         rows = self.db.query(
             "SELECT client_order_id,symbol,state,created_at,submitted_at "
-            "FROM orders WHERE state IN ('SUBMITTING','UNKNOWN_RECONCILING') "
+            "FROM orders WHERE state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING') "
             "ORDER BY COALESCE(submitted_at,created_at),created_at LIMIT ?",
             (max_items,),
         )
@@ -381,6 +381,16 @@ class TradingAuthority:
             return {"allowed": False, "reason": "INSTRUMENT_NOT_TRADEABLE"}
         if (
             intent.direction.value == "SHORT"
+            and intent.instrument.product_type.value == "SPOT_MARGIN"
+            and not intent.reduce_only
+            and intent.leverage <= D("1")
+        ):
+            return {
+                "allowed": False,
+                "reason": "SPOT_MARGIN_SHORT_REQUIRES_LEVERAGE",
+            }
+        if (
+            intent.direction.value == "SHORT"
             and not intent.instrument.short_available
             and not intent.reduce_only
         ):
@@ -502,7 +512,7 @@ class TradingAuthority:
         remaining: list[dict[str, Any]] = []
         for row in open_orders:
             state = str(row.get("state", ""))
-            if state not in {"SUBMITTING", "UNKNOWN_RECONCILING"}:
+            if state not in self.OPEN_STATES:
                 remaining.append(row)
                 continue
             client_order_id = str(row.get("client_order_id", ""))
