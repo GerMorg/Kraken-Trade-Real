@@ -93,7 +93,6 @@ class TradingRuntime:
         self.registry=registry
         self.sensors=sensors
         self.tax=tax
-        self.fx=FXConversionManager(config, db, audit, gateway, portfolio, self.instruments)
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
@@ -102,6 +101,7 @@ class TradingRuntime:
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
+        self.fx=FXConversionManager(config, db, audit, gateway, portfolio, self.instruments)
         self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:
