@@ -4,8 +4,8 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from app.domain.models import new_client_order_id
-from app.domain.states import OrderState
+from app.domain.models import OrderIntent, new_client_order_id
+from app.domain.states import Direction, OrderState
 
 D = Decimal
 
@@ -104,6 +104,42 @@ class FXConversionManager:
                     "fx_cost_reserve_bps": str(cost_bps)}
 
         client_order_id = new_client_order_id()
+        fx_intent = OrderIntent(
+            intent_id=f"fx_{client_order_id}",
+            client_order_id=client_order_id,
+            decision_id=f"fx_{cycle_id}",
+            instrument=fx,
+            direction=Direction.LONG,
+            side="buy",
+            order_type="market",
+            quantity=eur_required,
+            limit_price=None,
+            leverage=D("1"),
+            margin=False,
+            reduce_only=False,
+            expected_edge_bps=D("0"),
+            max_slippage_bps=D(str(getattr(
+                self.config, "execution_max_slippage_bps", "40"
+            ))),
+            expires_seconds=int(getattr(
+                self.config, "execution_order_timeout_seconds", 45
+            )),
+        )
+        daily = self.db.one(
+            "SELECT COUNT(*) AS n FROM orders WHERE submitted_at IS NOT NULL "
+            "AND state != 'REJECTED' "
+            "AND submitted_at>=strftime('%s','now','start of day')"
+        )
+        daily_n = int(daily["n"]) if daily else 0
+        daily_limit = int(getattr(self.config, "execution_max_orders_per_day", 10))
+        if daily_n >= max(0, daily_limit - 1):
+            return {
+                "ready": False,
+                "reason": "DAILY_ORDER_LIMIT_FX_RESERVE",
+                "submitted_today": daily_n,
+                "limit": daily_limit,
+            }
+        self.db.save_order_intent(fx_intent)
         self.audit.emit(
             "FX_CONVERSION_START", "INFO", cycle_id=cycle_id, symbol=fx.symbol,
             direction="EUR_TO_USD", source_asset="EUR", target_asset="USD",
@@ -112,6 +148,9 @@ class FXConversionManager:
         )
         try:
             # Kraken's volume for EUR/USD is EUR (the base asset).
+            self.db.update_order_state(
+                client_order_id, OrderState.SUBMITTING.value, submitted_at=time.time()
+            )
             response = self.gateway.submit_spot_order(
                 instrument_id=fx.instrument_id, side="buy", order_type="market",
                 quantity=eur_required, price=None, client_order_id=client_order_id,
@@ -119,7 +158,13 @@ class FXConversionManager:
             )
             txids = response.get("txid", []) if isinstance(response, dict) else []
             if not txids:
+                self.db.update_order_state(
+                    client_order_id, OrderState.REJECTED.value, last_error="FX_NO_ORDER_ID"
+                )
                 return {"ready": False, "reason": "FX_NO_ORDER_ID", "response": response}
+            self.db.update_order_state(
+                client_order_id, OrderState.ACKNOWLEDGED.value, kraken_order_id=txids[0]
+            )
             deadline = time.monotonic() + self.FX_MAX_WAIT_SECONDS
             final_state = OrderState.ACKNOWLEDGED
             while time.monotonic() < deadline:
@@ -143,6 +188,9 @@ class FXConversionManager:
                         break
                 time.sleep(self.FX_POLL_SECONDS)
 
+            self.db.update_order_state(
+                client_order_id, final_state.value, kraken_order_id=txids[0]
+            )
             if final_state not in {OrderState.FILLED, OrderState.PARTIALLY_FILLED}:
                 self.audit.emit(
                     "FX_CONVERSION_FAILED", "ERROR", cycle_id=cycle_id,
@@ -162,6 +210,10 @@ class FXConversionManager:
                     "client_order_id": client_order_id,
                     "expected_cost_bps": str(cost_bps)}
         except Exception as exc:
+            self.db.update_order_state(
+                client_order_id, OrderState.REJECTED.value,
+                last_error=f"{type(exc).__name__}:{str(exc)[:500]}"
+            )
             self.audit.emit(
                 "FX_CONVERSION_FAILED", "ERROR", cycle_id=cycle_id,
                 symbol=fx.symbol, client_order_id=client_order_id,
