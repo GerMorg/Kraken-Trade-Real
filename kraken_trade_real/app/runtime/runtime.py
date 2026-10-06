@@ -14,6 +14,7 @@ from app.domain.models import digest_config, new_id
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
+from app.trading.fx import FXConversionManager
 
 
 D=Decimal
@@ -100,6 +101,7 @@ class TradingRuntime:
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
+        self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
         self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:
@@ -184,6 +186,7 @@ class TradingRuntime:
                     count=len(self.instruments),
                 )
                 self.db.upsert_instruments(self.instruments)
+                self.fx.set_instruments(self.instruments)
                 self._startup_instrument_operation = "COMPLETE"
                 self.audit.emit(
                     "STARTUP_INSTRUMENT_PERSIST_COMPLETED",
@@ -344,6 +347,7 @@ class TradingRuntime:
             ticker_captured_at=time.time()
             spot_payload,future_payload=self.gateway.public_tickers()
             self.portfolio.set_market_context(self.instruments,spot_payload)
+            self.fx.set_instruments(self.instruments)
             portfolio=self.portfolio.reconcile()
             self.audit.emit(
                 "CYCLE_PORTFOLIO_RECONCILED",
@@ -872,6 +876,53 @@ class TradingRuntime:
                     )
                     continue
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
+
+                # If the quote wallet is short, the dependent trade has an
+                # additional EUR/USD conversion cost. Include that cost in the
+                # edge before risk evaluates the entry threshold.
+                fx_needed = False
+                if (
+                    instrument.venue == "spot"
+                    and execution_direction.value == "LONG"
+                    and decision.target_position_eur > decision.current_position_eur
+                ):
+                    provisional_qty = self.portfolio.quantity_for_eur(
+                        instrument, decision.target_notional_eur, snap.price
+                    )
+                    if provisional_qty is not None:
+                        provisional_quote = provisional_qty * snap.price
+                        fx_needed = (
+                            self.portfolio.cash_balance(instrument.quote)
+                            + D("0.00000001") < provisional_quote
+                        )
+                if fx_needed:
+                    fx_cost_bps = D(str(getattr(
+                        self.config, "execution_fx_cost_bps", "40"
+                    )))
+                    position_funding_cost_bps = D(str(getattr(
+                        self.config, "execution_position_funding_cost_bps", "40"
+                    )))
+                    signal = __import__("dataclasses").replace(
+                        decision.signal,
+                        expected_cost_bps=(
+                            decision.signal.expected_cost_bps + fx_cost_bps + position_funding_cost_bps
+                        ),
+                    )
+                    rationale = dict(decision.rationale)
+                    rationale["fx_funding_required"] = True
+                    rationale["fx_cost_bps"] = str(fx_cost_bps)
+                    rationale["position_funding_cost_bps"] = str(position_funding_cost_bps)
+                    decision=__import__("dataclasses").replace(
+                        decision, signal=signal, rationale=rationale
+                    )
+                    self.audit.emit(
+                        "CYCLE_FX_COST_INCLUDED",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        fx_cost_bps=str(fx_cost_bps),
+                    )
+
                 risk=self.risk.evaluate(
                     decision,
                     portfolio,
@@ -957,23 +1008,50 @@ class TradingRuntime:
                     required_quote = quantity * snap.price
                     available_quote = self.portfolio.cash_balance(instrument.quote)
                     if available_quote + D("0.00000001") < required_quote:
-                        reason="SPOT_QUOTE_FUNDS_UNAVAILABLE"
-                        blockers.append(f"{instrument.symbol}:{reason}")
-                        no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                        fx_result = self.fx.ensure_quote_funds(
+                            quote=instrument.quote,
+                            required_quote=required_quote,
+                            cycle_id=cycle_id,
+                            source_preference="EUR",
+                            dependent_edge_bps=decision.signal.net_edge_bps,
+                            protected_symbol=instrument.symbol,
+                        )
+                        if not fx_result["ready"]:
+                            reason=str(fx_result["reason"])
+                            blockers.append(f"{instrument.symbol}:{reason}")
+                            no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                            continue
                         self.audit.emit(
-                            "CYCLE_ORDER_BLOCKED",
-                            "WARNING",
+                            "CYCLE_FX_FUNDING_READY",
+                            "INFO",
                             cycle_id=cycle_id,
                             symbol=instrument.symbol,
-                            reason=reason,
-                            detail={
-                                "quote_asset": str(instrument.quote),
-                                "required_quote": str(required_quote),
-                                "available_quote": str(available_quote),
-                                "required_eur": str(decision.target_notional_eur),
-                            },
+                            quote_asset=str(instrument.quote),
+                            required_quote=str(required_quote),
+                            conversion=fx_result,
+                            dependent_net_edge_bps=str(decision.signal.net_edge_bps),
                         )
-                        continue
+                        # Refresh the portfolio after the confirmed FX fill.
+                        self.portfolio.set_market_context(self.instruments,spot_payload)
+                        self.portfolio.reconcile()
+                        available_quote = self.portfolio.cash_balance(instrument.quote)
+                        if available_quote + D("0.00000001") < required_quote:
+                            reason="FX_FUNDING_INSUFFICIENT_AFTER_FILL"
+                            blockers.append(f"{instrument.symbol}:{reason}")
+                            no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                            self.audit.emit(
+                                "CYCLE_ORDER_BLOCKED",
+                                "ERROR",
+                                cycle_id=cycle_id,
+                                symbol=instrument.symbol,
+                                reason=reason,
+                                detail={
+                                    "required_quote":str(required_quote),
+                                    "available_quote":str(available_quote),
+                                    "fx":fx_result,
+                                },
+                            )
+                            continue
                 method=self.authority.policy.choose(
                     snap.spread_bps,
                     decision.signal.net_edge_bps,
