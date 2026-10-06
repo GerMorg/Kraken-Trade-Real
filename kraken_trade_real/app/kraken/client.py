@@ -375,11 +375,21 @@ class KrakenGateway:
             body["reduceOnly"] = "true"
         return self.futures_private("sendorder", body)
 
-    def lookup_order(self, *, client_order_id: str, instrument: Any):
+    def lookup_order(self, *, client_order_id: str, instrument: Any, kraken_order_id: str | None = None):
         if getattr(instrument.product_type, "value", "") == "DERIVATIVE":
             result = self.futures_private("ordersstatus", {"cliOrdId": client_order_id})
             return list(result.get("orders") or [])
-        result = self.spot_private("QueryOrders", {"cl_ord_id": client_order_id})
+        # Spot QueryOrders is keyed by Kraken order/transaction id. Kraken's
+        # client-order-id support is for order placement/cancel flow, not a
+        # reliable historical QueryOrders filter. Prefer the persisted Kraken
+        # order id so stale ACKNOWLEDGED orders can be resolved after restart.
+        params = {"txid": kraken_order_id} if kraken_order_id else {}
+        if not params:
+            # No exchange id means the order cannot be safely identified from
+            # QueryOrders. Return no match rather than sending an unsupported
+            # cl_ord_id argument that Kraken rejects with EGeneral:Invalid arguments.
+            return []
+        result = self.spot_private("QueryOrders", params)
         # Spot QueryOrders returns an object keyed by Kraken txid. Normalize
         # each order so the reconciler sees status and the Kraken identifier.
         if not isinstance(result, dict):
