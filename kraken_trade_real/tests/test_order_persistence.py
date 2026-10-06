@@ -90,8 +90,8 @@ def test_rejected_intents_do_not_trigger_cooldown_or_daily_limit(config, db, ins
     check=authority._preflight(candidate,market)
     assert check["allowed"] is True
 
-    # A real submission that was accepted by the exchange must consume the
-    # daily submission budget even if it has not filled yet.
+    # An exchange-accepted submission must consume the daily budget even before fill;
+    # a deterministic rejection must not.
     for i in range(config.execution_max_orders_per_day):
         intent=OrderIntent(
             f"intent_accepted_{i}",f"client_accepted_{i}",f"decision_accepted_{i}",instrument,
