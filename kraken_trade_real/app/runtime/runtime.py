@@ -899,15 +899,19 @@ class TradingRuntime:
                     fx_cost_bps = D(str(getattr(
                         self.config, "execution_fx_cost_bps", "40"
                     )))
+                    position_funding_cost_bps = D(str(getattr(
+                        self.config, "execution_position_funding_cost_bps", "40"
+                    )))
                     signal = __import__("dataclasses").replace(
                         decision.signal,
                         expected_cost_bps=(
-                            decision.signal.expected_cost_bps + fx_cost_bps
+                            decision.signal.expected_cost_bps + fx_cost_bps + position_funding_cost_bps
                         ),
                     )
                     rationale = dict(decision.rationale)
                     rationale["fx_funding_required"] = True
                     rationale["fx_cost_bps"] = str(fx_cost_bps)
+                    rationale["position_funding_cost_bps"] = str(position_funding_cost_bps)
                     decision=__import__("dataclasses").replace(
                         decision, signal=signal, rationale=rationale
                     )
