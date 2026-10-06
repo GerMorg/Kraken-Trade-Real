@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.22
+
+- Fix a position-management deadlock where held positions were evaluated but discarded by the new-entry MIN_EDGE gate before a reduce-only decision could be created.
+- Add an explicit negative-edge exit path: when an existing long/short position has non-positive net edge, the strategy creates a reduce-only flattening decision even if entry confidence/edge thresholds are not met.
+- Allow reduce-only risk reduction to bypass entry-only edge and confidence gates while retaining all hard portfolio, drawdown, daily-loss, leverage, direction, minimum-cost and other safety limits.
+- Prevent deterministically rejected orders from consuming the daily submission limit or one-minute direction cooldown after the exchange has confirmed rejection.
+- Add regression tests proving negative-edge held positions are flattened and rejected submissions do not exhaust the daily order budget.
+- Bump application/package/Home Assistant add-on and Kraken User-Agent version to 0.1.22.
+
 ## 0.1.21
 
 - Fix slow Home Assistant startup caused by bulk instrument persistence running executemany() in SQLite autocommit mode, which committed each Kraken instrument separately.
