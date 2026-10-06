@@ -75,6 +75,7 @@ class _Authority:
         self.gateway = gateway
 
     def submit_funding_order(self, intent, timeout_seconds=30.0):
+        self.gateway.calls.append({"intent": intent})
         return {"state": OrderState.FILLED.value, "kraken_order_id": "FX-1"}
 
 
