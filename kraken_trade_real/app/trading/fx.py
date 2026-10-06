@@ -152,7 +152,6 @@ class FXConversionManager:
                     continue
                 if needed_qty * bid < instrument.min_cost:
                     continue
-                reserve = 1
                 if self._daily_count() > int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
                     return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
                 result = self._execute(
