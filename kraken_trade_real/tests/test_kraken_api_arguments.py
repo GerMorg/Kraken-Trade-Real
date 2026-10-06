@@ -11,6 +11,33 @@ from app.execution import ExecutionPolicy, ExecutionReconciler
 from app.trading.authority import TradingAuthority
 
 
+def test_spot_margin_short_payload_contains_leverage():
+    gateway = KrakenGateway("", "")
+    captured = {}
+
+    def fake_private(method, params=None):
+        captured["method"] = method
+        captured["params"] = dict(params or {})
+        return {"txid": ["O-MARGIN"]}
+
+    gateway.spot_private = fake_private
+    gateway.submit_spot_order(
+        instrument_id="MINAZUSD",
+        side="sell",
+        order_type="limit",
+        quantity=Decimal("5"),
+        price=Decimal("0.5"),
+        client_order_id="11111111-2222-4333-8444-555555555560",
+        leverage=Decimal("2"),
+        margin=True,
+        reduce_only=False,
+    )
+    assert captured["method"] == "AddOrder"
+    assert captured["params"]["leverage"] == "2"
+    assert captured["params"]["type"] == "sell"
+    assert "margin" not in captured["params"]
+
+
 def test_spot_margin_order_omits_invalid_leverage_one():
     gateway = KrakenGateway("", "")
     captured = {}
