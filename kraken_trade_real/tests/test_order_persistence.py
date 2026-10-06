@@ -101,7 +101,7 @@ def test_rejected_intents_do_not_trigger_cooldown_or_daily_limit(config, db, ins
         db.save_order_intent(intent)
         db.update_order_state(
             intent.client_order_id,
-            OrderState.ACKNOWLEDGED.value,
+            OrderState.CANCELED.value,
             submitted_at=time.time(),
         )
 
@@ -138,7 +138,7 @@ def test_real_submission_timestamp_triggers_cooldown(config, db, instrument):
         True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
     )
     db.save_order_intent(first)
-    db.update_order_state(first.client_order_id,OrderState.REJECTED.value,submitted_at=time.time(),last_error="TEST_SUBMITTED")
+    db.update_order_state(first.client_order_id,OrderState.ACKNOWLEDGED.value,submitted_at=time.time(),last_error="TEST_SUBMITTED")
     candidate=OrderIntent(
         "intent_candidate2","client_candidate2","decision_candidate2",instrument,
         Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
