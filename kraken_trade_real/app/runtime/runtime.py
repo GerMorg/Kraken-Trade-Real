@@ -101,7 +101,7 @@ class TradingRuntime:
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
-        self.fx=FXConversionManager(config, db, audit, gateway, portfolio, self.instruments)
+        self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
         self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:
@@ -1009,6 +1009,8 @@ class TradingRuntime:
                             required_quote=required_quote,
                             cycle_id=cycle_id,
                             source_preference="EUR",
+                            dependent_edge_bps=decision.signal.net_edge_bps,
+                            protected_symbol=instrument.symbol,
                         )
                         if not fx_result["ready"]:
                             reason=str(fx_result["reason"])
@@ -1023,9 +1025,10 @@ class TradingRuntime:
                             quote_asset=str(instrument.quote),
                             required_quote=str(required_quote),
                             conversion=fx_result,
+                            dependent_net_edge_bps=str(decision.signal.net_edge_bps),
                         )
                         # Refresh the portfolio after the confirmed FX fill.
-                        self.portfolio.set_market_context(self.instruments,latest_spot_payload)
+                        self.portfolio.set_market_context(self.instruments,spot_payload)
                         self.portfolio.reconcile()
                         available_quote = self.portfolio.cash_balance(instrument.quote)
                         if available_quote + D("0.00000001") < required_quote:
