@@ -78,6 +78,7 @@ class LearningEngine:
         base_ece = float(base["ece"])
         best_scale = 1.0
         best_brier = base_brier
+        best_metrics = base
         for scale in (0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30):
             candidate = [
                 (max(0.0, min(1.0, p * scale)), y)
@@ -87,6 +88,7 @@ class LearningEngine:
             if float(metrics["brier"]) < best_brier:
                 best_brier = float(metrics["brier"])
                 best_scale = scale
+                best_metrics = metrics
         improvement = base_brier - best_brier
 
         promoted = False
@@ -99,9 +101,11 @@ class LearningEngine:
             )
             metrics = {
                 "samples": len(pairs),
-                "brier": best_brier,
+                "brier": float(best_metrics["brier"]),
+                "ece": float(best_metrics["ece"]),
                 "improvement": improvement,
                 "parent_brier": base_brier,
+                "parent_ece": base_ece,
             }
             self.proposal(candidate_version, parent, metrics, parameters)
             promoted = self.registry.promote(candidate_version)
