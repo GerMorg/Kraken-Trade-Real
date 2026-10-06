@@ -876,6 +876,49 @@ class TradingRuntime:
                     )
                     continue
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
+
+                # If the quote wallet is short, the dependent trade has an
+                # additional EUR/USD conversion cost. Include that cost in the
+                # edge before risk evaluates the entry threshold.
+                fx_needed = False
+                if (
+                    instrument.venue == "spot"
+                    and execution_direction.value == "LONG"
+                    and decision.target_position_eur > decision.current_position_eur
+                ):
+                    provisional_qty = self.portfolio.quantity_for_eur(
+                        instrument, decision.target_notional_eur, snap.price
+                    )
+                    if provisional_qty is not None:
+                        provisional_quote = provisional_qty * snap.price
+                        fx_needed = (
+                            self.portfolio.cash_balance(instrument.quote)
+                            + D("0.00000001") < provisional_quote
+                        )
+                if fx_needed:
+                    fx_cost_bps = D(str(getattr(
+                        self.config, "execution_fx_cost_bps", "40"
+                    )))
+                    signal = __import__("dataclasses").replace(
+                        decision.signal,
+                        expected_cost_bps=(
+                            decision.signal.expected_cost_bps + fx_cost_bps
+                        ),
+                    )
+                    rationale = dict(decision.rationale)
+                    rationale["fx_funding_required"] = True
+                    rationale["fx_cost_bps"] = str(fx_cost_bps)
+                    decision=__import__("dataclasses").replace(
+                        decision, signal=signal, rationale=rationale
+                    )
+                    self.audit.emit(
+                        "CYCLE_FX_COST_INCLUDED",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        fx_cost_bps=str(fx_cost_bps),
+                    )
+
                 risk=self.risk.evaluate(
                     decision,
                     portfolio,
