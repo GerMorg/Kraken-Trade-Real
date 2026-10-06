@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.24
+
+- Replace the previous non-EUR quote-currency blocker with automatic quote funding for Spot trades.
+- When a Spot LONG needs USD and the available USD balance is insufficient, the runtime now executes a separate EUR/USD market conversion first and only continues after Kraken confirms the conversion as filled/partially filled.
+- FX conversion orders are persisted, audited, participate in the daily order limit, and reserve an order slot so the dependent trade is not allowed to consume the final slot.
+- The EUR/USD conversion includes a configurable 40 bps cost reserve by default; when conversion is required this cost is added to the trade's expected cost before the strategy/risk edge gate.
+- After the FX fill the portfolio is reconciled again and the dependent USD trade is checked against the actual refreshed USD balance.
+- FX failures remain safe blockers; the main trade is never submitted against unconfirmed funds.
+- Add regression coverage for automatic EUR/USD funding and FX cost accounting.
+
 ## 0.1.23
 
 - Fix Spot-Margin USD short execution: a new short position on a margin-capable Spot pair must use an actual Kraken margin leverage level; the runtime no longer silently falls back to an unleveraged Spot sell that can fail with insufficient funds.
