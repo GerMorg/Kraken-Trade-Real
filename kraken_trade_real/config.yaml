@@ -56,6 +56,7 @@ options:
   execution_fx_cost_bps: 40.0
   execution_allow_position_funding: true
   execution_fx_position_switch_min_edge_bps: 250.0
+  execution_position_funding_cost_bps: 40.0
   execution_order_timeout_seconds: 45
   execution_max_reprices: 2
   execution_max_orders_per_day: 10
@@ -112,6 +113,7 @@ schema:
   execution_fx_cost_bps: float
   execution_allow_position_funding: bool
   execution_fx_position_switch_min_edge_bps: float
+  execution_position_funding_cost_bps: float
   execution_order_timeout_seconds: int
   execution_max_reprices: int
   execution_max_orders_per_day: int
