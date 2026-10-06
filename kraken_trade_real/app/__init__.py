@@ -1,3 +1,3 @@
 """Kraken Trade Real application package."""
 
-__version__ = "0.1.21"
+__version__ = "0.1.22"
