@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.21
+version: 0.1.22
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,

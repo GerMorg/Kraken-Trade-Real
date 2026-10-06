@@ -11,7 +11,7 @@ D = Decimal
 
 
 class DecisionEngine:
-    STRATEGY_VERSION = "baseline-v1"
+    STRATEGY_VERSION = "baseline-v2-rebalance"
 
     def __init__(self, config: Any) -> None:
         self.config = config
@@ -40,14 +40,23 @@ class DecisionEngine:
         signal: Signal,
         calibrated_confidence: D,
         min_cost_eur: D,
+        force_flatten: bool = False,
     ) -> dict[str, Any]:
         current = portfolio.positions.get(instrument.symbol, D("0"))
-        desired = self._target_position(
-            portfolio.equity_eur,
-            calibrated_confidence,
-            signal.direction,
+        desired = (
+            D("0")
+            if force_flatten and current != 0
+            else self._target_position(
+                portfolio.equity_eur,
+                calibrated_confidence,
+                signal.direction,
+            )
         )
-        reversal = current != 0 and ((current > 0 and desired < 0) or (current < 0 and desired > 0))
+        reversal = (
+            not force_flatten
+            and current != 0
+            and ((current > 0 and desired < 0) or (current < 0 and desired > 0))
+        )
         if reversal:
             # Reverse in two safe stages: first flatten, then wait for a fresh cycle
             # before opening the opposite exposure.
@@ -86,6 +95,11 @@ class DecisionEngine:
             signal for signal in signals
             if signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
         ]
+        current = portfolio.positions.get(instrument.symbol, D("0"))
+        if not edge_candidates and current != 0:
+            held_signal = long_signal if current > 0 else short_signal
+            if held_signal.net_edge_bps <= D("0"):
+                return "REBALANCE_EXIT"
         if not edge_candidates:
             return "MIN_EDGE"
         confidence_candidates = [
@@ -130,18 +144,27 @@ class DecisionEngine:
             min_cost_eur if min_cost_eur is not None
             else instrument.min_cost
         )
+        current = portfolio.positions.get(instrument.symbol, D("0"))
         candidates = [
             signal for signal in (long_signal, short_signal)
             if signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
             and signal.confidence * scale >= D(str(self.config.strategy_min_confidence))
         ]
-        if not candidates:
+        force_flatten = False
+        if candidates:
+            candidates.sort(
+                key=lambda signal: (signal.net_edge_bps, signal.confidence),
+                reverse=True,
+            )
+            signal = candidates[0]
+        elif current != 0:
+            signal = long_signal if current > 0 else short_signal
+            if signal.net_edge_bps > D("0"):
+                return None
+            force_flatten = True
+        else:
             return None
-        candidates.sort(
-            key=lambda signal: (signal.net_edge_bps, signal.confidence),
-            reverse=True,
-        )
-        signal = candidates[0]
+
         calibrated_confidence = max(
             D("0.0"), min(D("1.0"), signal.confidence * scale)
         )
@@ -151,6 +174,7 @@ class DecisionEngine:
             signal,
             calibrated_confidence,
             effective_min_cost,
+            force_flatten=force_flatten,
         )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return None
@@ -172,6 +196,10 @@ class DecisionEngine:
             "trade_notional_eur": str(plan["trade_notional_eur"]),
             "reduce_only": plan["reduce_only"],
             "reversal_to_flat": plan["reversal_to_flat"],
+            "rebalance_action": "FLATTEN_NEGATIVE_EDGE" if force_flatten else "",
+            "rebalance_reason": (
+                "held_position_net_edge_non_positive" if force_flatten else ""
+            ),
             "min_cost_eur": str(effective_min_cost),
         }
         return Decision(

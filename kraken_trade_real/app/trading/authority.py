@@ -445,6 +445,7 @@ class TradingAuthority:
 
         count = self.db.one(
             "SELECT COUNT(*) AS n FROM orders WHERE submitted_at IS NOT NULL "
+            "AND state != 'REJECTED' "
             "AND submitted_at>=strftime('%s','now','start of day')"
         )
         if count and int(count["n"]) >= self.config.execution_max_orders_per_day:
@@ -460,6 +461,7 @@ class TradingAuthority:
         recent = self.db.query(
             "SELECT submitted_at,state FROM orders "
             "WHERE symbol=? AND direction=? AND submitted_at IS NOT NULL "
+            "AND state != 'REJECTED' "
             "ORDER BY submitted_at DESC LIMIT 1",
             (intent.instrument.symbol, intent.direction.value),
         )

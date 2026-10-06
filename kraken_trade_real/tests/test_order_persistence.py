@@ -76,7 +76,12 @@ def test_rejected_intents_do_not_trigger_cooldown_or_daily_limit(config, db, ins
             True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
         )
         db.save_order_intent(intent)
-        db.update_order_state(intent.client_order_id,OrderState.REJECTED.value,last_error="TEST_REJECTED")
+        db.update_order_state(
+            intent.client_order_id,
+            OrderState.REJECTED.value,
+            submitted_at=time.time(),
+            last_error="TEST_REJECTED",
+        )
     candidate=OrderIntent(
         "intent_candidate","client_candidate","decision_candidate",instrument,
         Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
@@ -84,6 +89,32 @@ def test_rejected_intents_do_not_trigger_cooldown_or_daily_limit(config, db, ins
     )
     check=authority._preflight(candidate,market)
     assert check["allowed"] is True
+
+    # An exchange-accepted submission must consume the daily budget even before fill;
+    # a deterministic rejection must not.
+    for i in range(config.execution_max_orders_per_day):
+        intent=OrderIntent(
+            f"intent_accepted_{i}",f"client_accepted_{i}",f"decision_accepted_{i}",instrument,
+            Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
+            True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
+        )
+        db.save_order_intent(intent)
+        db.update_order_state(
+            intent.client_order_id,
+            OrderState.CANCELED.value,
+            submitted_at=time.time(),
+        )
+
+    blocked=authority._preflight(
+        OrderIntent(
+            "intent_after_budget","client_after_budget","decision_after_budget",instrument,
+            Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
+            True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
+        ),
+        market,
+    )
+    assert blocked["allowed"] is False
+    assert blocked["reason"] == "DAILY_ORDER_LIMIT"
 
 
 def test_real_submission_timestamp_triggers_cooldown(config, db, instrument):
@@ -107,7 +138,7 @@ def test_real_submission_timestamp_triggers_cooldown(config, db, instrument):
         True,False,Decimal("30"),Decimal("40"),45,state=OrderState.INTENT_CREATED,
     )
     db.save_order_intent(first)
-    db.update_order_state(first.client_order_id,OrderState.REJECTED.value,submitted_at=time.time(),last_error="TEST_SUBMITTED")
+    db.update_order_state(first.client_order_id,OrderState.CANCELED.value,submitted_at=time.time(),last_error="TEST_SUBMITTED")
     candidate=OrderIntent(
         "intent_candidate2","client_candidate2","decision_candidate2",instrument,
         Direction.LONG,"buy","limit",Decimal("0.001"),Decimal("60000"),Decimal("1"),
