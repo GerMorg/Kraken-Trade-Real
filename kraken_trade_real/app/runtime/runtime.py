@@ -947,6 +947,32 @@ class TradingRuntime:
                         checks={"quote_to_eur":False},
                     )
                     continue
+                if (
+                    instrument.venue == "spot"
+                    and execution_direction.value == "LONG"
+                    and decision.target_position_eur > decision.current_position_eur
+                    and lev <= D("1")
+                ):
+                    required_quote = quantity * snap.price
+                    available_quote = self.portfolio.cash_balance(instrument.quote)
+                    if available_quote + D("0.00000001") < required_quote:
+                        reason="SPOT_QUOTE_FUNDS_UNAVAILABLE"
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                        self.audit.emit(
+                            "CYCLE_ORDER_BLOCKED",
+                            "WARNING",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            reason=reason,
+                            detail={
+                                "quote_asset": str(instrument.quote),
+                                "required_quote": str(required_quote),
+                                "available_quote": str(available_quote),
+                                "required_eur": str(decision.target_notional_eur),
+                            },
+                        )
+                        continue
                 method=self.authority.policy.choose(
                     snap.spread_bps,
                     decision.signal.net_edge_bps,
