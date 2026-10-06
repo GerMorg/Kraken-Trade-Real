@@ -375,11 +375,30 @@ class KrakenGateway:
             body["reduceOnly"] = "true"
         return self.futures_private("sendorder", body)
 
-    def lookup_order(self, *, client_order_id: str, instrument: Any):
+    def lookup_order(self, *, client_order_id: str, instrument: Any, kraken_order_id: str | None = None):
         if getattr(instrument.product_type, "value", "") == "DERIVATIVE":
             result = self.futures_private("ordersstatus", {"cliOrdId": client_order_id})
             return list(result.get("orders") or [])
-        result = self.spot_private("QueryOrders", {"cl_ord_id": client_order_id})
+        # Spot QueryOrders is keyed by Kraken order/transaction id. Kraken's
+        # client-order-id support is for order placement/cancel flow, not a
+        # reliable historical QueryOrders filter. Prefer the persisted Kraken
+        # order id so stale ACKNOWLEDGED orders can be resolved after restart.
+        if not kraken_order_id:
+            # For a fresh ambiguous submission the exchange order id may not
+            # have been returned yet. OpenOrders still exposes cl_ord_id, so it
+            # is safe to resolve an actually-open order without guessing.
+            open_orders = self.spot_open_orders().get("open", {})
+            matches = []
+            for txid, order in (open_orders or {}).items():
+                if isinstance(order, dict) and str(order.get("cl_ord_id") or "") == client_order_id:
+                    matches.append({**order, "txid": str(txid)})
+            if matches:
+                return matches
+            # A closed historical order cannot be safely identified without its
+            # Kraken transaction id. Keep the order ambiguous instead of
+            # falsely declaring it absent.
+            raise KrakenError("ORDER_ID_REQUIRED_FOR_HISTORICAL_RECONCILIATION")
+        result = self.spot_private("QueryOrders", {"txid": kraken_order_id})
         # Spot QueryOrders returns an object keyed by Kraken txid. Normalize
         # each order so the reconciler sees status and the Kraken identifier.
         if not isinstance(result, dict):

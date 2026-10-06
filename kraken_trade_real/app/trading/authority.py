@@ -68,7 +68,7 @@ class TradingAuthority:
         )
         instrument_map = {instrument.symbol: instrument for instrument in instruments}
         rows = self.db.query(
-            "SELECT client_order_id,symbol,state,created_at,submitted_at "
+            "SELECT client_order_id,symbol,state,created_at,submitted_at,kraken_order_id "
             "FROM orders WHERE state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING') "
             "ORDER BY COALESCE(submitted_at,created_at),created_at LIMIT ?",
             (max_items,),
@@ -114,6 +114,7 @@ class TradingAuthority:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,
                     instrument=instrument,
+                    kraken_order_id=str(row.get("kraken_order_id") or "") or None,
                 )
                 if found:
                     resolved_state, order_id = self.reconciler.reconcile(found)
@@ -299,6 +300,7 @@ class TradingAuthority:
                 found = self.gateway.lookup_order(
                     client_order_id=intent.client_order_id,
                     instrument=intent.instrument,
+                    kraken_order_id=str(order_id or "") or None,
                 )
                 if found:
                     state, order_id = self.reconciler.reconcile(found)
@@ -511,7 +513,7 @@ class TradingAuthority:
             return {"allowed": False, "reason": "LEVERAGE_INSTRUMENT_LIMIT"}
 
         open_orders = self.db.query(
-            "SELECT client_order_id,state,submitted_at,created_at FROM orders WHERE symbol=? "
+            "SELECT client_order_id,state,submitted_at,created_at,kraken_order_id FROM orders WHERE symbol=? "
             "AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",
             (intent.instrument.symbol,),
         )
@@ -627,6 +629,7 @@ class TradingAuthority:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,
                     instrument=instrument,
+                    kraken_order_id=str(row.get("kraken_order_id") or "") or None,
                 )
                 if found:
                     resolved_state, order_id = self.reconciler.reconcile(found)
