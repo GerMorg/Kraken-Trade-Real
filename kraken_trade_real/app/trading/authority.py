@@ -365,6 +365,89 @@ class TradingAuthority:
                 "reconciled": True,
             }
 
+    def submit_funding_order(self, intent: OrderIntent, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        """Submit a preparatory funding order and confirm its exchange-side fill."""
+        if not is_valid_kraken_client_order_id(intent.client_order_id):
+            return {"state": OrderState.REJECTED.value, "reason": "INVALID_CLIENT_ORDER_ID"}
+        if not (self.config.live_enabled and not self.config.kill_switch):
+            return {"state": OrderState.REJECTED.value, "reason": "LIVE_TRADING_DISABLED"}
+        if not self.config.kraken_enabled or not intent.instrument.tradeable:
+            return {"state": OrderState.REJECTED.value, "reason": "FUNDING_INSTRUMENT_UNAVAILABLE"}
+        count = self.db.one(
+            "SELECT COUNT(*) AS n FROM orders WHERE submitted_at IS NOT NULL AND state != 'REJECTED' "
+            "AND submitted_at>=strftime('%s','now','start of day')"
+        )
+        if count and int(count["n"]) >= self.config.execution_max_orders_per_day:
+            return {"state": OrderState.REJECTED.value, "reason": "DAILY_ORDER_LIMIT"}
+        open_orders = self.db.query(
+            "SELECT client_order_id,state FROM orders WHERE symbol=? "
+            "AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",
+            (intent.instrument.symbol,),
+        )
+        if open_orders:
+            return {"state": OrderState.REJECTED.value, "reason": "DUPLICATE_OPEN_ORDER"}
+        self.db.save_order_intent(intent)
+        self.db.update_order_state(intent.client_order_id, OrderState.SUBMITTING.value, submitted_at=time.time())
+        try:
+            response = self.gateway.submit_spot_order(
+                instrument_id=intent.instrument.instrument_id,
+                side=intent.side,
+                order_type=intent.order_type,
+                quantity=intent.quantity,
+                price=intent.limit_price,
+                client_order_id=intent.client_order_id,
+                leverage=intent.leverage,
+                margin=False,
+                reduce_only=False,
+                post_only=False,
+                asset_class=(
+                    "tokenized_asset"
+                    if intent.instrument.metadata.get("asset_class") == "tokenized_asset"
+                    else None
+                ),
+            )
+            ids = response.get("txid", []) if isinstance(response, dict) else []
+            order_id = ids[0] if ids else response.get("order_id") if isinstance(response, dict) else None
+            if not order_id:
+                self.db.update_order_state(intent.client_order_id, OrderState.REJECTED.value, last_error="FUNDING_NO_ORDER_ID")
+                return {"state": OrderState.REJECTED.value, "reason": "FUNDING_NO_ORDER_ID"}
+            self.db.update_order_state(intent.client_order_id, OrderState.ACKNOWLEDGED.value, kraken_order_id=order_id)
+            deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+            while time.monotonic() < deadline:
+                found = self.gateway.lookup_order(client_order_id=intent.client_order_id, instrument=intent.instrument)
+                if found:
+                    state, resolved_id = self.reconciler.reconcile(found)
+                    if state != OrderState.UNKNOWN_RECONCILING:
+                        self.db.update_order_state(
+                            intent.client_order_id, state.value, kraken_order_id=resolved_id or order_id
+                        )
+                        if state in {OrderState.FILLED, OrderState.PARTIALLY_FILLED}:
+                            self.audit.emit("FUNDING_ORDER_FILLED", "INFO",
+                                             intent_id=intent.intent_id, symbol=intent.instrument.symbol,
+                                             state=state.value, kraken_order_id=resolved_id or order_id)
+                            return {"state": state.value, "kraken_order_id": resolved_id or order_id}
+                        if state in {OrderState.REJECTED, OrderState.CANCELED, OrderState.EXPIRED}:
+                            return {"state": state.value, "reason": "FUNDING_ORDER_NOT_FILLED"}
+                time.sleep(1.0)
+            self.db.update_order_state(intent.client_order_id, OrderState.UNKNOWN_RECONCILING.value,
+                                       last_error="FUNDING_FILL_TIMEOUT")
+            self.audit.emit("FUNDING_ORDER_RECONCILING", "WARNING",
+                             intent_id=intent.intent_id, symbol=intent.instrument.symbol)
+            return {"state": OrderState.UNKNOWN_RECONCILING.value, "reason": "FUNDING_FILL_TIMEOUT"}
+        except KrakenAmbiguous as exc:
+            self.db.update_order_state(intent.client_order_id, OrderState.UNKNOWN_RECONCILING.value,
+                                       last_error=str(exc)[:700])
+            return {"state": OrderState.UNKNOWN_RECONCILING.value, "reason": "FUNDING_AMBIGUOUS"}
+        except KrakenError as exc:
+            self.db.update_order_state(intent.client_order_id, OrderState.REJECTED.value,
+                                       last_error=str(exc)[:700])
+            return {"state": OrderState.REJECTED.value, "reason": "FUNDING_KRAKEN_REJECTED",
+                    "exchange_error": str(exc)[:700]}
+        except Exception as exc:
+            self.db.update_order_state(intent.client_order_id, OrderState.UNKNOWN_RECONCILING.value,
+                                       last_error=f"{type(exc).__name__}:{str(exc)[:500]}")
+            return {"state": OrderState.UNKNOWN_RECONCILING.value, "reason": "FUNDING_EXCEPTION"}
+
     @staticmethod
     def _supported_leverage_levels(instrument: Instrument, side: str) -> tuple[D, ...]:
         raw = instrument.metadata.get(f"leverage_{side}")
