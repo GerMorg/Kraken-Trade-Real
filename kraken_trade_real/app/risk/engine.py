@@ -93,11 +93,15 @@ class RiskEngine:
                 D(str(self.config.risk_max_leverage)),
                 d.instrument.max_leverage,
             ),
-            "edge_positive": d.signal.net_edge_bps >= D(
-                str(self.config.strategy_min_edge_bps)
+            # Entry thresholds protect new risk. They must not block
+            # reduce-only exits, whose purpose is to remove existing risk.
+            "edge_positive": (
+                d.reduce_only
+                or d.signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
             ),
-            "confidence": d.signal.confidence >= D(
-                str(self.config.strategy_min_confidence)
+            "confidence": (
+                d.reduce_only
+                or d.signal.confidence >= D(str(self.config.strategy_min_confidence))
             ),
             "extreme_volatility": (
                 d.reduce_only
