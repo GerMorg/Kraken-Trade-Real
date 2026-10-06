@@ -293,3 +293,49 @@ def test_authority_rejects_unsupported_spot_margin_leverage(config, db, instrume
     assert check["allowed"] is False
     assert check["reason"] == "LEVERAGE_UNSUPPORTED_BY_INSTRUMENT"
     assert check["detail"]["supported"] == ["2", "3"]
+
+
+def test_authority_rejects_unleveraged_spot_margin_short(config, db, instrument):
+    from app.domain.models import MarketSnapshot, OrderIntent
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    authority = TradingAuthority(
+        config,
+        object(),
+        db,
+        AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    intent = OrderIntent(
+        "intent_margin_short_unleveraged",
+        "11111111-2222-4333-8444-555555555562",
+        "decision_margin_short_unleveraged",
+        instrument,
+        Direction.SHORT,
+        "sell",
+        "limit",
+        Decimal("0.001"),
+        Decimal("60000"),
+        Decimal("1"),
+        True,
+        False,
+        Decimal("30"),
+        Decimal("40"),
+        45,
+        state=OrderState.INTENT_CREATED,
+    )
+    market = MarketSnapshot(
+        instrument.symbol,
+        Decimal("60005"),
+        Decimal("60000"),
+        Decimal("60010"),
+        Decimal("1000"),
+        1.0,
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+    check = authority._preflight(intent, market)
+    assert check["allowed"] is False
+    assert check["reason"] == "SPOT_MARGIN_SHORT_REQUIRES_LEVERAGE"
