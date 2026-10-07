@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections import deque
 from decimal import Decimal
 from types import SimpleNamespace
+import json
 
 from app.domain.states import Direction
 from app.persistence import Database
+from app.kraken.ws import WebSocketSupervisor, _book_checksum
 from app.trading.tactical import TacticalEngine, TacticalPosition, TacticalStrategy
 
 
@@ -196,3 +198,79 @@ def test_tactical_position_persistence(tmp_path) -> None:
     assert rows[0]["direction"] == "SHORT"
     db.delete_tactical_position("TEST/EUR")
     assert db.tactical_positions() == []
+
+
+class _Audit:
+    def emit(self, *args, **kwargs):
+        return None
+
+
+class _Recovery:
+    def issue(self, *args, **kwargs):
+        return None
+
+
+def test_websocket_book_checksum_matches_kraken_example() -> None:
+    stream = WebSocketSupervisor(_Audit(), _Recovery())
+    stream.set_symbols(["BTC/USD"])
+    bids = [
+        {"price": "45283.5", "qty": "0.10000000"},
+        {"price": "45283.4", "qty": "1.54582015"},
+        {"price": "45282.1", "qty": "0.10000000"},
+        {"price": "45281.0", "qty": "0.10000000"},
+        {"price": "45280.3", "qty": "1.54592586"},
+        {"price": "45279.0", "qty": "0.07990000"},
+        {"price": "45277.6", "qty": "0.03310103"},
+        {"price": "45277.5", "qty": "0.30000000"},
+        {"price": "45277.3", "qty": "1.54602737"},
+        {"price": "45276.6", "qty": "0.15445238"},
+    ]
+    asks = [
+        {"price": "45285.2", "qty": "0.00100000"},
+        {"price": "45286.4", "qty": "1.54571953"},
+        {"price": "45286.6", "qty": "1.54571109"},
+        {"price": "45289.6", "qty": "1.54560911"},
+        {"price": "45290.2", "qty": "0.15890660"},
+        {"price": "45291.8", "qty": "1.54553491"},
+        {"price": "45294.7", "qty": "0.04454749"},
+        {"price": "45296.1", "qty": "0.35380000"},
+        {"price": "45297.5", "qty": "0.09945542"},
+        {"price": "45299.5", "qty": "0.18772827"},
+    ]
+    expected = 3310070434
+    assert _book_checksum(
+        {Decimal(row["price"]): Decimal(row["qty"]) for row in bids},
+        {Decimal(row["price"]): Decimal(row["qty"]) for row in asks},
+    ) == expected
+    stream.on_message(json.dumps({
+        "channel": "book",
+        "type": "snapshot",
+        "data": [{
+            "symbol": "BTC/USD",
+            "bids": bids,
+            "asks": asks,
+            "checksum": expected,
+            "timestamp": "2023-10-06T17:35:55.440295Z",
+        }],
+    }))
+    snapshot = stream.snapshots()["BTC/USD"]
+    assert snapshot["book_ready"] is True
+    assert len(snapshot["bids"]) == 10
+    assert len(snapshot["asks"]) == 10
+
+
+def test_websocket_book_checksum_mismatch_invalidates_book() -> None:
+    stream = WebSocketSupervisor(_Audit(), _Recovery())
+    stream.set_symbols(["BTC/USD"])
+    stream.on_message(json.dumps({
+        "channel": "book",
+        "type": "snapshot",
+        "data": [{
+            "symbol": "BTC/USD",
+            "bids": [{"price": "100.0", "qty": "1.0"}],
+            "asks": [{"price": "101.0", "qty": "1.0"}],
+            "checksum": 123,
+            "timestamp": "2023-10-06T17:35:55.440295Z",
+        }],
+    }))
+    assert stream.snapshots()["BTC/USD"]["book_ready"] is False
