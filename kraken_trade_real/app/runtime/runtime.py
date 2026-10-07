@@ -1327,7 +1327,8 @@ class TradingRuntime:
 
     def _publish_runtime_status(self) -> None:
         try:
-            tactical_status = self.tactical.status() if self.tactical is not None else {}
+            tactical = getattr(self, "tactical", None)
+            tactical_status = tactical.status() if tactical is not None else {}
             publish_result = self.sensors.publish(self.sensors.states(
                 status=self.state.stage.value,
                 stage=self.state.stage.value,
@@ -1443,7 +1444,8 @@ class TradingRuntime:
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
         tax_summary=self._safe_tax_summary()
-        tactical_status = self.tactical.status() if self.tactical is not None else {}
+        tactical = getattr(self, "tactical", None)
+        tactical_status = tactical.status() if tactical is not None else {}
         self.sensors.publish(self.sensors.states(
             status=self.state.stage.value,stage=self.state.stage.value,cycle_id=self.state.cycle_id,
             blocker=self.state.blocker,symbol=self.state.selected_symbol,
