@@ -120,7 +120,7 @@ class RiskEngine:
         }
 
         if min_cost_eur > 0:
-            checks["minimum_cost"] = desired_abs >= min_cost_eur
+            checks["minimum_cost"] = d.reduce_only or desired_abs >= min_cost_eur
 
         if d.leverage > 1:
             checks["margin_available"] = margin_account is not None
