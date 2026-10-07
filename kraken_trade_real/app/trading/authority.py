@@ -502,19 +502,26 @@ class TradingAuthority:
         ):
             if not intent.instrument.margin_available:
                 return {"allowed": False, "reason": "MARGIN_NOT_AVAILABLE"}
-            supported = self._supported_leverage_levels(
-                intent.instrument, intent.side.lower()
-            )
-            if intent.leverage not in supported:
-                return {
-                    "allowed": False,
-                    "reason": "LEVERAGE_UNSUPPORTED_BY_INSTRUMENT",
-                    "detail": {
-                        "requested": str(intent.leverage),
-                        "supported": [str(level) for level in supported],
-                        "side": intent.side.lower(),
-                    },
-                }
+            # Spot Margin settlement is exchange-side position closing. Kraken
+            # accepts the dedicated settle-position order without requiring the
+            # closing side to expose the same leverage level as the entry side.
+            if not (
+                intent.reduce_only
+                and intent.instrument.product_type.value == "SPOT_MARGIN"
+            ):
+                supported = self._supported_leverage_levels(
+                    intent.instrument, intent.side.lower()
+                )
+                if intent.leverage not in supported:
+                    return {
+                        "allowed": False,
+                        "reason": "LEVERAGE_UNSUPPORTED_BY_INSTRUMENT",
+                        "detail": {
+                            "requested": str(intent.leverage),
+                            "supported": [str(level) for level in supported],
+                            "side": intent.side.lower(),
+                        },
+                    }
         elif intent.leverage > intent.instrument.max_leverage:
             return {"allowed": False, "reason": "LEVERAGE_INSTRUMENT_LIMIT"}
 
