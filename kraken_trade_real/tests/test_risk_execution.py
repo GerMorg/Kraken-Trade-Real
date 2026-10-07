@@ -2,6 +2,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from app.execution import CostModel,ExecutionPolicy
 from app.risk import LeverageEngine,MarginEngine
+from app.risk.engine import RiskEngine
 
 def test_cost_model_includes_all_cost_buckets():
     market=SimpleNamespace(spread_bps=Decimal("10"),volume_24h=Decimal("1000"),metadata={"volatility":Decimal("3")})
@@ -19,8 +20,7 @@ def test_margin_and_leverage_bounds():
 
 
 def test_decision_rejection_reason_distinguishes_edge_and_confidence(config, instrument):
-    from app.risk.engine import RiskEngine
-from app.domain.models import PortfolioState, Signal
+    from app.domain.models import PortfolioState, Signal
     from app.domain.states import Direction
     from app.trading.decision import DecisionEngine
 
