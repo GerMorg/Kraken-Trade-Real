@@ -11,6 +11,22 @@ from typing import Any
 
 import websocket
 
+class SequenceTracker:
+    def __init__(self) -> None:
+        self.last: int | None = None
+
+    def observe(self, sequence: int | None) -> bool:
+        if sequence is None:
+            return True
+        ok = self.last is None or sequence == self.last + 1
+        self.last = sequence
+        return ok
+
+    def reset(self) -> None:
+        self.last = None
+
+
+
 
 D = Decimal
 
@@ -90,6 +106,8 @@ class WebSocketSupervisor:
         self._book_ready: dict[str, bool] = {}
         self._book_desync = False
         self._book_depth = 10
+        self.market_sequence = SequenceTracker()
+        self.private_sequence = SequenceTracker()
 
     def set_symbols(self, symbols: list[str]) -> None:
         clean = tuple(dict.fromkeys(
@@ -198,6 +216,25 @@ class WebSocketSupervisor:
             self._record_error("WS_INVALID_JSON")
             self.recovery.issue("DATA_STALE", "WS_INVALID_JSON")
             return
+        sequence = data.get("sequence")
+        tracker = self.private_sequence if private else self.market_sequence
+        if sequence is not None:
+            try:
+                if not tracker.observe(int(sequence)):
+                    self.audit.emit(
+                        "WS_SEQUENCE_GAP",
+                        "ERROR",
+                        private=private,
+                        sequence=sequence,
+                    )
+                    self.recovery.issue(
+                        "SEQUENCE_GAP",
+                        f"private={private};sequence={sequence}",
+                    )
+                    return
+            except (TypeError, ValueError):
+                self._record_error("WS_INVALID_SEQUENCE")
+                return
         self._process(data)
 
     def _process(self, data: Any) -> None:
