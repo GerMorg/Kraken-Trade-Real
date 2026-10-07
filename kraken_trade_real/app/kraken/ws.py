@@ -331,7 +331,7 @@ class WebSocketSupervisor:
             try:
                 return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
             except ValueError:
-                pass
+                return time.time()
         return time.time()
 
     def _subscribe(self, ws: Any, symbols: tuple[str, ...]) -> None:
