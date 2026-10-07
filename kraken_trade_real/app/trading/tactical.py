@@ -497,11 +497,10 @@ class TacticalEngine:
 
     def set_portfolio_state(self, portfolio: Any) -> None:
         rates: dict[str, D] = {"EUR": D("1")}
-        quotes = {
-            instrument.quote
-            for instrument in self.instruments
-            if instrument.venue == "spot"
-        }
+        quotes = set(TACTICAL_QUOTES)
+        for instrument in self.instruments:
+            if instrument.symbol in self.stream.symbols() and instrument.venue == "spot":
+                quotes.add(str(instrument.quote).upper())
         for quote in quotes:
             if str(quote).upper() == "EUR":
                 continue
@@ -615,6 +614,8 @@ class TacticalEngine:
         if instrument.venue != "spot" or not instrument.tradeable:
             return False
         if instrument.product_type.value not in {"SPOT", "SPOT_MARGIN"}:
+            return False
+        if str(instrument.quote).upper() not in TACTICAL_QUOTES:
             return False
         base = str(instrument.base or "").upper()
         if base.endswith("X") and len(base) >= 4:
@@ -1047,6 +1048,11 @@ class TacticalEngine:
             return False, "TACTICAL_LEVERAGE_LIMIT"
         if leverage > instrument.max_leverage:
             return False, "INSTRUMENT_LEVERAGE_LIMIT"
+        if leverage > D("1"):
+            allowed_margin = equity * D(str(self.config.risk_max_margin_pct)) / D("100")
+            projected_margin = portfolio.margin_used_eur + notional / leverage
+            if projected_margin > allowed_margin:
+                return False, "GLOBAL_MARGIN_LIMIT"
 
         if signal.direction == Direction.SHORT:
             if not instrument.short_available:
@@ -1546,6 +1552,8 @@ class TacticalEngine:
                 str(instrument.quote).upper(),
                 D("1"),
             )
+        if rate <= 0:
+            return
         gross = (
             (exit_price - position.entry_price) * position.quantity * rate
             if position.direction == Direction.LONG
