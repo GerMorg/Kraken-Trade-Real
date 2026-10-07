@@ -104,6 +104,7 @@ options:
   tactical_max_hold_seconds: 1800
   tactical_reentry_cooldown_seconds: 120
   tactical_ai_veto_bps: 80.0
+  tactical_data_max_age_seconds: 8
 schema:
   kraken_api_key: password
   kraken_api_secret: password
@@ -190,3 +191,4 @@ schema:
   tactical_max_hold_seconds: int
   tactical_reentry_cooldown_seconds: int
   tactical_ai_veto_bps: float
+  tactical_data_max_age_seconds: int
