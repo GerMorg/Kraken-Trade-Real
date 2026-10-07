@@ -301,14 +301,15 @@ class KrakenGateway:
         post_only: bool = False,
         asset_class: str | None = None,
     ):
+        settlement_order = bool(margin and reduce_only)
         body = {
             "pair": instrument_id,
             "type": side.lower(),
-            "ordertype": order_type,
+            "ordertype": "settle-position" if settlement_order else order_type,
             "volume": str(quantity),
             "cl_ord_id": client_order_id,
         }
-        if price is not None:
+        if price is not None and not settlement_order:
             body["price"] = str(price)
         if asset_class == "tokenized_asset":
             body["asset_class"] = "tokenized_asset"
@@ -318,7 +319,9 @@ class KrakenGateway:
             raise KrakenError(
                 "INVALID_MARGIN_ARGUMENT: leverage requires a margin order"
             )
-        if reduce_only and margin:
+        # Spot Margin settlement uses Kraken's dedicated settle-position
+        # order type; the generic reduce_only parameter is not used for it.
+        if reduce_only and margin and not settlement_order:
             body["reduce_only"] = "true"
         if post_only:
             if order_type != "limit":
