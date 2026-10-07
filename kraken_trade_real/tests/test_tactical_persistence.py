@@ -10,12 +10,13 @@ def test_tactical_position_and_trade_persistence(tmp_path):
     db.save_tactical_position(
         "BTC/USD", "spot", "SHORT",
         Decimal("0.01"), Decimal("100"), Decimal("100"),
-        Decimal("101"), Decimal("10"), Decimal("2"),
+        Decimal("101"), Decimal("-10"), Decimal("2"),
         1000.0, "entry-1", Decimal("250"), "OPEN",
     )
     rows = db.tactical_positions()
     assert len(rows) == 1
     assert rows[0]["direction"] == "SHORT"
+    assert rows[0]["notional_eur"] == "10"
 
     db.save_tactical_trade(
         "trade-1", "BTC/USD", "SHORT",
