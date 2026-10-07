@@ -272,7 +272,7 @@ def test_tactical_short_pnl_and_fees_use_positive_exposure():
     assert trader._trade_fees(D("-10")) == D("0.16")
 
 
-    
+
 def test_tactical_adaptive_entry_can_clear_cost_without_requiring_280_bps():
     trader = TacticalTrader(
         cfg(
