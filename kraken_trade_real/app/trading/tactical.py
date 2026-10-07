@@ -451,7 +451,13 @@ class TacticalTrader:
         exit_fee = D(str(getattr(self.config, "tactical_exit_fee_bps", 80)))
         slippage = D(str(getattr(self.config, "tactical_expected_slippage_bps", 25)))
         safety = D(str(getattr(self.config, "tactical_safety_buffer_bps", 30)))
-        cost = entry_fee + exit_fee + spread + slippage + safety
+        margin_open_fee = (
+            D(str(getattr(self.config, "tactical_margin_open_fee_bps", 5.0)))
+            if direction == Direction.SHORT
+            and instrument.product_type.value == "SPOT_MARGIN"
+            else D("0")
+        )
+        cost = entry_fee + exit_fee + spread + slippage + safety + margin_open_fee
         confidence = max(
             D("0"),
             min(D("1"), D("0.50") + score / D("400")),
