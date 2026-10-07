@@ -83,6 +83,7 @@ class Config:
     tactical_entry_fee_bps: float
     tactical_exit_fee_bps: float
     tactical_safety_buffer_bps: float
+    tactical_max_slippage_bps: float
     tactical_stop_loss_pct: float
     tactical_take_profit_pct: float
     tactical_trailing_stop_pct: float
@@ -204,6 +205,7 @@ class Config:
             tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 500.0),
             tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 500.0),
             tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 500.0),
+            tactical_max_slippage_bps=f("tactical_max_slippage_bps", 80.0, 40.0, 120.0),
             tactical_stop_loss_pct=f("tactical_stop_loss_pct", 0.9, 0.1, 10.0),
             tactical_take_profit_pct=f("tactical_take_profit_pct", 1.8, 0.2, 20.0),
             tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 10.0),
