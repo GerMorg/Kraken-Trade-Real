@@ -99,6 +99,10 @@ class WebSocketSupervisor:
         with self._lock:
             return self._symbols
 
+    def wire_symbols(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(sorted(set(self._logical_to_wire.values())))
+
     def on_message(self, payload: str, private: bool = False) -> None:
         try:
             data = json.loads(payload)
@@ -343,6 +347,7 @@ class WebSocketSupervisor:
         reconnect_delay = 1.0
         while not self.stop_event.is_set():
             symbols = self.symbols()
+            wire_symbols = self.wire_symbols()
             ws = None
             if not symbols:
                 self.connected = False
@@ -352,7 +357,7 @@ class WebSocketSupervisor:
             try:
                 ws = websocket.create_connection("wss://ws.kraken.com/v2", timeout=10)
                 ws.settimeout(1.0)
-                self._subscribe(ws, symbols)
+                self._subscribe(ws, wire_symbols)
                 self._subscribed_symbols = symbols
                 self.connected = True
                 self.last_error = ""
