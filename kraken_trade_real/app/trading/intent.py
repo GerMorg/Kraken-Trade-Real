@@ -7,9 +7,9 @@ class OrderIntentBuilder:
     def __init__(self,max_slippage_bps:float,timeout_seconds:int)->None:
         self.max_slippage=D(str(max_slippage_bps)); self.timeout_seconds=timeout_seconds
     def build(self,decision:Decision,leverage:D,order_type:str,quantity:D,limit_price:D|None,
-              reduce_only:bool=False,post_only:bool=False)->OrderIntent:
+              reduce_only:bool=False,post_only:bool=False,max_slippage_bps:D|None=None)->OrderIntent:
         return OrderIntent(new_id("intent"),new_client_order_id(),decision.decision_id,decision.instrument,
             decision.execution_direction or decision.signal.direction,
             "buy" if (decision.execution_direction or decision.signal.direction)==Direction.LONG else "sell",
             order_type,quantity,limit_price,leverage,decision.instrument.product_type!=ProductType.SPOT,
-            reduce_only,decision.signal.net_edge_bps,self.max_slippage,self.timeout_seconds,post_only)
+            reduce_only,decision.signal.net_edge_bps,max_slippage_bps if max_slippage_bps is not None else self.max_slippage,self.timeout_seconds,post_only)
