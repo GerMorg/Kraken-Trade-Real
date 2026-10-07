@@ -115,8 +115,10 @@ class WebSocketSupervisor:
         if ws is not None:
             try:
                 ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_error(
+                    f"WS_CLOSE_FAILED:{type(exc).__name__}:{str(exc)[:180]}"
+                )
 
     def symbols(self) -> tuple[str, ...]:
         with self._lock:
