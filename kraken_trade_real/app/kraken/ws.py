@@ -53,7 +53,7 @@ class WebSocketSupervisor:
         self._subscribed_symbols: tuple[str, ...] = ()
         self._logical_to_wire: dict[str, str] = {}
         self._tickers: dict[str, dict[str, Any]] = {}
-        self._books: dict[str, dict[str, dict[str, D]]] = {}
+        self._books: dict[str, dict[str, dict[D, D]]] = {}
         self._trades: dict[str, deque[tuple[float, D, D, str]]] = {}
         self._prices: dict[str, deque[tuple[float, D]]] = {}
         self.market_sequence = SequenceTracker()
@@ -288,7 +288,10 @@ class WebSocketSupervisor:
         bids = row.get("bids") or []
         asks = row.get("asks") or []
         with self._lock:
-            book = self._books.setdefault(symbol, {"bids": {}, "asks": {}})
+            book = self._books.setdefault(
+                symbol,
+                {"bids": {}, "asks": {}},
+            )
             if message_type == "snapshot":
                 book["bids"].clear()
                 book["asks"].clear()
