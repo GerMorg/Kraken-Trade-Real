@@ -576,12 +576,14 @@ class TradingAuthority:
             market.spread_bps,
             intent.expected_edge_bps,
             self._volatility(market),
+            reduce_only=intent.reduce_only,
         )
         estimated = self._volatility(market) * D(2)
         ok, reason = self.policy.validate(
             chosen,
             intent.expected_edge_bps,
             estimated,
+            reduce_only=intent.reduce_only,
         )
         return {
             "allowed": ok,
