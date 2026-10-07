@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.27
+
+- Add a separate Tactical Volatility/Momentum strategy for the small-account use case.
+- Keep Tactical risk in a dedicated sleeve capped by both portfolio percentage and EUR amount.
+- Add deterministic 30-second/3-minute momentum, volatility expansion, breakout, trade-flow, spread and L2 order-book scoring.
+- Require the modeled round-trip cost and safety buffer to be cleared before a Tactical entry.
+- Add immediate Tactical SHORT support for Kraken Spot-Margin instruments with verified pair-specific sell leverage.
+- Keep Tactical leverage bounded to 2x by default; no automatic leverage escalation.
+- Add fast Kraken WebSocket v2 ticker, trade and L2 book state with CRC32 book validation.
+- Add Tactical take-profit, stop-loss, trailing-stop and maximum-hold exits for both LONG and SHORT positions.
+- Add separate Tactical shadow/live state, persisted positions/trades, rate limits, re-entry cooldown and learning events.
+- Feed the latest Core News/Gemini context into Tactical as a veto only; Tactical never performs a network AI/news request inside its fast loop.
+- Publish Tactical status, position, score, edge, daily trade count and PnL through Home Assistant sensors.
+- Keep Tactical disabled and shadow-only by default so enabling the new high-risk path is always explicit.
+
+# Changelog
+
 ## 0.1.25
 
 - Fix Spot order reconciliation to use the persisted Kraken transaction/order ID with QueryOrders instead of the unsupported cl_ord_id query argument.
