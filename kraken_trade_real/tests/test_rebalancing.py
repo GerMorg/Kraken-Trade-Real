@@ -114,7 +114,16 @@ def test_adaptive_core_edge_tier_allows_high_confidence_economic_setup(config, i
         instrument.symbol, Direction.SHORT, Decimal("0"), Decimal("130"), Decimal("0.1"),
         "TREND_UP", Decimal("0"), Decimal("0"), {"volatility": Decimal("5")},
     )
-    decision = DecisionEngine(config).choose(
+    from dataclasses import replace
+
+    test_config = replace(
+        config,
+        strategy_min_edge_bps=25.0,
+        strategy_adaptive_edge_floor_bps=15.0,
+        strategy_adaptive_min_confidence=0.75,
+        strategy_adaptive_cost_ratio=1.10,
+    )
+    decision = DecisionEngine(test_config).choose(
         instrument, long_signal, short_signal, portfolio,
         "model-test", "config-test", {}, Decimal("1"),
     )
