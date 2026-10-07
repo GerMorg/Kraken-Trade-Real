@@ -591,10 +591,14 @@ class TacticalEngine:
         ranked.sort(key=lambda item: item[0], reverse=True)
         selected: list[Instrument] = [item[1] for item in ranked[: int(self.config.tactical_universe_size)]]
 
+        selected_symbols = {item.symbol for item in selected}
         for position in self.positions.values():
-            instrument = self.instrument_by_symbol.get(position.symbol)
-            if instrument and instrument.symbol not in {i.symbol for i in selected}:
-                selected.append(instrument)
+            held_instrument = self.instrument_by_symbol.get(position.symbol)
+            if (
+                held_instrument is not None
+                and held_instrument.symbol not in selected_symbols
+            ):
+                selected.append(held_instrument)
 
         self.stream.set_symbols([i.symbol for i in selected])
         self.audit.emit(
