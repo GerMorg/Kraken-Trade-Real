@@ -93,7 +93,7 @@ class WebSocketSupervisor:
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
-            self.recovery.issue("DATA_STALE", "WS_INVALID_JSON")
+            self.audit.emit("TACTICAL_WS_INVALID_JSON", "WARNING")
             return
 
         if not isinstance(data, dict):
