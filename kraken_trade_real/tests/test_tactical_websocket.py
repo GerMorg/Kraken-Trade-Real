@@ -86,6 +86,5 @@ def test_websocket_seed_price_history_makes_new_candidate_immediately_evaluable(
     now = time.time()
     closes = tuple(Decimal("100") + Decimal(i) for i in range(61))
     ws.seed_price_history("BTC/USD", closes, now)
-    points = ws.market_snapshot("BTC/USD")
     # A seed alone does not create a ticker, but it must populate the stream history.
     assert len(ws._prices["BTC/USD"]) >= 60
