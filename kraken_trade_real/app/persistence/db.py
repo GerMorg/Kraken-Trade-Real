@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 import time
+import datetime
 from typing import Iterator, Any
 from decimal import Decimal
 from app.domain.models import Decision, Fill, Instrument, MarketSnapshot, NewsItem, OrderIntent, PortfolioState
@@ -298,6 +299,100 @@ class Database:
         self.execute("INSERT INTO learning_events(created_at,event_type,entity_id,payload_json) VALUES(?,?,?,?)",
                      (time.time(),event_type,entity_id,json.dumps(payload,sort_keys=True,default=str)))
 
+
+
+    def save_tactical_position(
+        self,
+        symbol: str,
+        venue: str,
+        direction: str,
+        quantity: Any,
+        entry_price: Any,
+        peak_price: Any,
+        trough_price: Any,
+        notional_eur: Any,
+        leverage: Any,
+        opened_at: float,
+        entry_client_order_id: str,
+        setup_score: Any,
+        state: str,
+    ) -> None:
+        self.execute(
+            """INSERT INTO tactical_positions(
+               symbol,venue,direction,quantity,entry_price,peak_price,trough_price,
+               notional_eur,leverage,opened_at,last_update,entry_client_order_id,
+               setup_score,state
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol) DO UPDATE SET
+               venue=excluded.venue,direction=excluded.direction,quantity=excluded.quantity,
+               entry_price=excluded.entry_price,peak_price=excluded.peak_price,
+               trough_price=excluded.trough_price,notional_eur=excluded.notional_eur,
+               leverage=excluded.leverage,last_update=excluded.last_update,
+               entry_client_order_id=excluded.entry_client_order_id,
+               setup_score=excluded.setup_score,state=excluded.state""",
+            (
+                symbol, venue, direction, str(quantity), str(entry_price), str(peak_price),
+                str(trough_price), str(notional_eur), str(leverage), opened_at, time.time(),
+                entry_client_order_id, str(setup_score), state,
+            ),
+        )
+
+    def tactical_positions(self) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT * FROM tactical_positions WHERE state='OPEN' ORDER BY opened_at"
+        )
+
+    def delete_tactical_position(self, symbol: str) -> None:
+        self.execute("DELETE FROM tactical_positions WHERE symbol=?", (symbol,))
+
+    def save_tactical_trade(
+        self,
+        trade_id: str,
+        symbol: str,
+        direction: str,
+        entry_price: Any,
+        exit_price: Any,
+        quantity: Any,
+        gross_pnl_eur: Any,
+        fees_eur: Any,
+        net_pnl_eur: Any,
+        opened_at: float,
+        closed_at: float,
+        hold_seconds: float,
+        exit_reason: str,
+        setup_score: Any,
+        detail: dict[str, Any],
+    ) -> None:
+        self.execute(
+            """INSERT OR REPLACE INTO tactical_trades(
+               trade_id,symbol,direction,entry_price,exit_price,quantity,
+               gross_pnl_eur,fees_eur,net_pnl_eur,opened_at,closed_at,
+               hold_seconds,exit_reason,setup_score,detail_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                trade_id, symbol, direction, str(entry_price), str(exit_price), str(quantity),
+                str(gross_pnl_eur), str(fees_eur), str(net_pnl_eur), opened_at, closed_at,
+                hold_seconds, exit_reason, str(setup_score),
+                json.dumps(detail, sort_keys=True, default=str),
+            ),
+        )
+
+    def tactical_trade_count(self, since_timestamp: float) -> int:
+        row = self.one(
+            "SELECT COUNT(*) AS n FROM tactical_trades WHERE closed_at>=?",
+            (since_timestamp,),
+        )
+        return int(row["n"]) if row else 0
+
+    def tactical_today_net_pnl(self) -> Decimal:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        row = self.one(
+            "SELECT COALESCE(SUM(CAST(net_pnl_eur AS REAL)),0) AS pnl "
+            "FROM tactical_trades WHERE closed_at>=?",
+            (start,),
+        )
+        return Decimal(str(row["pnl"])) if row else Decimal("0")
 
     def tax_event_exists(self, event_id: str) -> bool:
         return self.one("SELECT event_id FROM tax_events WHERE event_id=?", (event_id,)) is not None
