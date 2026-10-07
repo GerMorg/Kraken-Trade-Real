@@ -459,6 +459,10 @@ class TacticalEngine:
         self._gemini_status = "UNKNOWN"
         self._ai_context_at = 0.0
         self._portfolio_state: Any | None = None
+        self._cash_balances: dict[str, D] = {}
+        self._margin_account: dict[str, Any] | None = None
+        self._fx_rates: dict[str, D] = {"EUR": D("1")}
+        self._portfolio_context_at = 0.0
         self._portfolio_lock = threading.RLock()
         self._load_from_db()
 
@@ -492,8 +496,30 @@ class TacticalEngine:
         self.instrument_by_symbol = {i.symbol: i for i in instruments}
 
     def set_portfolio_state(self, portfolio: Any) -> None:
+        rates: dict[str, D] = {"EUR": D("1")}
+        quotes = {
+            instrument.quote
+            for instrument in self.instruments
+            if instrument.venue == "spot"
+        }
+        for quote in quotes:
+            if str(quote).upper() == "EUR":
+                continue
+            try:
+                rate = self.portfolio.quote_to_eur_rate(quote)
+            except Exception:
+                rate = None
+            if rate is not None and rate > 0:
+                rates[str(quote).upper()] = D(str(rate))
         with self._portfolio_lock:
             self._portfolio_state = portfolio
+            self._cash_balances = dict(
+                getattr(self.portfolio, "cash_balances", {}) or {}
+            )
+            account = getattr(self.portfolio, "spot_margin_account", None)
+            self._margin_account = dict(account) if isinstance(account, dict) else None
+            self._fx_rates = rates
+            self._portfolio_context_at = time.time()
 
     def set_ai_context(
         self,
@@ -511,10 +537,12 @@ class TacticalEngine:
             return
         payload = spot_payload or {}
         ranked: list[tuple[float, Instrument]] = []
+        with self._portfolio_lock:
+            cash_balances = dict(self._cash_balances)
         cash_assets = {
             asset
             for asset in CASH_QUOTES
-            if self.portfolio.cash_balance(asset) > 0
+            if cash_balances.get(asset, D("0")) > 0
         }
         for instrument in self.instruments:
             if not self._eligible_stream_instrument(instrument):
@@ -833,7 +861,8 @@ class TacticalEngine:
         bid = self._dec_raw(raw.get("bid"))
         ask = self._dec_raw(raw.get("ask"))
         last = self._dec_raw(raw.get("last"))
-        rate = self.portfolio.quote_to_eur_rate(instrument.quote)
+        with self._portfolio_lock:
+            rate = self._fx_rates.get(str(instrument.quote).upper())
         notional = self._target_notional()
         if rate is None or rate <= 0 or notional <= 0:
             return None
@@ -994,11 +1023,16 @@ class TacticalEngine:
                 if free < notional / leverage:
                     return False, "MARGIN_FREE_INSUFFICIENT"
         else:
-            rate = self.portfolio.quote_to_eur_rate(instrument.quote)
+            with self._portfolio_lock:
+                rate = self._fx_rates.get(str(instrument.quote).upper())
             if rate is None or rate <= 0:
                 return False, "FX_RATE_UNAVAILABLE"
             required_quote = notional / rate
-            available = self.portfolio.cash_balance(instrument.quote)
+            with self._portfolio_lock:
+                available = self._cash_balances.get(
+                    str(instrument.quote).upper(),
+                    D("0"),
+                )
             if available + D("0.00000001") < required_quote:
                 return False, "QUOTE_CASH_INSUFFICIENT"
 
@@ -1109,7 +1143,8 @@ class TacticalEngine:
             )
             return
 
-        rate = self.portfolio.quote_to_eur_rate(instrument.quote)
+        with self._portfolio_lock:
+            rate = self._fx_rates.get(str(instrument.quote).upper())
         if rate is None or rate <= 0:
             self._last_reason = "FX_RATE_UNAVAILABLE"
             return
@@ -1118,11 +1153,7 @@ class TacticalEngine:
             if signal.direction == Direction.LONG
             else self._dec_raw(raw.get("bid"))
         )
-        quantity = self.portfolio.quantity_for_eur(
-            instrument,
-            notional,
-            price,
-        )
+        quantity = (notional / rate) / price
         if quantity is None or quantity <= 0:
             self._last_reason = "QUANTITY_UNAVAILABLE"
             return
@@ -1466,7 +1497,11 @@ class TacticalEngine:
         exit_price: D,
     ) -> None:
         instrument = self.instrument_by_symbol[position.symbol]
-        rate = self.portfolio.quote_to_eur_rate(instrument.quote) or D("1")
+        with self._portfolio_lock:
+            rate = self._fx_rates.get(
+                str(instrument.quote).upper(),
+                D("1"),
+            )
         gross = (
             (exit_price - position.entry_price) * position.quantity * rate
             if position.direction == Direction.LONG
@@ -1653,7 +1688,11 @@ class TacticalEngine:
         reason: str,
     ) -> None:
         instrument = self.instrument_by_symbol[position.symbol]
-        rate = self.portfolio.quote_to_eur_rate(instrument.quote) or D("1")
+        with self._portfolio_lock:
+            rate = self._fx_rates.get(
+                str(instrument.quote).upper(),
+                D("1"),
+            )
         gross = (
             (exit_price - position.entry_price) * position.quantity * rate
             if position.direction == Direction.LONG
@@ -1685,7 +1724,10 @@ class TacticalEngine:
         )
 
     def _refresh_portfolio_if_due(self) -> None:
-        interval = max(15, int(getattr(self.config, "tactical_portfolio_refresh_seconds", 30)))
+        interval = max(
+            15,
+            int(getattr(self.config, "tactical_portfolio_refresh_seconds", 30)),
+        )
         if time.monotonic() - self._last_portfolio_refresh < interval:
             return
         portfolio = self.portfolio.reconcile()
