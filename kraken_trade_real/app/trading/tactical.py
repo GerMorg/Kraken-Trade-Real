@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
 import threading
@@ -161,6 +162,15 @@ class TacticalTrader:
             for instrument in self._candidates.values()
         }
         self.websocket.set_symbols(list(candidates), aliases=aliases)
+        if bool(getattr(self.config, "tactical_seed_history", True)):
+            for instrument in self._candidates.values():
+                snapshot = snapshots.get(instrument.symbol)
+                if snapshot is not None and len(snapshot.closes) >= 2:
+                    self.websocket.seed_price_history(
+                        instrument.symbol,
+                        snapshot.closes,
+                        snapshot.timestamp,
+                    )
         self.audit.emit(
             "TACTICAL_CANDIDATES_UPDATED",
             "INFO",
@@ -259,16 +269,35 @@ class TacticalTrader:
             return
 
         signals: list[TacticalSignal] = []
+        rejection_counts: Counter[str] = Counter()
+        evaluated = 0
         for instrument in candidates:
             if instrument.symbol in portfolio.positions:
                 continue
+            evaluated += 1
             state = self.websocket.market_snapshot(instrument.symbol)
             signal = self._build_signal(instrument, state, now)
             if signal is not None:
                 signals.append(signal)
+            else:
+                rejection_counts[self._last_signal_reason] += 1
 
         if not signals:
             self._last_action = "NO_SIGNAL"
+            if now - self._last_diagnostic_at >= float(
+                getattr(self.config, "tactical_diagnostics_interval_seconds", 60)
+            ):
+                self.audit.emit(
+                    "TACTICAL_EVALUATION",
+                    "INFO",
+                    evaluated=evaluated,
+                    signals_found=0,
+                    rejection_counts=dict(rejection_counts),
+                    last_reason=self._last_signal_reason,
+                    candidate_count=len(candidates),
+                    position_count=len(portfolio.positions),
+                )
+                self._last_diagnostic_at = now
             return
         signal = max(signals, key=lambda item: (item.net_edge_bps, item.score))
         with self._lock:
@@ -301,18 +330,18 @@ class TacticalTrader:
         now: float,
     ) -> TacticalSignal | None:
         if state is None:
-            return None
+            return self._signal_reject(instrument.symbol, "NO_STREAM_DATA")
         bid = D(str(state.get("bid", "0")))
         ask = D(str(state.get("ask", "0")))
         price = D(str(state.get("price", "0")))
         spread = D(str(state.get("spread_bps", "999999")))
         timestamp = float(state.get("timestamp", 0) or 0)
         if min(bid, ask, price) <= 0:
-            return None
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
         max_spread = D(str(getattr(self.config, "tactical_max_spread_bps", 25)))
         max_age = D(str(getattr(self.config, "tactical_market_max_age_seconds", 5)))
         if spread > max_spread or now - timestamp > float(max_age):
-            return None
+            return self._signal_reject(instrument.symbol, "STALE_OR_WIDE_MARKET")
 
         points = tuple(
             (float(item[0]), D(str(item[1])))
@@ -321,18 +350,18 @@ class TacticalTrader:
         )
         sampled = self._sample_prices(points, now, 180.0, 10.0)
         if len(sampled) < 8:
-            return None
+            return self._signal_reject(instrument.symbol, "INSUFFICIENT_PRICE_HISTORY")
         momentum_60 = self._return_since(sampled, 60.0)
         momentum_180 = self._return_since(sampled, 180.0)
         volatility = self._realized_volatility(tuple(price for _, price in sampled))
         if volatility < D(str(getattr(self.config, "tactical_min_volatility_bps", 12))):
-            return None
+            return self._signal_reject(instrument.symbol, "LOW_VOLATILITY")
         if volatility > D(str(getattr(self.config, "tactical_max_volatility_bps", 55))):
-            return None
+            return self._signal_reject(instrument.symbol, "HIGH_VOLATILITY")
 
         recent = [price for ts, price in sampled if now - ts <= 60.0]
         if len(recent) < 4:
-            return None
+            return self._signal_reject(instrument.symbol, "INSUFFICIENT_RECENT_HISTORY")
         recent_high = max(recent[:-1])
         recent_low = min(recent[:-1])
         breakout_long = (price / recent_high - D("1")) * D("10000") if recent_high else D("0")
@@ -344,7 +373,7 @@ class TacticalTrader:
         )
         volume_ratio = D(str(metrics.get("volume_ratio", "0")))
         if volume_ratio < D(str(getattr(self.config, "tactical_min_volume_ratio", 2))):
-            return None
+            return self._signal_reject(instrument.symbol, "LOW_VOLUME_EXPANSION")
         imbalance = self._book_imbalance(state.get("depths_bid", ()), state.get("depths_ask", ()))
         min_imbalance = D(str(getattr(self.config, "tactical_min_imbalance", 0.10)))
         min_momentum = D(str(getattr(self.config, "tactical_min_momentum_bps", 40)))
@@ -410,7 +439,7 @@ class TacticalTrader:
                 (short_score, Direction.SHORT, expected_move, breakout_short, -imbalance, "VOL_BREAKOUT_SHORT")
             )
         if not candidates:
-            return None
+            return self._signal_reject(instrument.symbol, "DIRECTIONAL_SETUP_NOT_MET")
 
         score, direction, expected_move, breakout, signed_imbalance, reason = max(
             candidates, key=lambda item: item[0]
@@ -420,13 +449,39 @@ class TacticalTrader:
         slippage = D(str(getattr(self.config, "tactical_expected_slippage_bps", 25)))
         safety = D(str(getattr(self.config, "tactical_safety_buffer_bps", 30)))
         cost = entry_fee + exit_fee + spread + slippage + safety
-        min_move = D(str(getattr(self.config, "tactical_min_expected_move_bps", 280)))
-        if expected_move < min_move or expected_move <= cost:
-            return None
         confidence = max(
             D("0"),
             min(D("1"), D("0.50") + score / D("400")),
         )
+        adaptive_enabled = bool(
+            getattr(self.config, "tactical_adaptive_entry_enabled", True)
+        )
+        adaptive_min_move = D(str(
+            getattr(self.config, "tactical_adaptive_min_expected_move_bps", 230.0)
+        ))
+        adaptive_min_confidence = D(str(
+            getattr(self.config, "tactical_adaptive_min_confidence", 0.75)
+        ))
+        adaptive_min_edge = D(str(
+            getattr(self.config, "tactical_adaptive_min_net_edge_bps", 15.0)
+        ))
+        adaptive_ok = (
+            adaptive_enabled
+            and confidence >= adaptive_min_confidence
+            and expected_move >= adaptive_min_move
+            and expected_move - cost >= adaptive_min_edge
+        )
+        configured_min_move = D(str(
+            getattr(self.config, "tactical_min_expected_move_bps", 280)
+        ))
+        min_move = min(configured_min_move, adaptive_min_move) if adaptive_ok else configured_min_move
+        if expected_move < min_move or expected_move - cost < (
+            adaptive_min_edge if adaptive_ok else D("0")
+        ):
+            self._signal_rejections["EXPECTED_MOVE_OR_EDGE_TOO_SMALL"] += 1
+            return self._signal_reject(
+                instrument.symbol, "EXPECTED_MOVE_OR_EDGE_TOO_SMALL"
+            )
         return TacticalSignal(
             instrument.symbol,
             direction,
@@ -1311,6 +1366,11 @@ class TacticalTrader:
             position.notional_eur, position.leverage, position.opened_at,
             position.entry_client_order_id, position.setup_score, position.state,
         )
+
+    def _signal_reject(self, symbol: str, reason: str) -> None:
+        self._last_signal_reason = reason
+        self._signal_rejections[reason] += 1
+        return None
 
     @staticmethod
     def _sample_prices(
