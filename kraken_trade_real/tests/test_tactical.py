@@ -137,13 +137,14 @@ def market_state(now=1000.0, direction="LONG"):
         if direction == "LONG":
             price = start + D(str(i)) * D("0.28")
         else:
-            price = start - D(str(i)) * D("0.22")
+            price = start - D(str(i)) * D("0.28")
         points.append((now - 180 + i * 10, price))
     return {
         "price": points[-1][1],
         "bid": points[-1][1] - D("0.01"),
         "ask": points[-1][1] + D("0.01"),
         "timestamp": now - 1,
+        "spread_bps": D("2"),
         "price_points": tuple(points),
         "depths_bid": ((points[-1][1] - D("0.01"), D("10")),),
         "depths_ask": ((points[-1][1] + D("0.01"), D("2")),),
