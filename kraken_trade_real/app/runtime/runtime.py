@@ -68,7 +68,8 @@ class TradingRuntime:
                  scanner: Any, news: Any, gemini: Any, signals: Any, decisions: Any,
                  sizer: Any, risk: Any, leverage: Any, intents: Any, authority: Any,
                  portfolio: Any, recovery: Any, learning: Any, registry: Any,
-                 sensors: Any, tax: Any) -> None:
+                 sensors: Any, tax: Any, websocket: Any | None = None,
+                 tactical: Any | None = None) -> None:
         self.config=config
         self.db=db
         self.audit=audit
@@ -93,6 +94,8 @@ class TradingRuntime:
         self.registry=registry
         self.sensors=sensors
         self.tax=tax
+        self.websocket=websocket
+        self.tactical=tactical
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
@@ -312,6 +315,17 @@ class TradingRuntime:
         self.state.set(RuntimeStage.READY)
         self._watchdog_clear("")
         self.audit.emit("STARTUP_READY","INFO",instruments=len(self.instruments))
+        if self.tactical is not None:
+            try:
+                self.tactical.update_portfolio(portfolio)
+                self.tactical.start()
+            except Exception as exc:
+                self.audit.emit(
+                    "TACTICAL_START_FAILED",
+                    "WARNING",
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:500],
+                )
         self._publish_runtime_status()
         return True
 
@@ -750,6 +764,32 @@ class TradingRuntime:
                 duration_seconds=gemini_duration,
             )
 
+            if self.tactical is not None:
+                try:
+                    tactical_seed = ranked[:max(
+                        40,
+                        int(getattr(self.config, "tactical_candidate_limit", 12)) * 4,
+                    )]
+                    tactical_news = {
+                        instrument.symbol: self.news.effect_for(instrument.symbol, news)
+                        for instrument in tactical_seed
+                    }
+                    self.tactical.update_portfolio(portfolio)
+                    self.tactical.update_context(
+                        tactical_seed,
+                        snapshots,
+                        tactical_news,
+                        gemini_bps,
+                    )
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_CONTEXT_UPDATE_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:500],
+                    )
+
             stage="DECISIONS"
             self._watchdog_arm(cycle_id, stage)
             model_version=self.registry.active()
@@ -1140,6 +1180,16 @@ class TradingRuntime:
             self.portfolio.set_market_context(self.instruments,latest_spot_payload)
             final_portfolio=self.portfolio.reconcile()
             self.db.save_portfolio(cycle_id,final_portfolio)
+            if self.tactical is not None:
+                try:
+                    self.tactical.update_portfolio(final_portfolio)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_PORTFOLIO_UPDATE_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error_type=type(exc).__name__,
+                    )
             self.learning.record_cycle(cycle_id,decisions_count,placed,blockers)
             try:
                 feedback=self.learning.process_feedback()
