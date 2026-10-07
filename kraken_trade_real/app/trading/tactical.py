@@ -1273,6 +1273,7 @@ class TacticalEngine:
             None,
             reduce_only=False,
             post_only=False,
+            max_slippage_bps=D(str(self.config.tactical_max_slippage_bps)),
         )
         market = self._snapshot_for_authority(
             instrument,
@@ -1494,6 +1495,7 @@ class TacticalEngine:
             None,
             reduce_only=True,
             post_only=False,
+            max_slippage_bps=D(str(self.config.tactical_max_slippage_bps)),
         )
         raw = {
             "last": str(last),
@@ -1632,7 +1634,6 @@ class TacticalEngine:
                 if resolved_state not in {
                     OrderState.FILLED,
                     OrderState.PARTIALLY_FILLED,
-                    OrderState.CANCELED,
                     OrderState.CANCELED,
                     OrderState.EXPIRED,
                     OrderState.REJECTED,
