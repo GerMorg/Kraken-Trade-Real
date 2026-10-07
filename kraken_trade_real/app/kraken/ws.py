@@ -113,6 +113,28 @@ class WebSocketSupervisor:
         if not isinstance(data, dict):
             return
 
+        if data.get("method") in {"subscribe", "unsubscribe"}:
+            success = data.get("success")
+            if success is False:
+                self.last_error = str(data.get("error") or "WS_SUBSCRIPTION_FAILED")[:300]
+                self.audit.emit(
+                    "TACTICAL_WS_SUBSCRIPTION_FAILED",
+                    "WARNING",
+                    method=str(data.get("method")),
+                    error=self.last_error,
+                    result=data.get("result") or {},
+                )
+            elif success is True:
+                result = data.get("result") or {}
+                self.audit.emit(
+                    "TACTICAL_WS_SUBSCRIPTION_ACK",
+                    "INFO",
+                    method=str(data.get("method")),
+                    channel=str(result.get("channel") or ""),
+                    symbol=str(result.get("symbol") or ""),
+                )
+            return
+
         if private:
             seq = data.get("sequence")
             if not self.private_sequence.observe(int(seq) if seq is not None else None):
