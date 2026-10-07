@@ -73,6 +73,20 @@ class RiskEngine:
                 max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
             )
 
+        risk_edge_threshold = D(str(self.config.strategy_min_edge_bps))
+        economic_cost_ratio = D("1")
+        if risk_profile == "tactical":
+            risk_edge_threshold = D(str(
+                getattr(self.config, "tactical_adaptive_min_net_edge_bps", 15.0)
+            ))
+        elif str(d.rationale.get("edge_tier", "STANDARD")) == "ADAPTIVE":
+            risk_edge_threshold = D(str(
+                getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)
+            ))
+            economic_cost_ratio = D(str(
+                getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)
+            ))
+
         checks = {
             "instrument_direction": (
                 d.reduce_only
@@ -107,7 +121,12 @@ class RiskEngine:
             # reduce-only exits, whose purpose is to remove existing risk.
             "edge_positive": (
                 d.reduce_only
-                or d.signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
+                or (
+                    d.signal.net_edge_bps >= risk_edge_threshold
+                    and d.signal.expected_return_bps >= (
+                        d.signal.expected_cost_bps * economic_cost_ratio
+                    )
+                )
             ),
             "confidence": (
                 d.reduce_only

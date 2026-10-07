@@ -315,6 +315,15 @@ class TradingRuntime:
         self.state.set(RuntimeStage.READY)
         self._watchdog_clear("")
         self.audit.emit("STARTUP_READY","INFO",instruments=len(self.instruments))
+        self.audit.emit(
+            "TRADING_MODE_SUMMARY",
+            "INFO",
+            core_live_enabled=bool(self.config.live_enabled),
+            global_kill_switch=bool(self.config.kill_switch),
+            tactical_enabled=bool(getattr(self.config, "tactical_enabled", False)),
+            tactical_shadow_mode=bool(getattr(self.config, "tactical_shadow_mode", True)),
+            tactical_allow_short=bool(getattr(self.config, "tactical_allow_short", True)),
+        )
         if self.tactical is not None:
             try:
                 self.tactical.update_portfolio(portfolio)
@@ -996,6 +1005,8 @@ class TradingRuntime:
                     allowed=risk.allowed,
                     reason=risk.reason,
                     checks=risk.checks,
+                    edge_tier=str(decision.rationale.get("edge_tier", "")),
+                    edge_threshold_bps=str(decision.rationale.get("edge_threshold_bps", "")),
                     current_position_eur=str(decision.current_position_eur),
                     target_position_eur=str(decision.target_position_eur),
                     trade_notional_eur=str(decision.target_notional_eur),

@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.28
+version: 0.1.29
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -43,6 +43,13 @@ options:
   market_exploration_slots_per_family: 2
   strategy_min_edge_bps: 25.0
   strategy_min_confidence: 0.58
+  strategy_adaptive_edge_enabled: true
+  strategy_adaptive_edge_floor_bps: 15.0
+  strategy_adaptive_min_confidence: 0.75
+  strategy_adaptive_cost_ratio: 1.10
+  strategy_entry_fee_bps: 40.0
+  strategy_exit_fee_bps: 80.0
+  strategy_execution_overhead_bps: 8.0
   risk_max_position_pct: 15.0
   risk_max_gross_pct: 80.0
   risk_max_net_pct: 50.0
@@ -95,6 +102,7 @@ options:
   tactical_min_expected_move_bps: 280.0
   tactical_entry_fee_bps: 80.0
   tactical_exit_fee_bps: 80.0
+  tactical_margin_open_fee_bps: 5.0
   tactical_expected_slippage_bps: 25.0
   tactical_safety_buffer_bps: 30.0
   tactical_context_block_bps: 80.0
@@ -111,6 +119,12 @@ options:
   tactical_trade_lookback_seconds: 900
   tactical_short_leverage: 2.0
   tactical_order_confirm_seconds: 5
+  tactical_adaptive_entry_enabled: true
+  tactical_adaptive_min_expected_move_bps: 230.0
+  tactical_adaptive_min_confidence: 0.75
+  tactical_adaptive_min_net_edge_bps: 15.0
+  tactical_seed_history: true
+  tactical_diagnostics_interval_seconds: 60
 schema:
   kraken_api_key: password
   kraken_api_secret: password
@@ -136,6 +150,13 @@ schema:
   market_exploration_slots_per_family: int
   strategy_min_edge_bps: float
   strategy_min_confidence: float
+  strategy_adaptive_edge_enabled: bool
+  strategy_adaptive_edge_floor_bps: float
+  strategy_adaptive_min_confidence: float
+  strategy_adaptive_cost_ratio: float
+  strategy_entry_fee_bps: float
+  strategy_exit_fee_bps: float
+  strategy_execution_overhead_bps: float
   risk_max_position_pct: float
   risk_max_gross_pct: float
   risk_max_net_pct: float
@@ -188,6 +209,7 @@ schema:
   tactical_min_expected_move_bps: float
   tactical_entry_fee_bps: float
   tactical_exit_fee_bps: float
+  tactical_margin_open_fee_bps: float
   tactical_expected_slippage_bps: float
   tactical_safety_buffer_bps: float
   tactical_context_block_bps: float
@@ -204,3 +226,9 @@ schema:
   tactical_trade_lookback_seconds: int
   tactical_short_leverage: float
   tactical_order_confirm_seconds: int
+  tactical_adaptive_entry_enabled: bool
+  tactical_adaptive_min_expected_move_bps: float
+  tactical_adaptive_min_confidence: float
+  tactical_adaptive_min_net_edge_bps: float
+  tactical_seed_history: bool
+  tactical_diagnostics_interval_seconds: int

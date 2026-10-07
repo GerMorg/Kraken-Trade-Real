@@ -270,3 +270,22 @@ def test_tactical_short_pnl_and_fees_use_positive_exposure():
         None,
     )
     assert trader._trade_fees(D("-10")) == D("0.16")
+
+
+
+def test_tactical_adaptive_entry_can_clear_cost_without_requiring_280_bps():
+    trader = TacticalTrader(
+        cfg(
+            tactical_adaptive_entry_enabled=True,
+            tactical_adaptive_min_expected_move_bps=230,
+            tactical_adaptive_min_confidence=0.75,
+            tactical_adaptive_min_net_edge_bps=15,
+        ),
+        DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    assert trader._adaptive_entry_allowed(
+        D("250"), D("220"), D("0.80"), True, D("230"), D("0.75"), D("15")
+    ) is True
+    assert trader._adaptive_entry_allowed(
+        D("250"), D("240"), D("0.80"), True, D("230"), D("0.75"), D("15")
+    ) is False

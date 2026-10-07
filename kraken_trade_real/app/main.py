@@ -52,7 +52,7 @@ def build_runtime() -> TradingRuntime:
         config.gemini_timeout_seconds,
         config.gemini_fallback_models,
     )
-    signals = SignalEngine()
+    signals = SignalEngine(config)
     decisions = DecisionEngine(config)
     sizer = RiskSizer(config.risk_max_position_pct, config.risk_cash_reserve_pct)
     cost_model = CostModel()

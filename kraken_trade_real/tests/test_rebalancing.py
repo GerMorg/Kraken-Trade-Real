@@ -92,3 +92,65 @@ def test_reduce_only_exit_bypasses_entry_edge_and_confidence_gates(config, instr
     assert result.reason == "RISK_OK"
     assert result.checks["edge_positive"] is True
     assert result.checks["confidence"] is True
+
+
+def test_adaptive_core_edge_tier_allows_high_confidence_economic_setup(config, instrument):
+    from app.domain.models import PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.trading.decision import DecisionEngine
+
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"),
+        cash_eur=Decimal("90"),
+        positions={},
+        gross_eur=Decimal("0"),
+        net_eur=Decimal("0"),
+    )
+    long_signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("150"), Decimal("130"), Decimal("0.85"),
+        "TREND_UP", Decimal("0"), Decimal("0"), {"volatility": Decimal("5")},
+    )
+    short_signal = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("0"), Decimal("130"), Decimal("0.1"),
+        "TREND_UP", Decimal("0"), Decimal("0"), {"volatility": Decimal("5")},
+    )
+    from dataclasses import replace
+
+    test_config = replace(
+        config,
+        strategy_min_edge_bps=25.0,
+        strategy_adaptive_edge_floor_bps=15.0,
+        strategy_adaptive_min_confidence=0.75,
+        strategy_adaptive_cost_ratio=1.10,
+    )
+    decision = DecisionEngine(test_config).choose(
+        instrument, long_signal, short_signal, portfolio,
+        "model-test", "config-test", {}, Decimal("1"),
+    )
+    assert decision is not None
+    assert decision.rationale["edge_tier"] == "ADAPTIVE"
+    assert decision.rationale["edge_threshold_bps"] == "15.0"
+
+
+def test_core_new_short_requires_exchange_direction_availability(config, instrument):
+    from dataclasses import replace
+    from app.domain.models import PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.trading.decision import DecisionEngine
+
+    blocked = replace(instrument, short_available=False)
+    portfolio = PortfolioState(equity_eur=Decimal("100"), cash_eur=Decimal("100"))
+    long_signal = Signal(
+        blocked.symbol, Direction.LONG, Decimal("0"), Decimal("130"), Decimal("0.1"),
+        "RANGE", Decimal("0"), Decimal("0"), {"volatility": Decimal("5")},
+    )
+    short_signal = Signal(
+        blocked.symbol, Direction.SHORT, Decimal("150"), Decimal("130"), Decimal("0.85"),
+        "TREND_DOWN", Decimal("0"), Decimal("0"), {"volatility": Decimal("5")},
+    )
+    assert DecisionEngine(config).choose(
+        blocked, long_signal, short_signal, portfolio, "model-test", "hash", {}, Decimal("1")
+    ) is None
+    assert DecisionEngine(config).rejection_reason(
+        blocked, long_signal, short_signal, portfolio, {}, Decimal("0.5")
+    ) == "INSTRUMENT_DIRECTION"
