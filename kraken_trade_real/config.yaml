@@ -77,16 +77,16 @@ options:
   tax_report_enabled: true
   tactical_enabled: false
   tactical_shadow_mode: true
-  tactical_poll_interval_seconds: int
-  tactical_portfolio_refresh_seconds: int
-  tactical_universe_size: int
+  tactical_poll_interval_seconds: 5
+  tactical_portfolio_refresh_seconds: 30
+  tactical_universe_size: 24
   tactical_portfolio_pct: 25.0
   tactical_max_capital_eur: 15.0
-  tactical_max_positions: int
+  tactical_max_positions: 1
   tactical_max_leverage: 2.0
   tactical_short_leverage: 2.0
-  tactical_max_round_trips_per_hour: int
-  tactical_max_round_trips_per_day: int
+  tactical_max_round_trips_per_hour: 2
+  tactical_max_round_trips_per_day: 3
   tactical_min_volume_ratio: 1.75
   tactical_min_momentum_30s_bps: 35.0
   tactical_min_momentum_3m_bps: 60.0
@@ -101,8 +101,8 @@ options:
   tactical_stop_loss_pct: 0.9
   tactical_take_profit_pct: 1.8
   tactical_trailing_stop_pct: 0.7
-  tactical_max_hold_seconds: int
-  tactical_reentry_cooldown_seconds: int
+  tactical_max_hold_seconds: 1800
+  tactical_reentry_cooldown_seconds: 120
   tactical_ai_veto_bps: 80.0
 schema:
   kraken_api_key: password
@@ -163,16 +163,16 @@ schema:
   tax_report_enabled: bool
   tactical_enabled: bool
   tactical_shadow_mode: bool
-  tactical_poll_interval_seconds: float
-  tactical_portfolio_refresh_seconds: float
-  tactical_universe_size: float
+  tactical_poll_interval_seconds: int
+  tactical_portfolio_refresh_seconds: int
+  tactical_universe_size: int
   tactical_portfolio_pct: float
   tactical_max_capital_eur: float
-  tactical_max_positions: float
+  tactical_max_positions: int
   tactical_max_leverage: float
   tactical_short_leverage: float
-  tactical_max_round_trips_per_hour: float
-  tactical_max_round_trips_per_day: float
+  tactical_max_round_trips_per_hour: int
+  tactical_max_round_trips_per_day: int
   tactical_min_volume_ratio: float
   tactical_min_momentum_30s_bps: float
   tactical_min_momentum_3m_bps: float
@@ -187,6 +187,6 @@ schema:
   tactical_stop_loss_pct: float
   tactical_take_profit_pct: float
   tactical_trailing_stop_pct: float
-  tactical_max_hold_seconds: float
-  tactical_reentry_cooldown_seconds: float
+  tactical_max_hold_seconds: int
+  tactical_reentry_cooldown_seconds: int
   tactical_ai_veto_bps: float
