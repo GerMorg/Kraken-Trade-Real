@@ -251,3 +251,22 @@ def test_short_intent_is_sell_and_has_margin_flag():
     assert intent.side == "sell"
     assert intent.margin is True
     assert intent.leverage == D("2")
+
+
+def test_tactical_short_pnl_and_fees_use_positive_exposure():
+    gross = TacticalTrader._trade_gross_pnl(
+        Direction.SHORT, D("10"), D("100"), D("95")
+    )
+    assert gross == D("10") * (D("100") / D("95") - D("1"))
+    trader = TacticalTrader(
+        cfg(),
+        DummyDB(),
+        DummyAudit(),
+        None,
+        DummyWS(),
+        None,
+        None,
+        None,
+        None,
+    )
+    assert trader._trade_fees(D("-10")) == D("0.16")

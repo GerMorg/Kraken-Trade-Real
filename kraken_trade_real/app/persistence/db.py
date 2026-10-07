@@ -332,7 +332,7 @@ class Database:
                setup_score=excluded.setup_score,state=excluded.state""",
             (
                 symbol, venue, direction, str(quantity), str(entry_price), str(peak_price),
-                str(trough_price), str(notional_eur), str(leverage), opened_at, time.time(),
+                str(trough_price), str(abs(Decimal(str(notional_eur)))), str(leverage), opened_at, time.time(),
                 entry_client_order_id, str(setup_score), state,
             ),
         )

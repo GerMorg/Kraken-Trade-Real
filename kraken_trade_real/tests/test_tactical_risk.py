@@ -120,6 +120,65 @@ def test_tactical_position_limit_can_use_25_percent_without_changing_core_limit(
     assert result.checks["extreme_volatility"] is True
 
 
+def test_tactical_short_uses_absolute_margin_exposure():
+    cfg = make_config()
+    engine = RiskEngine(
+        cfg,
+        SimpleNamespace(
+            available=lambda account, amount: (
+                D(str(account["free_margin"])) >= amount, "OK"
+            )
+        ),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    instrument = make_instrument()
+    signal = Signal(
+        "BTC/USD", Direction.SHORT, D("400"), D("100"), D("0.9"),
+        "TACTICAL_VOLATILITY", D("0"), D("0"), {"volatility": D("50")}
+    )
+    decision = Decision(
+        "decision-short-margin",
+        instrument,
+        signal,
+        D("-12.5"),
+        D("2"),
+        {
+            "risk_profile": "tactical",
+            "risk_position_limit_pct": D("25"),
+            "risk_volatility_max": D("55"),
+            "min_cost_eur": "5",
+        },
+        "tactical-volatility-v1",
+        "tactical-v1",
+        "",
+        D("0"),
+        D("-12.5"),
+        Direction.SHORT,
+        False,
+    )
+    portfolio = PortfolioState(
+        equity_eur=D("50"), cash_eur=D("50"), positions={},
+        gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+        unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"),
+        daily_pnl_eur=D("0"), drawdown_pct=D("0"), open_orders=0,
+        source_timestamp=1.0,
+    )
+    blocked = engine.evaluate(
+        decision, portfolio, make_snapshot(),
+        {"free_margin": "5", "margin_level_pct": "500"},
+    )
+    assert blocked.allowed is False
+    assert blocked.reason == "margin_free"
+    allowed = engine.evaluate(
+        decision, portfolio, make_snapshot(),
+        {"free_margin": "7", "margin_level_pct": "500"},
+    )
+    assert allowed.allowed is True
+    assert allowed.checks["minimum_cost"] is True
+    assert allowed.checks["margin_budget"] is True
+
+
 def test_tactical_volatility_guard_still_blocks_extreme_market():
     cfg = make_config()
     engine = RiskEngine(

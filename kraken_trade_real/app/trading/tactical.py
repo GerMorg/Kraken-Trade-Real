@@ -647,8 +647,14 @@ class TacticalTrader:
         with self._lock:
             positions = list(self._positions.values())
         for position in positions:
-            state = self.websocket.market_snapshot(position.symbol)
+            state = self._fresh_position_state(position, now)
             if state is None:
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_STALE",
+                    "WARNING",
+                    symbol=position.symbol,
+                    direction=position.direction.value,
+                )
                 continue
             price = D(str(state.get("price", "0")))
             if price <= 0:
@@ -720,7 +726,7 @@ class TacticalTrader:
             instrument = self._instrument_from_db(position.symbol)
         if instrument is None:
             return
-        state = self.websocket.market_snapshot(position.symbol)
+        state = self._fresh_position_state(position, now)
         if state is None:
             return
         snapshot = self._stream_snapshot(position.symbol, state)
@@ -902,7 +908,7 @@ class TacticalTrader:
             price,
             price,
             price,
-            decision.target_notional_eur,
+            abs(decision.target_notional_eur),
             decision.leverage,
             now,
             client_order_id,
@@ -926,6 +932,25 @@ class TacticalTrader:
             position.state,
         )
 
+    @staticmethod
+    def _trade_gross_pnl(
+        direction: Direction, notional_eur: D, entry_price: D, exit_price: D
+    ) -> D:
+        exposure = abs(notional_eur)
+        if exposure <= 0 or entry_price <= 0 or exit_price <= 0:
+            return D("0")
+        return (
+            (exit_price / entry_price - D("1"))
+            if direction == Direction.LONG
+            else (entry_price / exit_price - D("1"))
+        ) * exposure
+
+    def _trade_fees(self, notional_eur: D) -> D:
+        return abs(notional_eur) * (
+            D(str(getattr(self.config, "tactical_entry_fee_bps", 80)))
+            + D(str(getattr(self.config, "tactical_exit_fee_bps", 80)))
+        ) / D("10000")
+
     def _close_shadow(
         self,
         position: TacticalPosition,
@@ -933,15 +958,10 @@ class TacticalTrader:
         reason: str,
         now: float,
     ) -> None:
-        gross = (
-            (price / position.entry_price - D("1"))
-            if position.direction == Direction.LONG
-            else (position.entry_price / price - D("1"))
-        ) * position.notional_eur
-        fees = position.notional_eur * (
-            D(str(getattr(self.config, "tactical_entry_fee_bps", 80)))
-            + D(str(getattr(self.config, "tactical_exit_fee_bps", 80)))
-        ) / D("10000")
+        gross = self._trade_gross_pnl(
+            position.direction, position.notional_eur, position.entry_price, price
+        )
+        fees = self._trade_fees(position.notional_eur)
         net = gross - fees
         trade_id = new_id("tactical_trade")
         self.db.save_tactical_trade(
@@ -989,16 +1009,11 @@ class TacticalTrader:
         client_order_id: str,
     ) -> None:
         ratio = min(D("1"), fill_qty / position.quantity) if position.quantity > 0 else D("1")
-        closed_notional = position.notional_eur * ratio
-        gross = (
-            (fill_price / position.entry_price - D("1"))
-            if position.direction == Direction.LONG
-            else (position.entry_price / fill_price - D("1"))
-        ) * closed_notional
-        fees = closed_notional * (
-            D(str(getattr(self.config, "tactical_entry_fee_bps", 80)))
-            + D(str(getattr(self.config, "tactical_exit_fee_bps", 80)))
-        ) / D("10000")
+        closed_notional = abs(position.notional_eur) * ratio
+        gross = self._trade_gross_pnl(
+            position.direction, closed_notional, position.entry_price, fill_price
+        )
+        fees = self._trade_fees(closed_notional)
         net = gross - fees
         trade_id = new_id("tactical_trade")
         self.db.save_tactical_trade(
@@ -1055,6 +1070,52 @@ class TacticalTrader:
             net_pnl_eur=str(net),
             hold_seconds=round(now - position.opened_at, 2),
         )
+
+    def _fresh_position_state(
+        self, position: TacticalPosition, now: float
+    ) -> dict[str, Any] | None:
+        state = self.websocket.market_snapshot(position.symbol)
+        max_age = float(getattr(self.config, "tactical_market_max_age_seconds", 5))
+        if state is not None:
+            try:
+                if now - float(state.get("timestamp") or 0) <= max_age:
+                    return state
+            except (TypeError, ValueError):
+                pass
+        instrument = self._candidates.get(position.symbol) or self._instrument_from_db(position.symbol)
+        if instrument is None:
+            return None
+        try:
+            raw = self.gateway.spot_public("Ticker", {"pair": instrument.instrument_id})
+            row = None
+            if isinstance(raw, dict):
+                row = raw.get(instrument.instrument_id) or raw.get(instrument.altname)
+                if row is None and raw:
+                    row = next(iter(raw.values()))
+            if not isinstance(row, dict):
+                return None
+            bid = D(str((row.get("b") or [0])[0]))
+            ask = D(str((row.get("a") or [0])[0]))
+            last = D(str((row.get("c") or [0])[0]))
+            if min(bid, ask, last) <= 0:
+                return None
+            spread = (ask - bid) / ((ask + bid) / D("2")) * D("10000")
+            return {
+                "symbol": position.symbol, "price": last, "bid": bid, "ask": ask,
+                "timestamp": time.time(),
+                "closes": tuple(state.get("closes", ())) if state else (),
+                "price_points": tuple(state.get("price_points", ())) if state else (),
+                "depths_bid": tuple(state.get("depths_bid", ())) if state else (),
+                "depths_ask": tuple(state.get("depths_ask", ())) if state else (),
+                "spread_bps": spread,
+            }
+        except Exception as exc:
+            self.audit.emit(
+                "TACTICAL_POSITION_TICKER_FALLBACK_FAILED", "WARNING",
+                symbol=position.symbol, error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
+            return None
 
     def _opposite_signal(self, position: TacticalPosition) -> TacticalSignal | None:
         instrument = self._candidates.get(position.symbol)
@@ -1115,7 +1176,7 @@ class TacticalTrader:
                     D(str(row["entry_price"])),
                     D(str(row["peak_price"])),
                     D(str(row["trough_price"])),
-                    D(str(row["notional_eur"])),
+                    abs(D(str(row["notional_eur"]))),
                     D(str(row["leverage"])),
                     float(row["opened_at"]),
                     str(row["entry_client_order_id"]),
@@ -1123,25 +1184,133 @@ class TacticalTrader:
                     str(row.get("state") or "OPEN"),
                 )
                 self._positions[position.symbol] = position
+                self.db.save_tactical_position(
+                    position.symbol, position.venue, position.direction.value,
+                    position.quantity, position.entry_price, position.peak_price,
+                    position.trough_price, position.notional_eur, position.leverage,
+                    position.opened_at, position.entry_client_order_id,
+                    position.setup_score, position.state,
+                )
             except Exception:
                 self.db.delete_tactical_position(str(row.get("symbol", "")))
 
     def _reconcile_pending(self) -> None:
         rows = self.db.query(
             """SELECT o.client_order_id,o.symbol,o.state,o.kraken_order_id,o.quantity,o.side,
-                      d.rationale_json
+                      o.direction,o.leverage,o.created_at,
+                      d.rationale_json,d.target_notional_eur
                FROM orders o JOIN decisions d ON d.decision_id=o.decision_id
                WHERE d.strategy_version=? AND o.state IN
                  ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')""",
             (self.STRATEGY_VERSION,),
         )
+        for row in rows:
+            symbol = str(row.get("symbol") or "")
+            client_order_id = str(row.get("client_order_id") or "")
+            instrument = self._instrument_from_db(symbol)
+            order_id = str(row.get("kraken_order_id") or "")
+            if instrument is None or not order_id:
+                continue
+            try:
+                found = self.gateway.lookup_order(
+                    client_order_id=client_order_id,
+                    instrument=instrument,
+                    kraken_order_id=order_id,
+                )
+                if not found:
+                    continue
+                payload = found[0]
+                state = self.authority.reconciler.state_from_exchange(payload)
+                resolved_id = str(payload.get("txid") or payload.get("order_id") or order_id)
+                if state.value != str(row.get("state") or "") or resolved_id != order_id:
+                    self.db.update_order_state(
+                        client_order_id, state.value, kraken_order_id=resolved_id or None
+                    )
+                if state.value != "FILLED":
+                    continue
+                qty = D(str(
+                    payload.get("vol_exec")
+                    or payload.get("executed_volume")
+                    or row.get("quantity")
+                    or "0"
+                ))
+                price = D(str(
+                    payload.get("price")
+                    or payload.get("avg_price")
+                    or payload.get("avgPrice")
+                    or "0"
+                ))
+                if qty <= 0 or price <= 0:
+                    continue
+                try:
+                    rationale = __import__("json").loads(row.get("rationale_json") or "{}")
+                except (TypeError, ValueError):
+                    rationale = {}
+                exit_reason = str(rationale.get("tactical_exit_reason") or "")
+                if exit_reason:
+                    with self._lock:
+                        position = self._positions.get(symbol)
+                    if position is not None:
+                        self._close_live(
+                            position, qty, price, exit_reason, time.time(), client_order_id
+                        )
+                    self.audit.emit(
+                        "TACTICAL_ORDER_RECOVERED", "INFO",
+                        symbol=symbol, direction=str(row.get("direction") or ""),
+                        action="EXIT_FILLED", quantity=str(qty), price=str(price),
+                    )
+                    continue
+                direction = Direction(str(row.get("direction") or ""))
+                with self._lock:
+                    existing = self._positions.get(symbol)
+                if existing is None:
+                    self._restore_position(
+                        instrument=instrument,
+                        direction=direction,
+                        quantity=qty,
+                        price=price,
+                        notional_eur=abs(D(str(row.get("target_notional_eur") or "0"))),
+                        leverage=D(str(row.get("leverage") or "1")),
+                        opened_at=float(row.get("created_at") or time.time()),
+                        client_order_id=client_order_id,
+                        setup_score=D(str(rationale.get("tactical_setup_score") or "0")),
+                    )
+                self.audit.emit(
+                    "TACTICAL_ORDER_RECOVERED", "INFO",
+                    symbol=symbol, direction=direction.value,
+                    action="ENTRY_FILLED", quantity=str(qty), price=str(price),
+                )
+            except Exception as exc:
+                self.audit.emit(
+                    "TACTICAL_ORDER_RECONCILIATION_FAILED", "WARNING",
+                    symbol=symbol, client_order_id=client_order_id,
+                    error_type=type(exc).__name__, error=str(exc)[:500],
+                )
         if rows:
             self.audit.emit(
-                "TACTICAL_PENDING_ORDERS",
-                "WARNING",
+                "TACTICAL_PENDING_ORDERS", "WARNING",
                 count=len(rows),
                 symbols=sorted({str(row.get("symbol", "")) for row in rows}),
             )
+
+    def _restore_position(
+        self, *, instrument: Instrument, direction: Direction, quantity: D, price: D,
+        notional_eur: D, leverage: D, opened_at: float, client_order_id: str, setup_score: D,
+    ) -> None:
+        if quantity <= 0 or price <= 0:
+            return
+        position = TacticalPosition(
+            instrument.symbol, instrument.venue, direction, quantity, price, price, price,
+            abs(notional_eur), leverage, opened_at, client_order_id, setup_score,
+        )
+        with self._lock:
+            self._positions[position.symbol] = position
+        self.db.save_tactical_position(
+            position.symbol, position.venue, position.direction.value, position.quantity,
+            position.entry_price, position.peak_price, position.trough_price,
+            position.notional_eur, position.leverage, position.opened_at,
+            position.entry_client_order_id, position.setup_score, position.state,
+        )
 
     @staticmethod
     def _sample_prices(
