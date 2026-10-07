@@ -1660,9 +1660,35 @@ class TacticalEngine:
                     descr = payload.get("descr")
                     if isinstance(descr, dict):
                         fill_price = D(str(descr.get("price") or "0"))
-                if resolved_state == OrderState.FILLED and executed > 0 and fill_price > 0:
+                if (
+                    resolved_state in {OrderState.FILLED, OrderState.PARTIALLY_FILLED}
+                    and executed > 0
+                    and fill_price > 0
+                ):
                     details = json.loads(row.get("rationale_json") or "{}")
                     action = str(details.get("action") or "ENTRY")
+                    exchange_status = str(
+                        payload.get("status") or payload.get("state") or ""
+                    ).lower()
+                    closed_partial = (
+                        resolved_state == OrderState.PARTIALLY_FILLED
+                        and exchange_status in {"closed", "filled"}
+                    )
+                    if closed_partial:
+                        # Kraken confirms that the order is closed, so there
+                        # is no remaining exchange-side order to reconcile.
+                        self.db.update_order_state(
+                            str(row["client_order_id"]),
+                            OrderState.FILLED.value,
+                            kraken_order_id=str(
+                                payload.get("order_id")
+                                or payload.get("txid")
+                                or payload.get("id")
+                                or row.get("kraken_order_id")
+                                or ""
+                            ) or None,
+                            last_error="EXCHANGE_CLOSED_PARTIAL_EXECUTION",
+                        )
                     if action == "ENTRY":
                         self._register_live_entry(
                             row,
@@ -1677,6 +1703,7 @@ class TacticalEngine:
                                 position,
                                 fill_price,
                                 str(details.get("exit_reason") or "EXIT"),
+                                executed,
                             )
                 elif resolved_state == OrderState.REJECTED:
                     self._last_reason = "ENTRY_REJECTED"
@@ -1697,7 +1724,14 @@ class TacticalEngine:
         fill_price: D,
     ) -> None:
         details = json.loads(row.get("rationale_json") or "{}")
-        notional = D(str(details.get("entry_notional_eur") or "0"))
+        requested_notional = D(str(details.get("entry_notional_eur") or "0"))
+        with self._portfolio_lock:
+            rate = self._fx_rates.get(
+                str(instrument.quote).upper(),
+                D("1"),
+            )
+        actual_notional = executed * fill_price * rate
+        notional = actual_notional if actual_notional > 0 else requested_notional
         direction = Direction(str(row["direction"]).upper())
         position = TacticalPosition(
             symbol=instrument.symbol,
@@ -1729,26 +1763,43 @@ class TacticalEngine:
         position: TacticalPosition,
         exit_price: D,
         reason: str,
+        executed_quantity: D | None = None,
     ) -> None:
         instrument = self.instrument_by_symbol[position.symbol]
+        quantity = (
+            min(position.quantity, executed_quantity)
+            if executed_quantity is not None and executed_quantity > 0
+            else position.quantity
+        )
+        if quantity <= 0:
+            return
         with self._portfolio_lock:
             rate = self._fx_rates.get(
                 str(instrument.quote).upper(),
                 D("1"),
             )
         gross = (
-            (exit_price - position.entry_price) * position.quantity * rate
+            (exit_price - position.entry_price) * quantity * rate
             if position.direction == Direction.LONG
-            else (position.entry_price - exit_price) * position.quantity * rate
+            else (position.entry_price - exit_price) * quantity * rate
         )
-        fees = position.entry_notional_eur * (
+        entry_notional = (
+            position.entry_notional_eur * quantity / position.quantity
+        )
+        fees = entry_notional * (
             D(str(self.config.tactical_entry_fee_bps))
             + D(str(self.config.tactical_exit_fee_bps))
         ) / D("10000")
         net = gross - fees
+        from dataclasses import replace
+        trade_position = replace(
+            position,
+            quantity=quantity,
+            entry_notional_eur=entry_notional,
+        )
         self.db.save_tactical_trade(
             trade_id=new_id("tactical_trade"),
-            position=position,
+            position=trade_position,
             exit_price=exit_price,
             gross_pnl_eur=gross,
             estimated_fees_eur=fees,
@@ -1756,6 +1807,22 @@ class TacticalEngine:
             reason=reason,
             exited_at=time.time(),
         )
+        remaining = position.quantity - quantity
+        if remaining > 0:
+            position.quantity = remaining
+            position.entry_notional_eur = position.entry_notional_eur - entry_notional
+            position.last_price = exit_price
+            self.db.save_tactical_position(position)
+            self.audit.emit(
+                "TACTICAL_EXIT_PARTIAL",
+                "WARNING",
+                symbol=position.symbol,
+                reason=reason,
+                executed_quantity=str(quantity),
+                remaining_quantity=str(remaining),
+                net_pnl_eur=str(net),
+            )
+            return
         self.db.delete_tactical_position(position.symbol)
         self.positions.pop(position.symbol, None)
         self.audit.emit(
