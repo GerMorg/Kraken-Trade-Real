@@ -93,6 +93,9 @@ class TacticalTrader:
         self._last_run = 0.0
         self._last_signal: TacticalSignal | None = None
         self._last_action = "NONE"
+        self._last_signal_reason = "NOT_EVALUATED"
+        self._signal_rejections: Counter[str] = Counter()
+        self._last_diagnostic_at = 0.0
         self._load_positions()
 
     def start(self) -> None:
