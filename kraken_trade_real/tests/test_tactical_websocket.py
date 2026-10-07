@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import time
-from types import SimpleNamespace
-
 from app.kraken.ws import WebSocketSupervisor
 
 
