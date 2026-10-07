@@ -4,8 +4,7 @@ from collections import deque
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.domain.models import Instrument
-from app.domain.states import ProductType, Direction
+from app.domain.states import Direction
 from app.persistence import Database
 from app.trading.tactical import TacticalEngine, TacticalPosition, TacticalStrategy
 
