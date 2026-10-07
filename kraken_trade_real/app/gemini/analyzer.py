@@ -34,6 +34,8 @@ class GeminiAnalyzer:
         self._client_init_timeout_seconds=min(10.0,float(self.timeout_seconds))
         self._client_error=""
         self.last_model=""
+        self._model_cooldown_until:dict[str,float]={}
+        self._model_cooldown_seconds=900.0
 
     @staticmethod
     def _model_pool(primary:str,fallback_models:str)->list[str]:
@@ -152,7 +154,12 @@ class GeminiAnalyzer:
         attempted=[]
         failures=[]
         self.last_model=""
+        now=__import__("time").time()
         for model in self.models:
+            cooldown_until=self._model_cooldown_until.get(model,0.0)
+            if cooldown_until>now:
+                self.db.event("GEMINI_MODEL_SKIPPED_COOLDOWN","INFO",{"model":model,"remaining_seconds":round(cooldown_until-now,1)})
+                continue
             attempted.append(model)
             self.db.event(
                 "GEMINI_MODEL_ATTEMPT",
@@ -202,6 +209,10 @@ class GeminiAnalyzer:
                 category=self._error_category(exc)
                 failure={"model":model,"reason":category,"error":type(exc).__name__}
                 failures.append(failure)
+                if category in {"QUOTA_EXHAUSTED","MODEL_UNAVAILABLE"}:
+                    self._model_cooldown_until[model]=__import__("time").time()+self._model_cooldown_seconds
+                elif category=="TIMEOUT":
+                    self._model_cooldown_until[model]=__import__("time").time()+300.0
                 self.db.event("GEMINI_MODEL_FAILED","WARNING",failure)
                 if category=="TIMEOUT":
                     self.db.event(
@@ -222,6 +233,8 @@ class GeminiAnalyzer:
                 if category=="AUTH_ERROR":
                     break
 
+        if not attempted:
+            return {"status":"DEGRADED","effect_bps":0.0,"expected_impact_bps":0.0,"model":"","attempted_models":[],"fallback_used":False,"reason":"ALL_MODELS_IN_COOLDOWN","timeout_seconds":0}
         categories=[item["reason"] for item in failures]
         if failures and all(reason=="TIMEOUT" for reason in categories):
             status="TIMEOUT"
