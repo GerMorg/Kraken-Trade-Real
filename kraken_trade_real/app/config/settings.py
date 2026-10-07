@@ -61,42 +61,6 @@ class Config:
     tax_provider_classification: str
     tax_report_enabled: bool
 
-  tactical_enabled: bool
-  tactical_shadow_mode: bool
-  tactical_allow_short: bool
-  tactical_portfolio_pct: float
-  tactical_max_capital_eur: float
-  tactical_position_limit_pct: float
-  tactical_max_positions: int
-  tactical_candidate_limit: int
-  tactical_poll_seconds: int
-  tactical_market_max_age_seconds: int
-  tactical_min_volatility_bps: float
-  tactical_max_volatility_bps: float
-  tactical_min_volume_ratio: float
-  tactical_min_momentum_bps: float
-  tactical_min_breakout_bps: float
-  tactical_min_imbalance: float
-  tactical_max_spread_bps: float
-  tactical_min_expected_move_bps: float
-  tactical_entry_fee_bps: float
-  tactical_exit_fee_bps: float
-  tactical_expected_slippage_bps: float
-  tactical_safety_buffer_bps: float
-  tactical_context_block_bps: float
-  tactical_stop_loss_pct: float
-  tactical_take_profit_pct: float
-  tactical_trailing_trigger_bps: float
-  tactical_trailing_stop_pct: float
-  tactical_max_hold_seconds: int
-  tactical_reversal_exit_bps: float
-  tactical_cooldown_seconds: int
-  tactical_max_trades_per_hour: int
-  tactical_max_trades_per_day: int
-  tactical_max_daily_loss_pct: float
-  tactical_trade_lookback_seconds: int
-  tactical_short_leverage: float
-  tactical_order_confirm_seconds: int
     tactical_enabled: bool
     tactical_shadow_mode: bool
     tactical_allow_short: bool
