@@ -88,3 +88,38 @@ def test_margin_required_short_is_blocked_only_by_hard_market_or_margin_guards()
         instrument, {"volatility": Decimal("20"), "spread_bps": Decimal("20"), "trend": Decimal("1")},
         Decimal("0.9"), Decimal("10"), Decimal("199"), Decimal("5"), require_margin=True,
     ) == Decimal("0")
+
+def test_risk_engine_accepts_adaptive_core_edge_when_economics_clear(config, instrument):
+    from app.domain.models import Decision, MarketSnapshot, PortfolioState, Signal
+    from app.domain.states import Direction
+
+    signal = Signal(
+        instrument.symbol, Direction.LONG,
+        Decimal("150"), Decimal("130"), Decimal("0.85"),
+        "TREND_UP", Decimal("0"), Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    decision = Decision(
+        "adaptive-risk", instrument, signal,
+        Decimal("15"), Decimal("1"),
+        {
+            "risk_profile": "core",
+            "edge_tier": "ADAPTIVE",
+            "edge_threshold_bps": Decimal("15"),
+            "min_cost_eur": "0.5",
+        },
+        "baseline-v2-rebalance", "test", "", Decimal("0"), Decimal("15"),
+        Direction.LONG, False,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("100"),
+        positions={}, gross_eur=Decimal("0"), net_eur=Decimal("0"),
+    )
+    market = MarketSnapshot(
+        instrument.symbol, Decimal("100"), Decimal("99.9"), Decimal("100.1"),
+        Decimal("100000"), 1.0, tuple(Decimal("100") for _ in range(40)),
+    )
+    result = RiskEngine(config, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()).evaluate(
+        decision, portfolio, market, {}
+    )
+    assert result.allowed is True
