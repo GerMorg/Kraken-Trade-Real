@@ -6,7 +6,7 @@
 - add a controlled adaptive Core edge tier for high-confidence setups while preserving hard economic and risk gates
 - correct Core direction eligibility so unavailable exchange-side shorts are filtered before risk
 - allow supported Spot Margin shorts when actual margin/market hard guards pass instead of rejecting normal volatility by an overly strict leverage heuristic
-- use Kraken's dedicated `settle-position` order type for Spot Margin reduce-only exits
+- keep Spot Margin closing transactions as explicit reduce-only orders; reserve `settle-position` for true margin settlement flows
 - warm-start Tactical WebSocket price history from existing REST candles so newly rotated candidates do not spend the first minutes in data warm-up
 - add Tactical adaptive entry economics and explicit per-candidate evaluation diagnostics
 
