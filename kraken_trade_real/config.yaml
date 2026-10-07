@@ -98,6 +98,7 @@ options:
   tactical_entry_fee_bps: 80.0
   tactical_exit_fee_bps: 80.0
   tactical_safety_buffer_bps: 30.0
+  tactical_max_slippage_bps: 80.0
   tactical_stop_loss_pct: 0.9
   tactical_take_profit_pct: 1.8
   tactical_trailing_stop_pct: 0.7
@@ -185,6 +186,7 @@ schema:
   tactical_entry_fee_bps: float
   tactical_exit_fee_bps: float
   tactical_safety_buffer_bps: float
+  tactical_max_slippage_bps: float
   tactical_stop_loss_pct: float
   tactical_take_profit_pct: float
   tactical_trailing_stop_pct: float
