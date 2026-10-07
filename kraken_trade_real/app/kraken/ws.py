@@ -88,6 +88,7 @@ class WebSocketSupervisor:
         self._book_asks: dict[str, dict[D, D]] = {}
         self._book_checksums: dict[str, int] = {}
         self._book_ready: dict[str, bool] = {}
+        self._book_desync = False
         self._book_depth = 10
 
     def set_symbols(self, symbols: list[str]) -> None:
@@ -314,6 +315,7 @@ class WebSocketSupervisor:
                     bids.clear()
                     asks.clear()
                     self.recovery.issue("SEQUENCE_GAP", f"book_checksum:{symbol}")
+                    self._book_desync = True
                     return
                 self._book_ready[symbol] = True
 
@@ -362,6 +364,7 @@ class WebSocketSupervisor:
                     self._ws = ws
                     self._connected = True
                     self._last_error = ""
+                    self._book_desync = False
                 subscriptions = (
                     {
                         "method": "subscribe",
@@ -402,7 +405,8 @@ class WebSocketSupervisor:
                 while not self.stop_event.is_set():
                     with self._lock:
                         changed = generation != self._generation
-                    if changed:
+                        desync = self._book_desync
+                    if changed or desync:
                         break
                     try:
                         message = ws.recv()
