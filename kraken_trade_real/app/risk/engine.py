@@ -120,20 +120,21 @@ class RiskEngine:
         }
 
         if min_cost_eur > 0:
-            checks["minimum_cost"] = d.target_notional_eur >= min_cost_eur
+            checks["minimum_cost"] = desired_abs >= min_cost_eur
 
         if d.leverage > 1:
             checks["margin_available"] = margin_account is not None
             if margin_account is not None:
+                requested_margin = desired_abs / d.leverage
                 ok, _ = self.margin_engine.available(
                     margin_account,
-                    d.target_notional_eur / d.leverage,
+                    requested_margin,
                 )
                 checks["margin_free"] = ok
                 level = D(str(margin_account.get("margin_level_pct") or 0))
                 checks["margin_level"] = level >= self.IMMUTABLE_MIN_MARGIN_LEVEL
                 used = (
-                    p.margin_used_eur + d.target_notional_eur / d.leverage
+                    p.margin_used_eur + requested_margin
                 ) / eq * 100
                 checks["margin_budget"] = used <= D(
                     str(self.config.risk_max_margin_pct)
