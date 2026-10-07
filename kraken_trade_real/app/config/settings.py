@@ -60,6 +60,37 @@ class Config:
     tax_enabled: bool
     tax_provider_classification: str
     tax_report_enabled: bool
+    tactical_enabled: bool
+    tactical_shadow_mode: bool
+    tactical_poll_interval_seconds: int
+    tactical_portfolio_refresh_seconds: int
+    tactical_universe_size: int
+    tactical_portfolio_pct: float
+    tactical_max_capital_eur: float
+    tactical_max_positions: int
+    tactical_max_leverage: float
+    tactical_short_leverage: float
+    tactical_max_round_trips_per_hour: int
+    tactical_max_round_trips_per_day: int
+    tactical_min_volume_ratio: float
+    tactical_min_momentum_30s_bps: float
+    tactical_min_momentum_3m_bps: float
+    tactical_min_volatility_bps: float
+    tactical_min_breakout_bps: float
+    tactical_min_imbalance: float
+    tactical_max_spread_bps: float
+    tactical_min_net_edge_bps: float
+    tactical_entry_fee_bps: float
+    tactical_exit_fee_bps: float
+    tactical_safety_buffer_bps: float
+    tactical_max_slippage_bps: float
+    tactical_stop_loss_pct: float
+    tactical_take_profit_pct: float
+    tactical_trailing_stop_pct: float
+    tactical_max_hold_seconds: int
+    tactical_reentry_cooldown_seconds: int
+    tactical_data_max_age_seconds: int
+    tactical_ai_veto_bps: float
 
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
@@ -151,6 +182,37 @@ class Config:
                 raw.get("tax_provider_classification", "FOREIGN")
             ).strip().upper(),
             tax_report_enabled=b("tax_report_enabled", True),
+            tactical_enabled=b("tactical_enabled", False),
+            tactical_shadow_mode=b("tactical_shadow_mode", True),
+            tactical_poll_interval_seconds=i("tactical_poll_interval_seconds", 5, 2),
+            tactical_portfolio_refresh_seconds=i("tactical_portfolio_refresh_seconds", 30, 15),
+            tactical_universe_size=i("tactical_universe_size", 24, 4),
+            tactical_portfolio_pct=f("tactical_portfolio_pct", 25.0, 1.0, 50.0),
+            tactical_max_capital_eur=f("tactical_max_capital_eur", 15.0, 5.0, 100000.0),
+            tactical_max_positions=i("tactical_max_positions", 1, 1),
+            tactical_max_leverage=f("tactical_max_leverage", 2.0, 1.0, 5.0),
+            tactical_short_leverage=f("tactical_short_leverage", 2.0, 2.0, 5.0),
+            tactical_max_round_trips_per_hour=i("tactical_max_round_trips_per_hour", 2, 1),
+            tactical_max_round_trips_per_day=i("tactical_max_round_trips_per_day", 3, 1),
+            tactical_min_volume_ratio=f("tactical_min_volume_ratio", 1.75, 1.0, 20.0),
+            tactical_min_momentum_30s_bps=f("tactical_min_momentum_30s_bps", 35.0, 1.0, 5000.0),
+            tactical_min_momentum_3m_bps=f("tactical_min_momentum_3m_bps", 60.0, 1.0, 10000.0),
+            tactical_min_volatility_bps=f("tactical_min_volatility_bps", 15.0, 1.0, 5000.0),
+            tactical_min_breakout_bps=f("tactical_min_breakout_bps", 20.0, 1.0, 5000.0),
+            tactical_min_imbalance=f("tactical_min_imbalance", 0.08, 0.0, 1.0),
+            tactical_max_spread_bps=f("tactical_max_spread_bps", 25.0, 1.0, 500.0),
+            tactical_min_net_edge_bps=f("tactical_min_net_edge_bps", 40.0, 1.0, 5000.0),
+            tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 500.0),
+            tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 500.0),
+            tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 500.0),
+            tactical_max_slippage_bps=f("tactical_max_slippage_bps", 80.0, 40.0, 120.0),
+            tactical_stop_loss_pct=f("tactical_stop_loss_pct", 0.9, 0.1, 10.0),
+            tactical_take_profit_pct=f("tactical_take_profit_pct", 1.8, 0.2, 20.0),
+            tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 10.0),
+            tactical_max_hold_seconds=i("tactical_max_hold_seconds", 1800, 60),
+            tactical_reentry_cooldown_seconds=i("tactical_reentry_cooldown_seconds", 120, 30),
+            tactical_data_max_age_seconds=i("tactical_data_max_age_seconds", 8, 2),
+            tactical_ai_veto_bps=f("tactical_ai_veto_bps", 80.0, 0.0, 500.0),
         )
         cls.validate(cfg)
         return cfg
@@ -165,5 +227,11 @@ class Config:
             raise ValueError("position ceiling cannot exceed gross risk ceiling")
         if cfg.risk_max_leverage < 1:
             raise ValueError("leverage must be >= 1")
+        if cfg.tactical_short_leverage > cfg.tactical_max_leverage:
+            raise ValueError("tactical short leverage cannot exceed tactical leverage ceiling")
+        if cfg.tactical_take_profit_pct <= cfg.tactical_stop_loss_pct:
+            raise ValueError("tactical take profit must exceed tactical stop loss")
+        if cfg.tactical_max_positions < 1:
+            raise ValueError("tactical max positions must be >= 1")
         if cfg.tax_provider_classification not in {"FOREIGN", "DOMESTIC", "UNVERIFIED"}:
             raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")

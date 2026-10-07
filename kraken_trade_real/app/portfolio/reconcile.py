@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 import time
 from typing import Any
+import threading
 
 from app.domain.models import Instrument, PortfolioState
 
@@ -55,6 +56,7 @@ class PortfolioReconciler:
         self.cash_balances: dict[str, D] = {}
         self.instruments: list[Instrument] = []
         self.spot_tickers: dict[str, Any] = {}
+        self._lock = threading.RLock()
 
     def set_market_context(self, instruments: list[Instrument], spot_tickers: dict[str, Any]) -> None:
         self.instruments = instruments
@@ -221,6 +223,10 @@ class PortfolioReconciler:
         )
 
     def reconcile(self) -> PortfolioState:
+        with self._lock:
+            return self._reconcile_unlocked()
+
+    def _reconcile_unlocked(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
         positions: dict[str, D] = {}
         self.cash_balances = {}

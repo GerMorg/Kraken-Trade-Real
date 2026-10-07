@@ -173,3 +173,41 @@ CREATE TABLE IF NOT EXISTS tax_reports(
   report_version TEXT NOT NULL, status TEXT NOT NULL, json_path TEXT NOT NULL,
   csv_path TEXT NOT NULL, markdown_path TEXT NOT NULL, summary_json TEXT NOT NULL
 );
+
+
+CREATE TABLE IF NOT EXISTS tactical_positions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL UNIQUE,
+  direction TEXT NOT NULL,
+  quantity TEXT NOT NULL,
+  entry_price TEXT NOT NULL,
+  entry_notional_eur TEXT NOT NULL,
+  opened_at REAL NOT NULL,
+  peak_price TEXT NOT NULL,
+  leverage TEXT NOT NULL,
+  margin INTEGER NOT NULL,
+  client_order_id TEXT NOT NULL,
+  last_price TEXT NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tactical_positions_updated ON tactical_positions(updated_at);
+
+CREATE TABLE IF NOT EXISTS tactical_trades(
+  trade_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  entry_time REAL NOT NULL,
+  exit_time REAL NOT NULL,
+  entry_price TEXT NOT NULL,
+  exit_price TEXT NOT NULL,
+  quantity TEXT NOT NULL,
+  entry_notional_eur TEXT NOT NULL,
+  gross_pnl_eur TEXT NOT NULL,
+  estimated_fees_eur TEXT NOT NULL,
+  net_pnl_eur TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  leverage TEXT NOT NULL,
+  detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tactical_trades_exit ON tactical_trades(exit_time);
+CREATE INDEX IF NOT EXISTS idx_tactical_trades_symbol ON tactical_trades(symbol,exit_time);

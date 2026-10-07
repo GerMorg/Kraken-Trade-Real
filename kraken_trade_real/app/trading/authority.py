@@ -584,6 +584,7 @@ class TradingAuthority:
             intent.expected_edge_bps,
             estimated,
             reduce_only=intent.reduce_only,
+            max_slippage_bps=intent.max_slippage_bps,
         )
         return {
             "allowed": ok,

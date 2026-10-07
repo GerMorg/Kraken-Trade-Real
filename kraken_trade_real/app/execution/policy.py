@@ -66,8 +66,13 @@ class ExecutionPolicy:
         return {"method":"limit","order_type":"limit","post_only":False}
 
     def validate(self, chosen: dict[str,Any], expected_edge_bps: D,
-                 estimated_slippage_bps: D, reduce_only: bool=False) -> tuple[bool,str]:
-        if estimated_slippage_bps>self.max_slippage:
+                 estimated_slippage_bps: D, reduce_only: bool=False,
+                 max_slippage_bps: D|None=None) -> tuple[bool,str]:
+        ceiling = self.max_slippage if max_slippage_bps is None else max(
+            self.max_slippage,
+            D(str(max_slippage_bps)),
+        )
+        if estimated_slippage_bps>ceiling:
             return False,"ESTIMATED_SLIPPAGE_EXCEEDS_LIMIT"
         if reduce_only:
             return True,"REDUCE_ONLY_RISK_REDUCTION_OK"

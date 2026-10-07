@@ -68,7 +68,7 @@ class TradingRuntime:
                  scanner: Any, news: Any, gemini: Any, signals: Any, decisions: Any,
                  sizer: Any, risk: Any, leverage: Any, intents: Any, authority: Any,
                  portfolio: Any, recovery: Any, learning: Any, registry: Any,
-                 sensors: Any, tax: Any) -> None:
+                 sensors: Any, tax: Any, stream: Any = None, tactical: Any = None) -> None:
         self.config=config
         self.db=db
         self.audit=audit
@@ -93,6 +93,8 @@ class TradingRuntime:
         self.registry=registry
         self.sensors=sensors
         self.tax=tax
+        self.stream=stream
+        self.tactical=tactical
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
@@ -307,6 +309,27 @@ class TradingRuntime:
         self._watchdog_arm("", "STARTUP_TAX")
         self._update_tax_report(force=True)
         self.registry.active()
+        if self.tactical is not None:
+            try:
+                self.tactical.set_instruments(self.instruments)
+                self.tactical.set_portfolio_state(portfolio)
+                self.tactical.configure_stream(startup_spot_tickers if 'startup_spot_tickers' in locals() else {})
+                if bool(getattr(self.config, "tactical_enabled", False)):
+                    if self.stream is not None:
+                        self.stream.start()
+                    self.tactical.start()
+                self.audit.emit(
+                    "STARTUP_TACTICAL_READY",
+                    "INFO",
+                    enabled=bool(getattr(self.config, "tactical_enabled", False)),
+                    mode="SHADOW" if getattr(self.config, "tactical_shadow_mode", True) else "LIVE",
+                )
+            except Exception as exc:
+                self.audit.emit(
+                    "STARTUP_TACTICAL_FAILED",
+                    "WARNING",
+                    error=f"{type(exc).__name__}:{str(exc)[:500]}",
+                )
         self.state.set(RuntimeStage.MARKET_READY)
         self.state.set(RuntimeStage.MODELS_READY)
         self.state.set(RuntimeStage.READY)
@@ -349,6 +372,16 @@ class TradingRuntime:
             self.portfolio.set_market_context(self.instruments,spot_payload)
             self.fx.set_instruments(self.instruments)
             portfolio=self.portfolio.reconcile()
+            if self.tactical is not None:
+                try:
+                    self.tactical.set_portfolio_state(portfolio)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_PORTFOLIO_CONTEXT_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error=f"{type(exc).__name__}:{str(exc)[:400]}",
+                    )
             self.audit.emit(
                 "CYCLE_PORTFOLIO_RECONCILED",
                 "INFO",
@@ -587,6 +620,17 @@ class TradingRuntime:
                     refreshed+=1
 
             selected=[instrument for instrument in selected if instrument.symbol in snapshots]
+            if self.tactical is not None:
+                try:
+                    self.tactical.set_instruments(self.instruments)
+                    self.tactical.configure_stream(latest_spot_payload)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_STREAM_CONFIG_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error=f"{type(exc).__name__}:{str(exc)[:400]}",
+                    )
             self.audit.emit(
                 "CYCLE_MARKET_QUOTES_REFRESHED",
                 "INFO",
@@ -737,6 +781,16 @@ class TradingRuntime:
                     duration_seconds=gemini_duration,
                     reason=gemini_reason,
                 )
+            if self.tactical is not None:
+                try:
+                    self.tactical.set_ai_context(news, gemini_bps, gemini_status)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_AI_CONTEXT_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error=f"{type(exc).__name__}:{str(exc)[:400]}",
+                    )
             self.audit.emit(
                 "CYCLE_GEMINI",
                 "INFO",
@@ -1139,6 +1193,16 @@ class TradingRuntime:
             self._watchdog_arm(cycle_id, stage)
             self.portfolio.set_market_context(self.instruments,latest_spot_payload)
             final_portfolio=self.portfolio.reconcile()
+            if self.tactical is not None:
+                try:
+                    self.tactical.set_portfolio_state(final_portfolio)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_FINAL_PORTFOLIO_CONTEXT_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error=f"{type(exc).__name__}:{str(exc)[:400]}",
+                    )
             self.db.save_portfolio(cycle_id,final_portfolio)
             self.learning.record_cycle(cycle_id,decisions_count,placed,blockers)
             try:
@@ -1384,6 +1448,16 @@ class TradingRuntime:
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
         tax_summary=self._safe_tax_summary()
+        tactical_stats = {}
+        if self.tactical is not None:
+            try:
+                tactical_stats = self.tactical.stats()
+            except Exception as exc:
+                self.audit.emit(
+                    "TACTICAL_STATS_FAILED",
+                    "WARNING",
+                    error=f"{type(exc).__name__}:{str(exc)[:300]}",
+                )
         self.sensors.publish(self.sensors.states(
             status=self.state.stage.value,stage=self.state.stage.value,cycle_id=self.state.cycle_id,
             blocker=self.state.blocker,symbol=self.state.selected_symbol,
@@ -1405,4 +1479,13 @@ class TradingRuntime:
             tax_estimated_27_5_eur=tax_summary.get("indicative_crypto_27_5_tax_eur","0"),
             tax_incomplete_events=int(tax_summary.get("incomplete_event_count",0)),
             tax_year=datetime.now(timezone.utc).year,
+            tactical_status=str(tactical_stats.get("status", "DISABLED")),
+            tactical_symbol=str(tactical_stats.get("symbol", "")),
+            tactical_direction=str(tactical_stats.get("direction", "")),
+            tactical_position_eur=tactical_stats.get("position_eur", "0"),
+            tactical_score=tactical_stats.get("score", "0"),
+            tactical_net_edge_bps=tactical_stats.get("net_edge_bps", "0"),
+            tactical_trades_today=int(tactical_stats.get("trades_today", 0)),
+            tactical_pnl_today_eur=tactical_stats.get("pnl_today_eur", "0"),
+            tactical_last_reason=str(tactical_stats.get("last_reason", "")),
         ))
