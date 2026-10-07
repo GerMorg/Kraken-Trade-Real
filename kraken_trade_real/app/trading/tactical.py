@@ -151,7 +151,11 @@ class TacticalTrader:
                 for symbol in self._candidates
             }
             self._gemini_bps = gemini_bps
-        self.websocket.set_symbols(list(candidates))
+        aliases = {
+            instrument.symbol: str(instrument.metadata.get("wsname") or instrument.symbol)
+            for instrument in self._candidates.values()
+        }
+        self.websocket.set_symbols(list(candidates), aliases=aliases)
         self.audit.emit(
             "TACTICAL_CANDIDATES_UPDATED",
             "INFO",
