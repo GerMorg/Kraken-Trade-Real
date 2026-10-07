@@ -87,6 +87,7 @@ class WebSocketSupervisor:
         self._book_bids: dict[str, dict[D, D]] = {}
         self._book_asks: dict[str, dict[D, D]] = {}
         self._book_checksums: dict[str, int] = {}
+        self._book_ready: dict[str, bool] = {}
         self._book_depth = 10
 
     def set_symbols(self, symbols: list[str]) -> None:
@@ -108,6 +109,7 @@ class WebSocketSupervisor:
             self._book_checksums = {
                 symbol: self._book_checksums.get(symbol, 0) for symbol in clean
             }
+            self._book_ready = {symbol: False for symbol in clean}
             ws = self._ws
         if ws is not None:
             try:
@@ -142,10 +144,12 @@ class WebSocketSupervisor:
                     self._book_asks.get(symbol, {}),
                     reverse=False,
                 )
+                ready = bool(self._book_ready.get(symbol, False))
                 result[symbol] = {
                     **source,
-                    "bids": bids[: self._book_depth],
-                    "asks": asks[: self._book_depth],
+                    "bids": bids[: self._book_depth] if ready else [],
+                    "asks": asks[: self._book_depth] if ready else [],
+                    "book_ready": ready,
                     "trades": list(source.get("trades", ())),
                 }
             return result
@@ -299,6 +303,7 @@ class WebSocketSupervisor:
                 actual = _book_checksum(bids, asks)
                 self._book_checksums[symbol] = actual
                 if actual != expected:
+                    self._book_ready[symbol] = False
                     self.audit.emit(
                         "PUBLIC_WS_BOOK_CHECKSUM_MISMATCH",
                         "ERROR",
@@ -310,6 +315,7 @@ class WebSocketSupervisor:
                     asks.clear()
                     self.recovery.issue("SEQUENCE_GAP", f"book_checksum:{symbol}")
                     return
+                self._book_ready[symbol] = True
 
     def _apply_levels(
         self,
@@ -400,6 +406,8 @@ class WebSocketSupervisor:
                         break
                     try:
                         message = ws.recv()
+                    except websocket.WebSocketTimeoutException:
+                        continue
                     except Exception as exc:
                         self._record_error(f"{type(exc).__name__}:{str(exc)[:250]}")
                         break
