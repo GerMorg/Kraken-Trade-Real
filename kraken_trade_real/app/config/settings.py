@@ -88,6 +88,7 @@ class Config:
     tactical_min_expected_move_bps: float
     tactical_entry_fee_bps: float
     tactical_exit_fee_bps: float
+    tactical_margin_open_fee_bps: float
     tactical_expected_slippage_bps: float
     tactical_safety_buffer_bps: float
     tactical_context_block_bps: float
@@ -228,6 +229,7 @@ class Config:
             tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 280.0, 1.0, 10000.0),
             tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 1000.0),
             tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 1000.0),
+            tactical_margin_open_fee_bps=f("tactical_margin_open_fee_bps", 5.0, 0.0, 1000.0),
             tactical_expected_slippage_bps=f("tactical_expected_slippage_bps", 25.0, 0.0, 1000.0),
             tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 1000.0),
             tactical_context_block_bps=f("tactical_context_block_bps", 80.0, 0.0, 5000.0),
