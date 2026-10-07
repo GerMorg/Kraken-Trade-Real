@@ -252,7 +252,6 @@ def test_short_intent_is_sell_and_has_margin_flag():
     assert intent.margin is True
     assert intent.leverage == D("2")
 
-    
 
 def test_tactical_short_pnl_and_fees_use_positive_exposure():
     gross = TacticalTrader._trade_gross_pnl(
