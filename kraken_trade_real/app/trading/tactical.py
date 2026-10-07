@@ -462,6 +462,30 @@ class TacticalTrader:
             self._last_action = "ENTRY_LEVERAGE_UNAVAILABLE"
             return
 
+        if (
+            signal.direction == Direction.LONG
+            and instrument.venue == "spot"
+            and not self._shadow_mode()
+        ):
+            available_quote = self.portfolio.cash_balance(instrument.quote)
+            quote_rate = self.portfolio.quote_to_eur_rate(instrument.quote)
+            required_quote = (
+                notional / quote_rate if quote_rate and quote_rate > 0 else D("0")
+            )
+            if quote_rate is None or available_quote < required_quote:
+                self.audit.emit(
+                    "TACTICAL_ENTRY_BLOCKED",
+                    "INFO",
+                    symbol=signal.symbol,
+                    direction=signal.direction.value,
+                    reason="QUOTE_FUNDS_UNAVAILABLE",
+                    quote=instrument.quote,
+                    available_quote=str(available_quote),
+                    required_quote=str(required_quote),
+                )
+                self._last_action = "ENTRY_QUOTE_FUNDS_BLOCK"
+                return
+
         state = self.websocket.market_snapshot(signal.symbol)
         if state is None:
             return
