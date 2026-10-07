@@ -463,6 +463,7 @@ class TacticalEngine:
         self._margin_account: dict[str, Any] | None = None
         self._fx_rates: dict[str, D] = {"EUR": D("1")}
         self._portfolio_context_at = 0.0
+        self._last_learning_log_at = 0.0
         self._portfolio_lock = threading.RLock()
         self._load_from_db()
 
@@ -969,7 +970,8 @@ class TacticalEngine:
         if win_rate < D("0.40") or total < 0:
             penalty = D("40")
         effective = base + penalty
-        if penalty > 0:
+        if penalty > 0 and time.time() - self._last_learning_log_at >= 300:
+            self._last_learning_log_at = time.time()
             self.audit.emit(
                 "TACTICAL_LEARNING_TIGHTENED",
                 "INFO",
