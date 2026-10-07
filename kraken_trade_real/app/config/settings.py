@@ -88,6 +88,7 @@ class Config:
     tactical_trailing_stop_pct: float
     tactical_max_hold_seconds: int
     tactical_reentry_cooldown_seconds: int
+    tactical_data_max_age_seconds: int
     tactical_ai_veto_bps: float
 
     @classmethod
@@ -208,6 +209,7 @@ class Config:
             tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 10.0),
             tactical_max_hold_seconds=i("tactical_max_hold_seconds", 1800, 60),
             tactical_reentry_cooldown_seconds=i("tactical_reentry_cooldown_seconds", 120, 30),
+            tactical_data_max_age_seconds=i("tactical_data_max_age_seconds", 8, 2),
             tactical_ai_veto_bps=f("tactical_ai_veto_bps", 80.0, 0.0, 500.0),
         )
         cls.validate(cfg)
