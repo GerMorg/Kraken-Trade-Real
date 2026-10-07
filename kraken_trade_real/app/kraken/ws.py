@@ -205,6 +205,39 @@ class WebSocketSupervisor:
             "spread_bps": (ask - bid) / ((ask + bid) / 2) * D("10000"),
         }
 
+    def seed_price_history(
+        self,
+        symbol: str,
+        closes: tuple[D, ...] | list[D],
+        end_timestamp: float | None = None,
+    ) -> None:
+        """Seed the tactical stream with existing 1m REST history.
+
+        Candidate symbols rotate on the normal cycle cadence. Without seeding,
+        a newly subscribed symbol needs several minutes of live ticks before
+        the 180-second tactical lookback becomes usable.
+        """
+        clean = [D(str(price)) for price in closes if D(str(price)) > 0]
+        if len(clean) < 2:
+            return
+        end = float(end_timestamp or time.time()) - 60.0
+        start = end - (len(clean[-300:]) - 1) * 60.0
+        with self._lock:
+            wire_symbol = self._logical_to_wire.get(symbol, symbol)
+            existing = list(self._prices.get(wire_symbol, ()))
+            merged: dict[float, D] = {
+                round(ts, 3): price for ts, price in existing
+                if price > 0 and ts > start - 300
+            }
+            seeded = clean[-300:]
+            for index, price in enumerate(seeded):
+                merged[round(start + index * 60.0, 3)] = price
+            prices = deque(
+                sorted(merged.items(), key=lambda item: item[0]),
+                maxlen=3000,
+            )
+            self._prices[wire_symbol] = prices
+
     def trade_metrics(self, symbol: str, lookback_seconds: float = 900.0) -> dict[str, Any]:
         now = time.time()
         with self._lock:
