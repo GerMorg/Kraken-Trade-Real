@@ -219,3 +219,15 @@
 - repeated dust-position exit attempts are suppressed and diagnosed explicitly
 - Gemini model cooldown avoids retry storms after quota/model failures
 - log-driven execution and rebalancing diagnostics improved
+
+
+## 0.1.27
+
+- added isolated Tactical Volatility/Momentum/Breakout strategy alongside the existing Core strategy
+- added fast Kraken WebSocket v2 ticker, trade and level-2 book data for tactical decisions
+- added separate tactical capital, position, trade-frequency, daily-loss and execution-cost limits
+- added Shadow mode by default so the new strategy can collect forward results without submitting live orders
+- added immediate long and short tactical capability; Spot Margin uses exchange-reported short availability and the configured minimum supported leverage
+- added take-profit, stop-loss, trailing-stop, time-stop and signal-reversal exits
+- added persistent tactical positions and trade results plus dedicated Home Assistant sensors and audit events
+- synchronized core and tactical order submission to prevent concurrent authority races
