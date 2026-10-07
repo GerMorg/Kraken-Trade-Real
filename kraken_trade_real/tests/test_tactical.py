@@ -17,7 +17,7 @@ def _history(now: float, direction: int) -> deque[tuple[float, D]]:
     history: deque[tuple[float, D]] = deque(maxlen=720)
     price = D("100")
     for index in range(48):
-        ts = now - D("240") + D(str(index * 5))
+        ts = now - 240 + index * 5
         step = D("0.0025") if index % 2 == 0 else D("-0.0005")
         if direction < 0:
             step = -step
