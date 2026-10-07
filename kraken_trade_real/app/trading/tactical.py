@@ -1379,7 +1379,7 @@ class TacticalTrader:
             position.entry_client_order_id, position.setup_score, position.state,
         )
 
-    def _signal_reject(self, symbol: str, reason: str) -> None:
+    def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:
         self._last_signal_reason = reason
         self._signal_rejections[reason] += 1
         return None
