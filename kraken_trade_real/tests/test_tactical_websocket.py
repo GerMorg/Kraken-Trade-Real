@@ -28,7 +28,7 @@ def test_websocket_stream_builds_book_ticker_and_trade_metrics():
             "ask": "100.1",
             "ask_qty": "5",
             "last": "100.05",
-            "timestamp": "2026-10-07T13:00:00.000000Z",
+            "timestamp": now,
         }],
     }
     ws.on_message(json.dumps(ticker))
@@ -51,7 +51,7 @@ def test_websocket_stream_builds_book_ticker_and_trade_metrics():
                 "side": "buy",
                 "price": "100.05",
                 "qty": "0.01",
-                "timestamp": f"2026-10-07T13:{i % 60:02d}:00.000000Z",
+                "timestamp": now - 1 + i * 0.01,
             }],
         }
         ws.on_message(json.dumps(trade))
