@@ -314,9 +314,10 @@ class TradingRuntime:
                 self.tactical.set_instruments(self.instruments)
                 self.tactical.set_portfolio_state(portfolio)
                 self.tactical.configure_stream(startup_spot_tickers if 'startup_spot_tickers' in locals() else {})
-                if self.stream is not None:
-                    self.stream.start()
-                self.tactical.start()
+                if bool(getattr(self.config, "tactical_enabled", False)):
+                    if self.stream is not None:
+                        self.stream.start()
+                    self.tactical.start()
                 self.audit.emit(
                     "STARTUP_TACTICAL_READY",
                     "INFO",
