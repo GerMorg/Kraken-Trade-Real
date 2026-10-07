@@ -1139,7 +1139,6 @@ class TacticalTrader:
             )
 
     @staticmethod
-    @staticmethod
     def _sample_prices(
         points: tuple[tuple[float, D], ...],
         now: float,
@@ -1176,6 +1175,7 @@ class TacticalTrader:
         last = points[-1][1]
         return (last / base - D("1")) * D("10000") if base > 0 else D("0")
 
+    @staticmethod
     def _realized_volatility(closes: tuple[D, ...]) -> D:
         if len(closes) < 2:
             return D("0")
