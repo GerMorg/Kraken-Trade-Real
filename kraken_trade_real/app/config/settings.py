@@ -276,3 +276,22 @@ class Config:
             raise ValueError("leverage must be >= 1")
         if cfg.tax_provider_classification not in {"FOREIGN", "DOMESTIC", "UNVERIFIED"}:
             raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")
+        if cfg.tactical_max_capital_eur < 5:
+            raise ValueError("tactical_max_capital_eur must be at least 5 EUR")
+        if cfg.tactical_position_limit_pct > 25:
+            raise ValueError("tactical_position_limit_pct cannot exceed 25 percent")
+        if cfg.tactical_short_leverage > min(cfg.risk_max_leverage, 5.0):
+            raise ValueError("tactical_short_leverage exceeds the global leverage ceiling")
+        if cfg.tactical_stop_loss_pct >= cfg.tactical_take_profit_pct:
+            raise ValueError("tactical stop-loss must be below take-profit")
+        minimum_cost = (
+            cfg.tactical_entry_fee_bps
+            + cfg.tactical_exit_fee_bps
+            + cfg.tactical_max_spread_bps
+            + cfg.tactical_expected_slippage_bps
+            + cfg.tactical_safety_buffer_bps
+        )
+        if cfg.tactical_min_expected_move_bps <= minimum_cost:
+            raise ValueError("tactical minimum expected move must clear configured costs")
+        if not cfg.tactical_shadow_mode and not cfg.live_enabled:
+            raise ValueError("live tactical mode requires live_enabled")
