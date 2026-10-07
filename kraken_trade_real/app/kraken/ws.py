@@ -374,8 +374,12 @@ class WebSocketSupervisor:
                         self._resubscribe.clear()
                         try:
                             ws.close()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self.audit.emit(
+                                "TACTICAL_WS_CLOSE_FAILED",
+                                "WARNING",
+                                error_type=type(exc).__name__,
+                            )
                         break
                     try:
                         payload = ws.recv()
@@ -399,8 +403,12 @@ class WebSocketSupervisor:
                 if ws is not None:
                     try:
                         ws.close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.audit.emit(
+                            "TACTICAL_WS_CLOSE_FAILED",
+                            "WARNING",
+                            error_type=type(exc).__name__,
+                        )
             self.audit.emit(
                 "TACTICAL_WS_DISCONNECTED",
                 "WARNING",
