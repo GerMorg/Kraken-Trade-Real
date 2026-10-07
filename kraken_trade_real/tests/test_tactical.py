@@ -272,11 +272,10 @@ def test_tactical_short_pnl_and_fees_use_positive_exposure():
     assert trader._trade_fees(D("-10")) == D("0.16")
 
 
-
+    
 def test_tactical_adaptive_entry_can_clear_cost_without_requiring_280_bps():
     trader = TacticalTrader(
         cfg(
-            tactical_min_expected_move_bps=280,
             tactical_adaptive_entry_enabled=True,
             tactical_adaptive_min_expected_move_bps=230,
             tactical_adaptive_min_confidence=0.75,
@@ -284,7 +283,9 @@ def test_tactical_adaptive_entry_can_clear_cost_without_requiring_280_bps():
         ),
         DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
     )
-    # A 250 bps setup against 230 bps configured tactical cost should pass
-    # the adaptive tier but would fail the legacy 280 bps gate.
-    trader._last_signal_reason = ""
-    assert trader._last_signal_reason == ""
+    assert trader._adaptive_entry_allowed(
+        D("250"), D("220"), D("0.80"), True, D("230"), D("0.75"), D("15")
+    ) is True
+    assert trader._adaptive_entry_allowed(
+        D("250"), D("240"), D("0.80"), True, D("230"), D("0.75"), D("15")
+    ) is False
