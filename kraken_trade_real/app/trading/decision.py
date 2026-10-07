@@ -150,23 +150,33 @@ class DecisionEngine:
             return "TARGET_BALANCED"
 
         if not candidates:
+            standard_edge = D(str(self.config.strategy_min_edge_bps))
+            standard_conf = D(str(self.config.strategy_min_confidence))
+            standard_signals = [
+                signal for signal in (long_signal, short_signal)
+                if signal.net_edge_bps >= standard_edge
+            ]
+            if standard_signals and not any(
+                signal.confidence * scale >= standard_conf for signal in standard_signals
+            ):
+                return "MIN_CONFIDENCE"
             raw_directional = [
                 signal for signal in (long_signal, short_signal)
                 if self._direction_available(instrument, signal.direction)
             ]
-            if any(
-                signal.net_edge_bps >= D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
-                for signal in raw_directional
-            ):
+            adaptive_floor = D(str(
+                getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)
+            ))
+            if any(signal.net_edge_bps >= adaptive_floor for signal in raw_directional):
                 return "ECONOMIC_EDGE_GUARD"
             if any(
-                signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
-                and signal.confidence * scale >= D(str(self.config.strategy_min_confidence))
+                signal.net_edge_bps >= standard_edge
+                and signal.confidence * scale >= standard_conf
                 for signal in (long_signal, short_signal)
             ):
                 return "INSTRUMENT_DIRECTION"
             if any(
-                signal.net_edge_bps >= D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
+                signal.net_edge_bps >= adaptive_floor
                 for signal in (long_signal, short_signal)
             ) and not any(
                 self._direction_available(instrument, signal.direction)
