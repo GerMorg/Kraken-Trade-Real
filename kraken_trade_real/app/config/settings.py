@@ -61,6 +61,43 @@ class Config:
     tax_provider_classification: str
     tax_report_enabled: bool
 
+    tactical_enabled: bool
+    tactical_shadow_mode: bool
+    tactical_allow_short: bool
+    tactical_portfolio_pct: float
+    tactical_max_capital_eur: float
+    tactical_position_limit_pct: float
+    tactical_max_positions: int
+    tactical_candidate_limit: int
+    tactical_poll_seconds: int
+    tactical_market_max_age_seconds: int
+    tactical_min_volatility_bps: float
+    tactical_max_volatility_bps: float
+    tactical_min_volume_ratio: float
+    tactical_min_momentum_bps: float
+    tactical_min_breakout_bps: float
+    tactical_min_imbalance: float
+    tactical_max_spread_bps: float
+    tactical_min_expected_move_bps: float
+    tactical_entry_fee_bps: float
+    tactical_exit_fee_bps: float
+    tactical_expected_slippage_bps: float
+    tactical_safety_buffer_bps: float
+    tactical_context_block_bps: float
+    tactical_stop_loss_pct: float
+    tactical_take_profit_pct: float
+    tactical_trailing_trigger_bps: float
+    tactical_trailing_stop_pct: float
+    tactical_max_hold_seconds: int
+    tactical_reversal_exit_bps: float
+    tactical_cooldown_seconds: int
+    tactical_max_trades_per_hour: int
+    tactical_max_trades_per_day: int
+    tactical_max_daily_loss_pct: float
+    tactical_trade_lookback_seconds: int
+    tactical_short_leverage: float
+    tactical_order_confirm_seconds: int
+
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
         try:
@@ -151,6 +188,42 @@ class Config:
                 raw.get("tax_provider_classification", "FOREIGN")
             ).strip().upper(),
             tax_report_enabled=b("tax_report_enabled", True),
+            tactical_enabled=b("tactical_enabled", False),
+            tactical_shadow_mode=b("tactical_shadow_mode", True),
+            tactical_allow_short=b("tactical_allow_short", True),
+            tactical_portfolio_pct=f("tactical_portfolio_pct", 25.0, 1.0, 25.0),
+            tactical_max_capital_eur=f("tactical_max_capital_eur", 15.0, 5.0, 1000.0),
+            tactical_position_limit_pct=f("tactical_position_limit_pct", 25.0, 1.0, 25.0),
+            tactical_max_positions=i("tactical_max_positions", 1, 1),
+            tactical_candidate_limit=i("tactical_candidate_limit", 12, 4),
+            tactical_poll_seconds=i("tactical_poll_seconds", 10, 2),
+            tactical_market_max_age_seconds=i("tactical_market_max_age_seconds", 5, 1),
+            tactical_min_volatility_bps=f("tactical_min_volatility_bps", 12.0, 0.1, 1000.0),
+            tactical_max_volatility_bps=f("tactical_max_volatility_bps", 55.0, 1.0, 1000.0),
+            tactical_min_volume_ratio=f("tactical_min_volume_ratio", 2.0, 1.0, 100.0),
+            tactical_min_momentum_bps=f("tactical_min_momentum_bps", 40.0, 1.0, 5000.0),
+            tactical_min_breakout_bps=f("tactical_min_breakout_bps", 25.0, 1.0, 5000.0),
+            tactical_min_imbalance=f("tactical_min_imbalance", 0.10, 0.0, 1.0),
+            tactical_max_spread_bps=f("tactical_max_spread_bps", 25.0, 0.1, 1000.0),
+            tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 280.0, 1.0, 10000.0),
+            tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 1000.0),
+            tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 1000.0),
+            tactical_expected_slippage_bps=f("tactical_expected_slippage_bps", 25.0, 0.0, 1000.0),
+            tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 1000.0),
+            tactical_context_block_bps=f("tactical_context_block_bps", 80.0, 0.0, 5000.0),
+            tactical_stop_loss_pct=f("tactical_stop_loss_pct", 1.0, 0.1, 20.0),
+            tactical_take_profit_pct=f("tactical_take_profit_pct", 2.2, 0.2, 30.0),
+            tactical_trailing_trigger_bps=f("tactical_trailing_trigger_bps", 100.0, 1.0, 5000.0),
+            tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 20.0),
+            tactical_max_hold_seconds=i("tactical_max_hold_seconds", 1800, 30),
+            tactical_reversal_exit_bps=f("tactical_reversal_exit_bps", 120.0, 1.0, 5000.0),
+            tactical_cooldown_seconds=i("tactical_cooldown_seconds", 120, 1),
+            tactical_max_trades_per_hour=i("tactical_max_trades_per_hour", 2, 1),
+            tactical_max_trades_per_day=i("tactical_max_trades_per_day", 6, 1),
+            tactical_max_daily_loss_pct=f("tactical_max_daily_loss_pct", 1.5, 0.1, 10.0),
+            tactical_trade_lookback_seconds=i("tactical_trade_lookback_seconds", 900, 120),
+            tactical_short_leverage=f("tactical_short_leverage", 2.0, 1.0, 5.0),
+            tactical_order_confirm_seconds=i("tactical_order_confirm_seconds", 5, 1),
         )
         cls.validate(cfg)
         return cfg
@@ -167,3 +240,22 @@ class Config:
             raise ValueError("leverage must be >= 1")
         if cfg.tax_provider_classification not in {"FOREIGN", "DOMESTIC", "UNVERIFIED"}:
             raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")
+        if cfg.tactical_max_capital_eur < 5:
+            raise ValueError("tactical_max_capital_eur must be at least 5 EUR")
+        if cfg.tactical_position_limit_pct > 25:
+            raise ValueError("tactical_position_limit_pct cannot exceed 25 percent")
+        if cfg.tactical_short_leverage > min(cfg.risk_max_leverage, 5.0):
+            raise ValueError("tactical_short_leverage exceeds the global leverage ceiling")
+        if cfg.tactical_stop_loss_pct >= cfg.tactical_take_profit_pct:
+            raise ValueError("tactical stop-loss must be below take-profit")
+        minimum_cost = (
+            cfg.tactical_entry_fee_bps
+            + cfg.tactical_exit_fee_bps
+            + cfg.tactical_max_spread_bps
+            + cfg.tactical_expected_slippage_bps
+            + cfg.tactical_safety_buffer_bps
+        )
+        if cfg.tactical_min_expected_move_bps <= minimum_cost:
+            raise ValueError("tactical minimum expected move must clear configured costs")
+        if not cfg.tactical_shadow_mode and not cfg.live_enabled:
+            raise ValueError("live tactical mode requires live_enabled")

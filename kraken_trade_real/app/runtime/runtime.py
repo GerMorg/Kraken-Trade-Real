@@ -68,7 +68,8 @@ class TradingRuntime:
                  scanner: Any, news: Any, gemini: Any, signals: Any, decisions: Any,
                  sizer: Any, risk: Any, leverage: Any, intents: Any, authority: Any,
                  portfolio: Any, recovery: Any, learning: Any, registry: Any,
-                 sensors: Any, tax: Any) -> None:
+                 sensors: Any, tax: Any, websocket: Any | None = None,
+                 tactical: Any | None = None) -> None:
         self.config=config
         self.db=db
         self.audit=audit
@@ -93,6 +94,8 @@ class TradingRuntime:
         self.registry=registry
         self.sensors=sensors
         self.tax=tax
+        self.websocket=websocket
+        self.tactical=tactical
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
@@ -312,6 +315,17 @@ class TradingRuntime:
         self.state.set(RuntimeStage.READY)
         self._watchdog_clear("")
         self.audit.emit("STARTUP_READY","INFO",instruments=len(self.instruments))
+        if self.tactical is not None:
+            try:
+                self.tactical.update_portfolio(portfolio)
+                self.tactical.start()
+            except Exception as exc:
+                self.audit.emit(
+                    "TACTICAL_START_FAILED",
+                    "WARNING",
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:500],
+                )
         self._publish_runtime_status()
         return True
 
@@ -750,6 +764,32 @@ class TradingRuntime:
                 duration_seconds=gemini_duration,
             )
 
+            if self.tactical is not None:
+                try:
+                    tactical_seed = ranked[:max(
+                        40,
+                        int(getattr(self.config, "tactical_candidate_limit", 12)) * 4,
+                    )]
+                    tactical_news = {
+                        instrument.symbol: self.news.effect_for(instrument.symbol, news)
+                        for instrument in tactical_seed
+                    }
+                    self.tactical.update_portfolio(portfolio)
+                    self.tactical.update_context(
+                        tactical_seed,
+                        snapshots,
+                        tactical_news,
+                        gemini_bps,
+                    )
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_CONTEXT_UPDATE_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:500],
+                    )
+
             stage="DECISIONS"
             self._watchdog_arm(cycle_id, stage)
             model_version=self.registry.active()
@@ -1140,6 +1180,16 @@ class TradingRuntime:
             self.portfolio.set_market_context(self.instruments,latest_spot_payload)
             final_portfolio=self.portfolio.reconcile()
             self.db.save_portfolio(cycle_id,final_portfolio)
+            if self.tactical is not None:
+                try:
+                    self.tactical.update_portfolio(final_portfolio)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_PORTFOLIO_UPDATE_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error_type=type(exc).__name__,
+                    )
             self.learning.record_cycle(cycle_id,decisions_count,placed,blockers)
             try:
                 feedback=self.learning.process_feedback()
@@ -1277,6 +1327,8 @@ class TradingRuntime:
 
     def _publish_runtime_status(self) -> None:
         try:
+            tactical = getattr(self, "tactical", None)
+            tactical_status = tactical.status() if tactical is not None else {}
             publish_result = self.sensors.publish(self.sensors.states(
                 status=self.state.stage.value,
                 stage=self.state.stage.value,
@@ -1307,6 +1359,14 @@ class TradingRuntime:
                 tax_estimated_27_5_eur="0",
                 tax_incomplete_events=0,
                 tax_year=datetime.now(timezone.utc).year,
+                tactical_status=(
+                    "SHADOW" if tactical_status.get("shadow_mode") else "LIVE"
+                    if tactical_status.get("enabled") else "DISABLED"
+                ),
+                tactical_ws_connected=bool(tactical_status.get("ws_connected", False)),
+                tactical_position_symbol=str(tactical_status.get("position_symbol", "")),
+                tactical_position_direction=str(tactical_status.get("position_direction", "")),
+                tactical_last_edge_bps=tactical_status.get("last_net_edge_bps", "0"),
             ))
             self.audit.emit("HA_SENSOR_PUBLISH_RESULT","INFO",**publish_result)
         except Exception as exc:
@@ -1384,6 +1444,8 @@ class TradingRuntime:
 
     def _publish(self, portfolio: Any, gemini: dict[str,Any], model_version: str) -> None:
         tax_summary=self._safe_tax_summary()
+        tactical = getattr(self, "tactical", None)
+        tactical_status = tactical.status() if tactical is not None else {}
         self.sensors.publish(self.sensors.states(
             status=self.state.stage.value,stage=self.state.stage.value,cycle_id=self.state.cycle_id,
             blocker=self.state.blocker,symbol=self.state.selected_symbol,
@@ -1405,4 +1467,12 @@ class TradingRuntime:
             tax_estimated_27_5_eur=tax_summary.get("indicative_crypto_27_5_tax_eur","0"),
             tax_incomplete_events=int(tax_summary.get("incomplete_event_count",0)),
             tax_year=datetime.now(timezone.utc).year,
+            tactical_status=(
+                "SHADOW" if tactical_status.get("shadow_mode") else "LIVE"
+                if tactical_status.get("enabled") else "DISABLED"
+            ),
+            tactical_ws_connected=bool(tactical_status.get("ws_connected", False)),
+            tactical_position_symbol=str(tactical_status.get("position_symbol", "")),
+            tactical_position_direction=str(tactical_status.get("position_direction", "")),
+            tactical_last_edge_bps=tactical_status.get("last_net_edge_bps", "0"),
         ))

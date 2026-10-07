@@ -6,7 +6,7 @@ import time
 from app.config import Config
 from app.execution import CostModel, ExecutionPolicy, ExecutionReconciler
 from app.gemini import GeminiAnalyzer
-from app.kraken import InstrumentDiscovery, KrakenGateway
+from app.kraken import InstrumentDiscovery, KrakenGateway, WebSocketSupervisor
 from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
 from app.market import FeatureEngine, MarketData, MarketScanner, RegimeEngine
 from app.monitoring import AuditLogger
@@ -17,7 +17,7 @@ from app.recovery import CircuitBreaker, RecoveryManager
 from app.risk import LeverageEngine, MarginEngine, RiskEngine
 from app.sensors import SensorPublisher
 from app.tax import AustrianTaxLedger
-from app.trading import DecisionEngine, OrderIntentBuilder, SignalEngine
+from app.trading import DecisionEngine, OrderIntentBuilder, SignalEngine, TacticalTrader
 from app.trading.authority import TradingAuthority
 from app.runtime import TradingRuntime
 
@@ -76,14 +76,28 @@ def build_runtime() -> TradingRuntime:
         report_dir="/config/reports/tax",
         provider_tax_classification=config.tax_provider_classification,
     )
+    websocket = WebSocketSupervisor(audit, recovery)
     intents = OrderIntentBuilder(
         config.execution_max_slippage_bps,
         config.execution_order_timeout_seconds,
+    )
+    tactical = TacticalTrader(
+        config=config,
+        db=db,
+        audit=audit,
+        gateway=gateway,
+        websocket=websocket,
+        authority=authority,
+        portfolio=portfolio,
+        intents=intents,
+        risk=risk,
     )
     return TradingRuntime(
         config, db, audit, gateway, discovery, market_data, features, regimes,
         scanner, news, gemini, signals, decisions, sizer, risk, leverage,
         intents, authority, portfolio, recovery, learning, registry, sensors, tax,
+        websocket=websocket,
+        tactical=tactical,
     )
 
 

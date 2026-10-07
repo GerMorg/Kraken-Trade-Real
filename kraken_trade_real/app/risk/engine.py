@@ -62,6 +62,16 @@ class RiskEngine:
         net_pct = abs(net_after) / eq * 100
         is_new_position = current == 0 and desired != 0
         min_cost_eur = D(str(d.rationale.get("min_cost_eur", "0")))
+        risk_profile = str(d.rationale.get("risk_profile", "core"))
+        position_limit_pct = D(str(self.config.risk_max_position_pct))
+        volatility_limit = D("30")
+        if risk_profile == "tactical":
+            requested_position_limit = D(str(d.rationale.get("risk_position_limit_pct", "25")))
+            position_limit_pct = min(D("30"), max(D("0.1"), requested_position_limit))
+            volatility_limit = min(
+                D("60"),
+                max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
+            )
 
         checks = {
             "instrument_direction": (
@@ -76,7 +86,7 @@ class RiskEngine:
                 eq * D(str(self.config.risk_daily_loss_pct)) / 100
             ),
             "drawdown": p.drawdown_pct <= D(str(self.config.risk_max_drawdown_pct)),
-            "position_limit": pos_pct <= D(str(self.config.risk_max_position_pct)),
+            "position_limit": pos_pct <= position_limit_pct,
             "gross_limit": gross_pct <= D(str(self.config.risk_max_gross_pct)),
             "net_limit": net_pct <= D(str(self.config.risk_max_net_pct)),
             "open_positions_limit": (
@@ -105,7 +115,7 @@ class RiskEngine:
             ),
             "extreme_volatility": (
                 d.reduce_only
-                or d.signal.features.get("volatility", D(999)) <= D(30)
+                or d.signal.features.get("volatility", D(999)) <= volatility_limit
             ),
         }
 

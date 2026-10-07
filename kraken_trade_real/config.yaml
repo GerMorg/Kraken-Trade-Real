@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.26
+version: 0.1.27
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -75,6 +75,42 @@ options:
   tax_enabled: true
   tax_provider_classification: "FOREIGN"
   tax_report_enabled: true
+  tactical_enabled: false
+  tactical_shadow_mode: true
+  tactical_allow_short: true
+  tactical_portfolio_pct: 25.0
+  tactical_max_capital_eur: 15.0
+  tactical_position_limit_pct: 25.0
+  tactical_max_positions: 1
+  tactical_candidate_limit: 12
+  tactical_poll_seconds: 10
+  tactical_market_max_age_seconds: 5
+  tactical_min_volatility_bps: 12.0
+  tactical_max_volatility_bps: 55.0
+  tactical_min_volume_ratio: 2.0
+  tactical_min_momentum_bps: 40.0
+  tactical_min_breakout_bps: 25.0
+  tactical_min_imbalance: 0.10
+  tactical_max_spread_bps: 25.0
+  tactical_min_expected_move_bps: 280.0
+  tactical_entry_fee_bps: 80.0
+  tactical_exit_fee_bps: 80.0
+  tactical_expected_slippage_bps: 25.0
+  tactical_safety_buffer_bps: 30.0
+  tactical_context_block_bps: 80.0
+  tactical_stop_loss_pct: 1.0
+  tactical_take_profit_pct: 2.2
+  tactical_trailing_trigger_bps: 100.0
+  tactical_trailing_stop_pct: 0.7
+  tactical_max_hold_seconds: 1800
+  tactical_reversal_exit_bps: 120.0
+  tactical_cooldown_seconds: 120
+  tactical_max_trades_per_hour: 2
+  tactical_max_trades_per_day: 6
+  tactical_max_daily_loss_pct: 1.5
+  tactical_trade_lookback_seconds: 900
+  tactical_short_leverage: 2.0
+  tactical_order_confirm_seconds: 5
 schema:
   kraken_api_key: password
   kraken_api_secret: password
@@ -132,3 +168,39 @@ schema:
   tax_enabled: bool
   tax_provider_classification: str
   tax_report_enabled: bool
+  tactical_enabled: bool
+  tactical_shadow_mode: bool
+  tactical_allow_short: bool
+  tactical_portfolio_pct: float
+  tactical_max_capital_eur: float
+  tactical_position_limit_pct: float
+  tactical_max_positions: int
+  tactical_candidate_limit: int
+  tactical_poll_seconds: int
+  tactical_market_max_age_seconds: int
+  tactical_min_volatility_bps: float
+  tactical_max_volatility_bps: float
+  tactical_min_volume_ratio: float
+  tactical_min_momentum_bps: float
+  tactical_min_breakout_bps: float
+  tactical_min_imbalance: float
+  tactical_max_spread_bps: float
+  tactical_min_expected_move_bps: float
+  tactical_entry_fee_bps: float
+  tactical_exit_fee_bps: float
+  tactical_expected_slippage_bps: float
+  tactical_safety_buffer_bps: float
+  tactical_context_block_bps: float
+  tactical_stop_loss_pct: float
+  tactical_take_profit_pct: float
+  tactical_trailing_trigger_bps: float
+  tactical_trailing_stop_pct: float
+  tactical_max_hold_seconds: int
+  tactical_reversal_exit_bps: float
+  tactical_cooldown_seconds: int
+  tactical_max_trades_per_hour: int
+  tactical_max_trades_per_day: int
+  tactical_max_daily_loss_pct: float
+  tactical_trade_lookback_seconds: int
+  tactical_short_leverage: float
+  tactical_order_confirm_seconds: int
