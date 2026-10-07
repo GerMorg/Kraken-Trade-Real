@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.28
+
+- Correct Tactical short-position accounting so exposure, margin checks, minimum-cost checks and realized P&L always use absolute notional with direction stored separately.
+- Repair legacy 0.1.27 Tactical short positions persisted with a negative notional.
+- Add a conservative Spot Ticker fallback for Tactical position management when the WebSocket price becomes stale.
+- Reconcile filled Tactical orders after restart and restore missing Tactical positions from the exact Kraken order ID and persisted decision context.
+- Keep Tactical long/short execution isolated behind the existing Trading Authority; short entry remains Spot Margin-only and uses exchange-reported sell-side leverage availability.
+- Bump application, package, Home Assistant and Kraken User-Agent versions to 0.1.28.
+
 ## 0.1.25
 
 - Fix Spot order reconciliation to use the persisted Kraken transaction/order ID with QueryOrders instead of the unsupported cl_ord_id query argument.
