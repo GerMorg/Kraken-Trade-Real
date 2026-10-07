@@ -62,7 +62,12 @@ class SensorPublisher:
                tax_incomplete_events: int=0, tax_year: int=0,
                learning_samples: int=0, learning_open_predictions: int=0,
                learning_settled_total: int=0, learning_brier: Any=0,
-               learning_improvement: Any=0, portfolio_symbols: list[str]|None=None) -> dict[str,Any]:
+               learning_improvement: Any=0, portfolio_symbols: list[str]|None=None,
+               tactical_status: str="DISABLED", tactical_symbol: str="",
+               tactical_direction: str="", tactical_position_eur: Any=0,
+               tactical_score: Any=0, tactical_net_edge_bps: Any=0,
+               tactical_trades_today: int=0, tactical_pnl_today_eur: Any=0,
+               tactical_last_reason: str="") -> dict[str,Any]:
         return {
             "sensor.kraken_trade_status":{"state":status,"attributes":{"stage":stage}},
             "sensor.kraken_trade_stage":{"state":stage},
@@ -95,4 +100,13 @@ class SensorPublisher:
             "sensor.kraken_trade_tax_estimated_27_5_eur":{"state":str(tax_estimated_27_5_eur),"unit_of_measurement":"EUR"},
             "sensor.kraken_trade_tax_incomplete_events":{"state":str(tax_incomplete_events)},
             "sensor.kraken_trade_tax_year":{"state":str(tax_year)},
+            "sensor.kraken_trade_tactical_status":{"state":tactical_status},
+            "sensor.kraken_trade_tactical_symbol":{"state":tactical_symbol or "NONE"},
+            "sensor.kraken_trade_tactical_direction":{"state":tactical_direction or "NONE"},
+            "sensor.kraken_trade_tactical_position_eur":{"state":str(tactical_position_eur),"unit_of_measurement":"EUR"},
+            "sensor.kraken_trade_tactical_score":{"state":str(tactical_score)},
+            "sensor.kraken_trade_tactical_net_edge_bps":{"state":str(tactical_net_edge_bps),"unit_of_measurement":"bps"},
+            "sensor.kraken_trade_tactical_trades_today":{"state":str(tactical_trades_today)},
+            "sensor.kraken_trade_tactical_pnl_today_eur":{"state":str(tactical_pnl_today_eur),"unit_of_measurement":"EUR"},
+            "sensor.kraken_trade_tactical_last_reason":{"state":tactical_last_reason or "NONE"},
         }
