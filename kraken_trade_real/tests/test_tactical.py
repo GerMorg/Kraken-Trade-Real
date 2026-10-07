@@ -146,8 +146,16 @@ def market_state(now=1000.0, direction="LONG"):
         "timestamp": now - 1,
         "spread_bps": D("2"),
         "price_points": tuple(points),
-        "depths_bid": ((points[-1][1] - D("0.01"), D("10")),),
-        "depths_ask": ((points[-1][1] + D("0.01"), D("2")),),
+        "depths_bid": (
+            ((points[-1][1] - D("0.01"), D("10")),)
+            if direction == "LONG"
+            else ((points[-1][1] - D("0.01"), D("2")),)
+        ),
+        "depths_ask": (
+            ((points[-1][1] + D("0.01"), D("2")),)
+            if direction == "LONG"
+            else ((points[-1][1] + D("0.01"), D("10")),)
+        ),
     }
 
 
