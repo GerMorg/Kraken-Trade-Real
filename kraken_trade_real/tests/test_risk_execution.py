@@ -19,7 +19,8 @@ def test_margin_and_leverage_bounds():
 
 
 def test_decision_rejection_reason_distinguishes_edge_and_confidence(config, instrument):
-    from app.domain.models import PortfolioState, Signal
+    from app.risk.engine import RiskEngine
+from app.domain.models import PortfolioState, Signal
     from app.domain.states import Direction
     from app.trading.decision import DecisionEngine
 
