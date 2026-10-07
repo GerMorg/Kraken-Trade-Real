@@ -162,6 +162,7 @@ class WebSocketSupervisor:
             "ask": ask,
             "timestamp": self._timestamp(ticker.get("timestamp")),
             "closes": closes,
+            "price_points": tuple(prices[-300:]),
             "depths_bid": bids,
             "depths_ask": asks,
             "spread_bps": (ask - bid) / ((ask + bid) / 2) * D("10000"),
@@ -330,6 +331,7 @@ class WebSocketSupervisor:
         reconnect_delay = 1.0
         while not self.stop_event.is_set():
             symbols = self.symbols()
+            ws = None
             if not symbols:
                 self.connected = False
                 self._resubscribe.wait(1.0)
@@ -377,10 +379,11 @@ class WebSocketSupervisor:
                 )
             finally:
                 self.connected = False
-                try:
-                    ws.close()
-                except Exception:
-                    pass
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
             self.audit.emit(
                 "TACTICAL_WS_DISCONNECTED",
                 "WARNING",
