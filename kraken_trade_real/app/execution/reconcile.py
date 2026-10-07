@@ -26,6 +26,10 @@ class ExecutionReconciler:
                 if requested > 0 and 0 < executed < requested:
                     return OrderState.PARTIALLY_FILLED
                 return OrderState.FILLED
+            if status in {"filled", "complete", "completed"}:
+                return OrderState.FILLED
+            if status in {"partialfilled", "partiallyfilled", "partially_filled", "partial"}:
+                return OrderState.PARTIALLY_FILLED
             if status in self.TERMINAL:
                 return self.TERMINAL[status]
             if status in {"partially_filled","partial"}:
