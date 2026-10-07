@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from decimal import Decimal
@@ -21,17 +20,70 @@ class DecisionEngine:
         scale = D(str(parameters.get("confidence_scale", "1")))
         return max(D("0.5"), min(D("1.5"), scale))
 
-    def _target_position(
-        self,
-        equity: D,
-        confidence: D,
-        signal_direction: Direction,
-    ) -> D:
+    def _target_position(self, equity: D, confidence: D, signal_direction: Direction) -> D:
         if equity <= 0:
             return D("0")
         target = equity * D(str(self.config.risk_max_position_pct)) / 100
         target *= max(D("0.25"), min(D("1"), confidence))
         return target if signal_direction == Direction.LONG else -target
+
+    def _edge_policy(
+        self,
+        signal: Signal,
+        calibrated_confidence: D,
+    ) -> tuple[bool, D, str]:
+        standard = D(str(self.config.strategy_min_edge_bps))
+        if signal.net_edge_bps >= standard:
+            return True, standard, "STANDARD"
+        adaptive_enabled = bool(
+            getattr(self.config, "strategy_adaptive_edge_enabled", True)
+        )
+        floor = D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
+        min_conf = D(str(getattr(self.config, "strategy_adaptive_min_confidence", 0.75)))
+        cost_ratio = D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)))
+        economically_supported = (
+            signal.expected_cost_bps > 0
+            and signal.expected_return_bps >= signal.expected_cost_bps * cost_ratio
+        )
+        if (
+            adaptive_enabled
+            and calibrated_confidence >= min_conf
+            and signal.net_edge_bps >= floor
+            and economically_supported
+        ):
+            return True, floor, "ADAPTIVE"
+        return False, standard, "STANDARD"
+
+    @staticmethod
+    def _direction_available(instrument: Instrument, direction: Direction) -> bool:
+        return (
+            instrument.long_available
+            if direction == Direction.LONG
+            else instrument.short_available
+        )
+
+    def _candidate_signals(
+        self,
+        instrument: Instrument,
+        long_signal: Signal,
+        short_signal: Signal,
+        scale: D,
+        *,
+        current: D,
+    ) -> list[tuple[Signal, D, str]]:
+        result: list[tuple[Signal, D, str]] = []
+        for signal in (long_signal, short_signal):
+            calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
+            if calibrated < D(str(self.config.strategy_min_confidence)):
+                continue
+            # Opening a new position must respect the exchange-reported direction.
+            # Reductions are handled separately and are allowed to remove risk.
+            if current == 0 and not self._direction_available(instrument, signal.direction):
+                continue
+            ok, threshold, tier = self._edge_policy(signal, calibrated)
+            if ok:
+                result.append((signal, threshold, tier))
+        return result
 
     def _trade_plan(
         self,
@@ -46,11 +98,7 @@ class DecisionEngine:
         desired = (
             D("0")
             if force_flatten and current != 0
-            else self._target_position(
-                portfolio.equity_eur,
-                calibrated_confidence,
-                signal.direction,
-            )
+            else self._target_position(portfolio.equity_eur, calibrated_confidence, signal.direction)
         )
         reversal = (
             not force_flatten
@@ -58,13 +106,14 @@ class DecisionEngine:
             and ((current > 0 and desired < 0) or (current < 0 and desired > 0))
         )
         if reversal:
-            # Reverse in two safe stages: first flatten, then wait for a fresh cycle
-            # before opening the opposite exposure.
+            # Reverse in two safe stages: first flatten, then wait for a fresh cycle.
             desired = D("0")
         delta = desired - current
         trade_notional = abs(delta)
         reducing = current != 0 and abs(desired) < abs(current)
-        execution_direction = Direction.LONG if delta > 0 else Direction.SHORT if delta < 0 else None
+        execution_direction = (
+            Direction.LONG if delta > 0 else Direction.SHORT if delta < 0 else None
+        )
         reduce_only = reducing and execution_direction is not None
         return {
             "current_position_eur": current,
@@ -86,41 +135,51 @@ class DecisionEngine:
         min_cost_eur: D | None = None,
     ) -> str:
         scale = self._confidence_scale(model_parameters)
-        effective_min_cost = (
-            min_cost_eur if min_cost_eur is not None
-            else instrument.min_cost
-        )
-        signals = [long_signal, short_signal]
-        edge_candidates = [
-            signal for signal in signals
-            if signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
-        ]
+        effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
-        if not edge_candidates and current != 0:
+
+        candidates = self._candidate_signals(
+            instrument, long_signal, short_signal, scale, current=current
+        )
+        if not candidates and current != 0:
             held_signal = long_signal if current > 0 else short_signal
             if held_signal.net_edge_bps <= D("0"):
                 return "REBALANCE_EXIT"
-        if not edge_candidates:
+            if held_signal.confidence * scale < D(str(self.config.strategy_min_confidence)):
+                return "MIN_CONFIDENCE"
+            return "TARGET_BALANCED"
+
+        if not candidates:
+            raw_directional = [
+                signal for signal in (long_signal, short_signal)
+                if self._direction_available(instrument, signal.direction)
+            ]
+            if any(
+                signal.net_edge_bps >= D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
+                for signal in raw_directional
+            ):
+                return "ECONOMIC_EDGE_GUARD"
+            if any(
+                signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
+                and signal.confidence * scale >= D(str(self.config.strategy_min_confidence))
+                for signal in (long_signal, short_signal)
+            ):
+                return "INSTRUMENT_DIRECTION"
+            if any(
+                signal.net_edge_bps >= D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
+                for signal in (long_signal, short_signal)
+            ) and not any(
+                self._direction_available(instrument, signal.direction)
+                for signal in (long_signal, short_signal)
+            ):
+                return "INSTRUMENT_DIRECTION"
             return "MIN_EDGE"
-        confidence_candidates = [
-            signal for signal in edge_candidates
-            if signal.confidence * scale >= D(str(self.config.strategy_min_confidence))
-        ]
-        if not confidence_candidates:
-            return "MIN_CONFIDENCE"
-        best = max(
-            confidence_candidates,
-            key=lambda signal: (signal.net_edge_bps, signal.confidence),
-        )
-        calibrated_confidence = max(
-            D("0.0"), min(D("1.0"), best.confidence * scale)
-        )
+
+        best = max(candidates, key=lambda item: (item[0].net_edge_bps, item[0].confidence))
+        signal, _, _ = best
+        calibrated_confidence = max(D("0"), min(D("1"), signal.confidence * scale))
         plan = self._trade_plan(
-            instrument,
-            portfolio,
-            best,
-            calibrated_confidence,
-            effective_min_cost,
+            instrument, portfolio, signal, calibrated_confidence, effective_min_cost
         )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return "TARGET_BALANCED"
@@ -140,23 +199,21 @@ class DecisionEngine:
         min_cost_eur: D | None = None,
     ) -> Decision | None:
         scale = self._confidence_scale(model_parameters)
-        effective_min_cost = (
-            min_cost_eur if min_cost_eur is not None
-            else instrument.min_cost
-        )
+        effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
-        candidates = [
-            signal for signal in (long_signal, short_signal)
-            if signal.net_edge_bps >= D(str(self.config.strategy_min_edge_bps))
-            and signal.confidence * scale >= D(str(self.config.strategy_min_confidence))
-        ]
+
+        candidates = self._candidate_signals(
+            instrument, long_signal, short_signal, scale, current=current
+        )
         force_flatten = False
+        edge_tier = "STANDARD"
+        edge_threshold = D(str(self.config.strategy_min_edge_bps))
         if candidates:
             candidates.sort(
-                key=lambda signal: (signal.net_edge_bps, signal.confidence),
+                key=lambda item: (item[0].net_edge_bps, item[0].confidence),
                 reverse=True,
             )
-            signal = candidates[0]
+            signal, edge_threshold, edge_tier = candidates[0]
         elif current != 0:
             signal = long_signal if current > 0 else short_signal
             if signal.net_edge_bps > D("0"):
@@ -183,6 +240,7 @@ class DecisionEngine:
         execution_direction = plan["execution_direction"]
         if execution_direction is None:
             return None
+
         rationale = {
             "long_net_edge_bps": str(long_signal.net_edge_bps),
             "short_net_edge_bps": str(short_signal.net_edge_bps),
@@ -201,6 +259,8 @@ class DecisionEngine:
                 "held_position_net_edge_non_positive" if force_flatten else ""
             ),
             "min_cost_eur": str(effective_min_cost),
+            "edge_threshold_bps": str(edge_threshold),
+            "edge_tier": edge_tier,
         }
         return Decision(
             decision_id=new_id("decision"),
