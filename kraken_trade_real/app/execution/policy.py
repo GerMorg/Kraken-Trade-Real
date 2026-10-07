@@ -51,8 +51,9 @@ class ExecutionPolicy:
     def choose(self, spread_bps: D, edge_bps: D, volatility: D,
                urgency_bps_per_sec: D=D("0"), reduce_only: bool=False) -> dict[str,Any]:
         if reduce_only:
-            if spread_bps<=D("15") and volatility<=D("5"):
-                return {"method":"post_only_limit","order_type":"limit","post_only":True}
+            # Exits should prefer a fillable limit over post-only liquidity.
+            # The order only removes exposure, so crossing a tight spread is
+            # acceptable as long as the hard slippage ceiling still passes.
             if spread_bps<=D("60") and volatility<=D("12"):
                 return {"method":"marketable_limit","order_type":"limit","post_only":False}
             return {"method":"limit","order_type":"limit","post_only":False}
