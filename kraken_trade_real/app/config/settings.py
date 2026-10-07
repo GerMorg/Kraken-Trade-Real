@@ -268,8 +268,6 @@ class Config:
             raise ValueError("leverage must be >= 1")
         if cfg.tax_provider_classification not in {"FOREIGN", "DOMESTIC", "UNVERIFIED"}:
             raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")
-        if cfg.strategy_adaptive_edge_floor_bps >= cfg.strategy_min_edge_bps:
-            raise ValueError("strategy_adaptive_edge_floor_bps must be below strategy_min_edge_bps")
         if cfg.strategy_adaptive_cost_ratio < 1:
             raise ValueError("strategy_adaptive_cost_ratio must be at least 1")
         if cfg.tactical_adaptive_min_expected_move_bps <= (
