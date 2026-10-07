@@ -790,6 +790,14 @@ class TacticalEngine:
             instrument = self.instrument_by_symbol.get(symbol)
             if instrument is None:
                 continue
+            timestamp = self._dec_raw(snap.get("timestamp"))
+            max_age = int(self.config.tactical_data_max_age_seconds)
+            if timestamp <= 0 or now - float(timestamp) > max_age:
+                blocked["STALE_MARKET_DATA"] = blocked.get("STALE_MARKET_DATA", 0) + 1
+                continue
+            if not bool(snap.get("book_ready", True)):
+                blocked["BOOK_NOT_READY"] = blocked.get("BOOK_NOT_READY", 0) + 1
+                continue
             signal = self._evaluate(instrument, snap, now)
             if signal is None:
                 continue
@@ -878,7 +886,7 @@ class TacticalEngine:
             now=now,
             notional_eur=notional,
             quote_to_eur_rate=rate,
-            min_net_edge_bps=D(str(self.config.tactical_min_net_edge_bps)),
+            min_net_edge_bps=self._effective_min_edge(),
             max_spread_bps=D(str(self.config.tactical_max_spread_bps)),
             min_volume_ratio=D(str(self.config.tactical_min_volume_ratio)),
             min_momentum_30s_bps=D(
@@ -940,6 +948,36 @@ class TacticalEngine:
             D(str(self.config.tactical_max_capital_eur)),
             portfolio.equity_eur * D(str(self.config.tactical_portfolio_pct)) / D("100"),
         )
+
+    def _effective_min_edge(self) -> D:
+        base = D(str(self.config.tactical_min_net_edge_bps))
+        rows = self.db.query(
+            "SELECT net_pnl_eur FROM tactical_trades "
+            "ORDER BY exit_time DESC LIMIT 20"
+        )
+        if len(rows) < 5:
+            return base
+        pnl = [
+            D(str(row.get("net_pnl_eur") or "0"))
+            for row in rows
+        ]
+        wins = sum(1 for value in pnl if value > 0)
+        win_rate = D(wins) / D(len(pnl))
+        total = sum(pnl, D("0"))
+        penalty = D("0")
+        if win_rate < D("0.40") or total < 0:
+            penalty = D("40")
+        effective = base + penalty
+        if penalty > 0:
+            self.audit.emit(
+                "TACTICAL_LEARNING_TIGHTENED",
+                "INFO",
+                samples=len(pnl),
+                win_rate=str(win_rate),
+                net_pnl_eur=str(total),
+                min_edge_bps=str(effective),
+            )
+        return effective
 
     def _trade_limits(self) -> tuple[bool, str]:
         now = time.time()
@@ -1319,6 +1357,10 @@ class TacticalEngine:
     ) -> None:
         if raw is None:
             raw = self._fallback_ticker(position.symbol)
+        else:
+            timestamp = self._dec_raw(raw.get("timestamp"))
+            if timestamp <= 0 or now - float(timestamp) > int(self.config.tactical_data_max_age_seconds):
+                raw = self._fallback_ticker(position.symbol)
         if not raw:
             self._last_reason = "POSITION_MARKET_DATA_UNAVAILABLE"
             return
