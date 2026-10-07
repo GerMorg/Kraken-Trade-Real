@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from app.domain.models import Instrument, MarketSnapshot
-from app.domain.states import Direction, ProductType
+from app.domain.states import ProductType
 from app.market.features import FeatureEngine
 from app.trading.signals import SignalEngine
 
