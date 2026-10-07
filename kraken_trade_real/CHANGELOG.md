@@ -15,8 +15,6 @@
 - Publish Tactical status, position, score, edge, daily trade count and PnL through Home Assistant sensors.
 - Keep Tactical disabled and shadow-only by default so enabling the new high-risk path is always explicit.
 
-# Changelog
-
 ## 0.1.25
 
 - Fix Spot order reconciliation to use the persisted Kraken transaction/order ID with QueryOrders instead of the unsupported cl_ord_id query argument.
