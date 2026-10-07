@@ -223,7 +223,7 @@ class TacticalTrader:
             snapshot = snapshots.get(instrument.symbol)
             if snapshot is None or instrument.symbol in self._positions:
                 continue
-            if instrument.venue not in {"spot", "futures"}:
+            if instrument.venue != "spot":
                 continue
             if not instrument.tradeable:
                 continue
