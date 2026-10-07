@@ -465,11 +465,14 @@ class TacticalTrader:
         adaptive_min_edge = D(str(
             getattr(self.config, "tactical_adaptive_min_net_edge_bps", 15.0)
         ))
-        adaptive_ok = (
-            adaptive_enabled
-            and confidence >= adaptive_min_confidence
-            and expected_move >= adaptive_min_move
-            and expected_move - cost >= adaptive_min_edge
+        adaptive_ok = self._adaptive_entry_allowed(
+            expected_move,
+            cost,
+            confidence,
+            adaptive_enabled,
+            adaptive_min_move,
+            adaptive_min_confidence,
+            adaptive_min_edge,
         )
         configured_min_move = D(str(
             getattr(self.config, "tactical_min_expected_move_bps", 280)
@@ -1371,6 +1374,23 @@ class TacticalTrader:
         self._last_signal_reason = reason
         self._signal_rejections[reason] += 1
         return None
+
+    @staticmethod
+    def _adaptive_entry_allowed(
+        expected_move: D,
+        cost: D,
+        confidence: D,
+        enabled: bool,
+        min_move: D,
+        min_confidence: D,
+        min_edge: D,
+    ) -> bool:
+        return bool(
+            enabled
+            and confidence >= min_confidence
+            and expected_move >= min_move
+            and expected_move - cost >= min_edge
+        )
 
     @staticmethod
     def _sample_prices(
