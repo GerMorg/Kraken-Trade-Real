@@ -36,6 +36,9 @@ class Config:
     strategy_adaptive_edge_floor_bps: float
     strategy_adaptive_min_confidence: float
     strategy_adaptive_cost_ratio: float
+    strategy_entry_fee_bps: float
+    strategy_exit_fee_bps: float
+    strategy_execution_overhead_bps: float
     risk_max_position_pct: float
     risk_max_gross_pct: float
     risk_max_net_pct: float
@@ -172,6 +175,9 @@ class Config:
             strategy_adaptive_edge_floor_bps=f("strategy_adaptive_edge_floor_bps", 15.0, 1.0, 200.0),
             strategy_adaptive_min_confidence=f("strategy_adaptive_min_confidence", 0.75, 0.5, 1.0),
             strategy_adaptive_cost_ratio=f("strategy_adaptive_cost_ratio", 1.10, 1.0, 3.0),
+            strategy_entry_fee_bps=f("strategy_entry_fee_bps", 40.0, 0.0, 1000.0),
+            strategy_exit_fee_bps=f("strategy_exit_fee_bps", 80.0, 0.0, 1000.0),
+            strategy_execution_overhead_bps=f("strategy_execution_overhead_bps", 8.0, 0.0, 1000.0),
             risk_max_position_pct=f("risk_max_position_pct", 15.0, 0.1, 100.0),
             risk_max_gross_pct=f("risk_max_gross_pct", 80.0, 0.1, 100.0),
             risk_max_net_pct=f("risk_max_net_pct", 50.0, 0.1, 100.0),
