@@ -188,8 +188,10 @@ class TacticalTrader:
             self._reconcile_pending()
             self._manage_positions(now)
             with self._lock:
-                has_position = bool(self._positions)
-            if not has_position and now >= self._cooldown_until:
+                has_capacity = len(self._positions) < int(
+                    getattr(self.config, "tactical_max_positions", 1)
+                )
+            if has_capacity and now >= self._cooldown_until:
                 self._evaluate_entries(now)
         except Exception as exc:
             self._last_action = "ERROR"
