@@ -599,7 +599,7 @@ class TacticalTrader:
         if result.get("state") not in {"ACKNOWLEDGED", "LIVE", "PARTIALLY_FILLED", "FILLED"}:
             self._last_action = "ENTRY_BLOCKED"
             return
-        fill = self._wait_for_fill(intent, instrument)
+        fill = self._wait_for_fill(intent, instrument, result.get("kraken_order_id"))
         if fill is None:
             self._last_action = "ENTRY_PENDING_RECONCILIATION"
             return
@@ -801,6 +801,7 @@ class TacticalTrader:
         self,
         intent: Any,
         instrument: Instrument,
+        kraken_order_id: str | None = None,
     ) -> tuple[D, D] | None:
         deadline = time.monotonic() + max(
             1.0, float(getattr(self.config, "tactical_order_confirm_seconds", 5))
@@ -811,14 +812,22 @@ class TacticalTrader:
                 rows = self.gateway.lookup_order(
                     client_order_id=intent.client_order_id,
                     instrument=instrument,
-                    kraken_order_id=None,
+                    kraken_order_id=kraken_order_id,
                 )
                 if rows:
                     last_payload = rows[0]
                     status = self.authority.reconciler.state_from_exchange(rows[0])
                     if status.value == "FILLED":
                         quantity = D(str(rows[0].get("vol_exec") or rows[0].get("executed_volume") or intent.quantity))
-                        price = D(str(rows[0].get("price") or rows[0].get("avg_price") or intent.limit_price or "0"))
+                        price = D(
+                            str(
+                                rows[0].get("price")
+                                or rows[0].get("avg_price")
+                                or rows[0].get("avgPrice")
+                                or intent.limit_price
+                                or "0"
+                            )
+                        )
                         if quantity > 0 and price > 0:
                             self.db.update_order_state(
                                 intent.client_order_id,
