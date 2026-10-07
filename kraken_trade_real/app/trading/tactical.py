@@ -120,8 +120,13 @@ class TacticalTrader:
         self._stop_event.set()
         try:
             self.websocket.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.audit.emit(
+                "TACTICAL_WS_STOP_FAILED",
+                "WARNING",
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
 
     def update_portfolio(self, portfolio: PortfolioState) -> None:
         with self._lock:
