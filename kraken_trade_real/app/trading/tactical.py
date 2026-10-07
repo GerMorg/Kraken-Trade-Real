@@ -86,7 +86,7 @@ class TacticalTrader:
         self._snapshots: dict[str, MarketSnapshot] = {}
         self._news_effects: dict[str, D] = {}
         self._gemini_bps = D("0")
-        self._portfolio = PortfolioState()
+        self._portfolio: PortfolioState | None = None
         self._positions: dict[str, TacticalPosition] = {}
         self._cooldown_until: float = 0.0
         self._last_run = 0.0
@@ -240,7 +240,7 @@ class TacticalTrader:
         with self._lock:
             candidates = list(self._candidates.values())
             portfolio = self._portfolio
-        if portfolio.equity_eur <= 0:
+        if portfolio is None or portfolio.equity_eur <= 0:
             return
         if self._daily_loss_blocked(portfolio):
             self._last_action = "DAILY_LOSS_BLOCK"
@@ -439,7 +439,7 @@ class TacticalTrader:
         with self._lock:
             instrument = self._candidates.get(signal.symbol)
             portfolio = self._portfolio
-        if instrument is None or portfolio.equity_eur <= 0:
+        if instrument is None or portfolio is None or portfolio.equity_eur <= 0:
             return
 
         notional = min(
