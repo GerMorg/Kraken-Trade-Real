@@ -212,3 +212,10 @@
 - Reconciliation und Recovery
 - HA-Sensoren und strukturierte Logs
 - keine Web-GUI und keine KTKI-Legacy-Abhängigkeit
+
+## 0.1.26
+
+- reduce-only exits no longer require positive entry alpha
+- repeated dust-position exit attempts are suppressed and diagnosed explicitly
+- Gemini model cooldown avoids retry storms after quota/model failures
+- log-driven execution and rebalancing diagnostics improved
