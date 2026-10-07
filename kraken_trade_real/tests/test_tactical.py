@@ -268,5 +268,6 @@ def test_tactical_short_pnl_and_fees_use_positive_exposure():
         None,
         None,
         None,
+        None,
     )
     assert trader._trade_fees(D("-10")) == D("0.16")
