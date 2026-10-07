@@ -303,19 +303,27 @@ class TacticalTrader:
         if spread > max_spread or now - timestamp > float(max_age):
             return None
 
-        closes = tuple(D(str(x)) for x in state.get("closes", ()) if D(str(x)) > 0)
-        if len(closes) < 8:
+        points = tuple(
+            (float(item[0]), D(str(item[1])))
+            for item in state.get("price_points", ())
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and D(str(item[1])) > 0
+        )
+        sampled = self._sample_prices(points, now, 180.0, 10.0)
+        if len(sampled) < 8:
             return None
-        momentum_60 = self._return_bps(closes, max(0, len(closes) - 13))
-        momentum_180 = self._return_bps(closes, max(0, len(closes) - 37))
-        volatility = self._realized_volatility(closes)
+        momentum_60 = self._return_since(sampled, 60.0)
+        momentum_180 = self._return_since(sampled, 180.0)
+        volatility = self._realized_volatility(tuple(price for _, price in sampled))
         if volatility < D(str(getattr(self.config, "tactical_min_volatility_bps", 12))):
             return None
         if volatility > D(str(getattr(self.config, "tactical_max_volatility_bps", 55))):
             return None
 
-        recent_high = max(closes[-min(13, len(closes) - 1):-1])
-        recent_low = min(closes[-min(13, len(closes) - 1):-1])
+        recent = [price for ts, price in sampled if now - ts <= 60.0]
+        if len(recent) < 4:
+            return None
+        recent_high = max(recent[:-1])
+        recent_low = min(recent[:-1])
         breakout_long = (price / recent_high - D("1")) * D("10000") if recent_high else D("0")
         breakout_short = (recent_low / price - D("1")) * D("10000") if price else D("0")
 
@@ -1022,7 +1030,11 @@ class TacticalTrader:
         ))
         if not levels:
             levels = instrument.leverage_levels
-        eligible = [level for level in levels if level >= D("2")]
+        requested = max(
+            D("2"),
+            D(str(getattr(self.config, "tactical_short_leverage", 2.0))),
+        )
+        eligible = [level for level in levels if level >= requested]
         return eligible[0] if eligible else D("0")
 
     def _daily_loss_blocked(self, portfolio: PortfolioState) -> bool:
@@ -1085,15 +1097,43 @@ class TacticalTrader:
             )
 
     @staticmethod
-    def _return_bps(closes: tuple[D, ...], start: int) -> D:
-        if len(closes) < 2:
-            return D("0")
-        start = max(0, min(start, len(closes) - 2))
-        base = closes[start]
-        last = closes[-1]
-        return (last / base - D("1")) * D("10000") if base > 0 else D("0")
+    @staticmethod
+    def _sample_prices(
+        points: tuple[tuple[float, D], ...],
+        now: float,
+        horizon_seconds: float,
+        interval_seconds: float,
+    ) -> list[tuple[float, D]]:
+        if not points:
+            return []
+        cutoff = now - horizon_seconds
+        usable = [(ts, price) for ts, price in points if cutoff <= ts <= now and price > 0]
+        if not usable:
+            return []
+        sampled: list[tuple[float, D]] = []
+        cursor = cutoff
+        index = 0
+        latest: tuple[float, D] | None = None
+        while cursor <= now and index < len(usable):
+            while index < len(usable) and usable[index][0] <= cursor:
+                latest = usable[index]
+                index += 1
+            if latest is not None:
+                sampled.append((cursor, latest[1]))
+            cursor += interval_seconds
+        if usable and (not sampled or sampled[-1][1] != usable[-1][1]):
+            sampled.append(usable[-1])
+        return sampled[-60:]
 
     @staticmethod
+    def _return_since(points: list[tuple[float, D]], seconds: float) -> D:
+        if len(points) < 2:
+            return D("0")
+        cutoff = points[-1][0] - seconds
+        base = next((price for ts, price in reversed(points) if ts <= cutoff), points[0][1])
+        last = points[-1][1]
+        return (last / base - D("1")) * D("10000") if base > 0 else D("0")
+
     def _realized_volatility(closes: tuple[D, ...]) -> D:
         if len(closes) < 2:
             return D("0")
