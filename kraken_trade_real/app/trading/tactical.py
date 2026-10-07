@@ -488,9 +488,9 @@ class TacticalTrader:
                     "book_imbalance": signal.imbalance,
                 },
             ),
-            target,
-            leverage,
-            {
+            target_notional_eur=target,
+            leverage=leverage,
+            rationale={
                 "risk_profile": "tactical",
                 "risk_position_limit_pct": D(str(getattr(self.config, "tactical_position_limit_pct", 25))),
                 "risk_volatility_max": D(str(getattr(self.config, "tactical_max_volatility_bps", 55))),
@@ -498,13 +498,13 @@ class TacticalTrader:
                 "tactical_exit_reason": "",
                 "tactical_direction": signal.direction.value,
             },
-            self.STRATEGY_VERSION,
-            "tactical-v1",
-            "",
-            portfolio.positions.get(signal.symbol, D("0")),
-            target,
-            signal.direction,
-            False,
+            strategy_version=self.STRATEGY_VERSION,
+            model_version="tactical-v1",
+            config_hash="",
+            current_position_eur=portfolio.positions.get(signal.symbol, D("0")),
+            target_position_eur=target,
+            execution_direction=signal.direction,
+            reduce_only=False,
         )
 
         quantity = self.portfolio.quantity_for_eur(instrument, notional, snapshot.price)
