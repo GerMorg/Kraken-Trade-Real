@@ -126,7 +126,7 @@ def instrument(
         price_decimals=2,
         tick_size=D("0.01"),
         margin_class="spot-margin",
-        metadata={"leverage_sell": ["1", "2", "3"]},
+        metadata={"leverage_sell": [str(value) for value in leverage_levels]},
     )
 
 
@@ -135,7 +135,7 @@ def market_state(now=1000.0, direction="LONG"):
     points = []
     for i in range(19):
         if direction == "LONG":
-            price = start + D(str(i)) * D("0.22")
+            price = start + D(str(i)) * D("0.28")
         else:
             price = start - D(str(i)) * D("0.22")
         points.append((now - 180 + i * 10, price))
