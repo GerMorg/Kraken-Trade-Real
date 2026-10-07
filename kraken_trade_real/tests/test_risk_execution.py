@@ -41,3 +41,19 @@ def test_decision_rejection_reason_distinguishes_edge_and_confidence(config, ins
     assert engine.rejection_reason(
         instrument, strong_edge_low_conf, strong_edge_low_conf, portfolio, {}
     ) == "MIN_CONFIDENCE"
+
+
+def test_reduce_only_execution_policy_allows_risk_reduction_when_alpha_is_negative():
+    policy = ExecutionPolicy(40, 2)
+    chosen = policy.choose(20, Decimal("-25"), Decimal("5"), reduce_only=True)
+    ok, reason = policy.validate(chosen, Decimal("-25"), Decimal("10"), reduce_only=True)
+    assert ok is True
+    assert reason == "REDUCE_ONLY_RISK_REDUCTION_OK"
+
+
+def test_reduce_only_execution_policy_still_respects_slippage_limit():
+    policy = ExecutionPolicy(20, 2)
+    chosen = policy.choose(20, Decimal("-25"), Decimal("20"), reduce_only=True)
+    ok, reason = policy.validate(chosen, Decimal("-25"), Decimal("40"), reduce_only=True)
+    assert ok is False
+    assert reason == "ESTIMATED_SLIPPAGE_EXCEEDS_LIMIT"

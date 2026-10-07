@@ -999,6 +999,35 @@ class TradingRuntime:
                         checks={"quote_to_eur":False},
                     )
                     continue
+                if decision.reduce_only:
+                    minimum_qty = D(str(instrument.min_order_qty or "0"))
+                    minimum_cost = D(str(instrument.min_cost or "0"))
+                    estimated_notional = quantity * snap.price
+                    if minimum_qty > 0 and quantity < minimum_qty:
+                        reason="DUST_POSITION"
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                        self.audit.emit(
+                            "CYCLE_DUST_POSITION","INFO",
+                            cycle_id=cycle_id,symbol=instrument.symbol,
+                            quantity=str(quantity),minimum_order_qty=str(minimum_qty),
+                            position_value_eur=str(decision.current_position_eur),
+                            action="NO_ORDER_UNTIL_POSITION_CHANGES",
+                        )
+                        continue
+                    if minimum_cost > 0 and estimated_notional < minimum_cost:
+                        reason="DUST_POSITION"
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
+                        self.audit.emit(
+                            "CYCLE_DUST_POSITION","INFO",
+                            cycle_id=cycle_id,symbol=instrument.symbol,
+                            quantity=str(quantity),minimum_order_qty=str(minimum_qty),
+                            estimated_order_value=str(estimated_notional),
+                            minimum_order_cost=str(minimum_cost),
+                            action="NO_ORDER_UNTIL_POSITION_CHANGES",
+                        )
+                        continue
                 if (
                     instrument.venue == "spot"
                     and execution_direction.value == "LONG"

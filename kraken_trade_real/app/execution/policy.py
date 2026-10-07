@@ -49,7 +49,14 @@ class ExecutionPolicy:
         self.max_reprices=max_reprices
 
     def choose(self, spread_bps: D, edge_bps: D, volatility: D,
-               urgency_bps_per_sec: D=D("0")) -> dict[str,Any]:
+               urgency_bps_per_sec: D=D("0"), reduce_only: bool=False) -> dict[str,Any]:
+        if reduce_only:
+            # Exits should prefer a fillable limit over post-only liquidity.
+            # The order only removes exposure, so crossing a tight spread is
+            # acceptable as long as the hard slippage ceiling still passes.
+            if spread_bps<=D("60") and volatility<=D("12"):
+                return {"method":"marketable_limit","order_type":"limit","post_only":False}
+            return {"method":"limit","order_type":"limit","post_only":False}
         if spread_bps<=D("15") and volatility<=D("5"):
             return {"method":"post_only_limit","order_type":"limit","post_only":True}
         if spread_bps<=D("60") and edge_bps>=spread_bps*D("1.5"):
@@ -58,9 +65,12 @@ class ExecutionPolicy:
             return {"method":"market","order_type":"market","post_only":False}
         return {"method":"limit","order_type":"limit","post_only":False}
 
-    def validate(self, chosen: dict[str,Any], expected_edge_bps: D, estimated_slippage_bps: D) -> tuple[bool,str]:
+    def validate(self, chosen: dict[str,Any], expected_edge_bps: D,
+                 estimated_slippage_bps: D, reduce_only: bool=False) -> tuple[bool,str]:
         if estimated_slippage_bps>self.max_slippage:
             return False,"ESTIMATED_SLIPPAGE_EXCEEDS_LIMIT"
+        if reduce_only:
+            return True,"REDUCE_ONLY_RISK_REDUCTION_OK"
         if expected_edge_bps<=estimated_slippage_bps:
             return False,"EDGE_DOES_NOT_CLEAR_SLIPPAGE"
         if chosen.get("method")=="market" and expected_edge_bps<D("50"):
