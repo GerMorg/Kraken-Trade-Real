@@ -129,7 +129,7 @@ def test_adaptive_core_edge_tier_allows_high_confidence_economic_setup(config, i
     )
     assert decision is not None
     assert decision.rationale["edge_tier"] == "ADAPTIVE"
-    assert decision.rationale["edge_threshold_bps"] == "15"
+    assert decision.rationale["edge_threshold_bps"] == "15.0"
 
 
 def test_core_new_short_requires_exchange_direction_availability(config, instrument):
