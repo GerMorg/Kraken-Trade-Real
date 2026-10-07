@@ -737,9 +737,12 @@ class TacticalTrader:
             signal_direction,
             True,
         )
+        portfolio = self._portfolio
+        if portfolio is None:
+            return
         risk = self.risk.evaluate(
             decision,
-            self._portfolio,
+            portfolio,
             snapshot,
             self.portfolio.spot_margin_account
             if instrument.product_type.value == "SPOT_MARGIN"
