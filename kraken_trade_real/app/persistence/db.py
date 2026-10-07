@@ -50,7 +50,7 @@ class Database:
             ocols={row[1] for row in con.execute("PRAGMA table_info(orders)")}
             if "post_only" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN post_only INTEGER NOT NULL DEFAULT 0")
             if "submitted_at" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN submitted_at REAL")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','3')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','4')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -297,6 +297,91 @@ class Database:
     def learning_event(self,event_type:str,entity_id:str,payload:dict[str,Any])->None:
         self.execute("INSERT INTO learning_events(created_at,event_type,entity_id,payload_json) VALUES(?,?,?,?)",
                      (time.time(),event_type,entity_id,json.dumps(payload,sort_keys=True,default=str)))
+
+
+    def save_tactical_position(self, position: Any) -> None:
+        self.execute(
+            """INSERT INTO tactical_positions(
+              symbol,direction,quantity,entry_price,entry_notional_eur,opened_at,
+              peak_price,leverage,margin,client_order_id,last_price,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol) DO UPDATE SET
+              direction=excluded.direction,quantity=excluded.quantity,
+              entry_price=excluded.entry_price,entry_notional_eur=excluded.entry_notional_eur,
+              opened_at=excluded.opened_at,peak_price=excluded.peak_price,
+              leverage=excluded.leverage,margin=excluded.margin,
+              client_order_id=excluded.client_order_id,last_price=excluded.last_price,
+              updated_at=excluded.updated_at""",
+            (
+                position.symbol,
+                position.direction.value,
+                str(position.quantity),
+                str(position.entry_price),
+                str(position.entry_notional_eur),
+                float(position.opened_at),
+                str(position.peak_price),
+                str(position.leverage),
+                int(position.margin),
+                str(position.client_order_id or ""),
+                str(position.last_price),
+                time.time(),
+            ),
+        )
+
+    def tactical_positions(self) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT * FROM tactical_positions ORDER BY updated_at ASC"
+        )
+
+    def delete_tactical_position(self, symbol: str) -> None:
+        self.execute(
+            "DELETE FROM tactical_positions WHERE symbol=?",
+            (symbol,),
+        )
+
+    def save_tactical_trade(
+        self,
+        *,
+        trade_id: str,
+        position: Any,
+        exit_price: Decimal,
+        gross_pnl_eur: Decimal,
+        estimated_fees_eur: Decimal,
+        net_pnl_eur: Decimal,
+        reason: str,
+        exited_at: float,
+    ) -> None:
+        self.execute(
+            """INSERT OR REPLACE INTO tactical_trades(
+              trade_id,symbol,direction,entry_time,exit_time,entry_price,exit_price,
+              quantity,entry_notional_eur,gross_pnl_eur,estimated_fees_eur,net_pnl_eur,
+              reason,leverage,detail_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                trade_id,
+                position.symbol,
+                position.direction.value,
+                float(position.opened_at),
+                float(exited_at),
+                str(position.entry_price),
+                str(exit_price),
+                str(position.quantity),
+                str(position.entry_notional_eur),
+                str(gross_pnl_eur),
+                str(estimated_fees_eur),
+                str(net_pnl_eur),
+                reason,
+                str(position.leverage),
+                json.dumps(
+                    {
+                        "client_order_id": str(position.client_order_id or ""),
+                        "margin": bool(position.margin),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+            ),
+        )
 
 
     def tax_event_exists(self, event_id: str) -> bool:
