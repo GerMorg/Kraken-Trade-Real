@@ -38,7 +38,10 @@ class DecisionEngine:
         adaptive_enabled = bool(
             getattr(self.config, "strategy_adaptive_edge_enabled", True)
         )
-        floor = D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
+        floor = min(
+            D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0))),
+            standard,
+        )
         min_conf = D(str(getattr(self.config, "strategy_adaptive_min_confidence", 0.75)))
         cost_ratio = D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)))
         economically_supported = (
@@ -164,9 +167,10 @@ class DecisionEngine:
                 signal for signal in (long_signal, short_signal)
                 if self._direction_available(instrument, signal.direction)
             ]
-            adaptive_floor = D(str(
-                getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)
-            ))
+            adaptive_floor = min(
+                D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0))),
+                standard_edge,
+            )
             if any(signal.net_edge_bps >= adaptive_floor for signal in raw_directional):
                 return "ECONOMIC_EDGE_GUARD"
             if any(
