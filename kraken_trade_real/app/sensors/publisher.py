@@ -62,7 +62,10 @@ class SensorPublisher:
                tax_incomplete_events: int=0, tax_year: int=0,
                learning_samples: int=0, learning_open_predictions: int=0,
                learning_settled_total: int=0, learning_brier: Any=0,
-               learning_improvement: Any=0, portfolio_symbols: list[str]|None=None) -> dict[str,Any]:
+               learning_improvement: Any=0, portfolio_symbols: list[str]|None=None,
+               tactical_status: str="DISABLED", tactical_ws_connected: bool=False,
+               tactical_position_symbol: str="", tactical_position_direction: str="",
+               tactical_last_edge_bps: Any=0) -> dict[str,Any]:
         return {
             "sensor.kraken_trade_status":{"state":status,"attributes":{"stage":stage}},
             "sensor.kraken_trade_stage":{"state":stage},
@@ -95,4 +98,16 @@ class SensorPublisher:
             "sensor.kraken_trade_tax_estimated_27_5_eur":{"state":str(tax_estimated_27_5_eur),"unit_of_measurement":"EUR"},
             "sensor.kraken_trade_tax_incomplete_events":{"state":str(tax_incomplete_events)},
             "sensor.kraken_trade_tax_year":{"state":str(tax_year)},
+            "sensor.kraken_trade_tactical_status":{
+                "state":tactical_status,
+                "attributes":{"ws_connected":tactical_ws_connected},
+            },
+            "sensor.kraken_trade_tactical_position":{
+                "state":tactical_position_symbol or "NONE",
+                "attributes":{"direction":tactical_position_direction or "NONE"},
+            },
+            "sensor.kraken_trade_tactical_expected_edge_bps":{
+                "state":str(tactical_last_edge_bps),
+                "unit_of_measurement":"bps",
+            },
         }
