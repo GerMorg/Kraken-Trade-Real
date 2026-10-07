@@ -14,7 +14,7 @@ class FeatureEngine:
         c = list(s.closes)
         if len(c) < 5:
             return {
-                "return_1": D(0), "return_5": D(0), "volatility": D(999),
+                "return_1": D(0), "return_5": D(0), "return_15": D(0), "return_60": D(0), "return_240": D(0), "volatility": D(999),
                 "downside_volatility": D(999), "ema_slope": D(0), "sma_slope": D(0),
                 "atr_proxy": D(999), "trend": D(0), "liquidity": s.volume_24h,
                 "spread_bps": s.spread_bps, "book_imbalance": D(0),
@@ -40,6 +40,9 @@ class FeatureEngine:
         result: dict[str, D] = {
             "return_1": rs[-1],
             "return_5": pct(c[-1], c[-6]) if len(c) >= 6 else rs[-1],
+            "return_15": pct(c[-1], c[-16]) if len(c) >= 16 else rs[-1],
+            "return_60": pct(c[-1], c[-61]) if len(c) >= 61 else D(0),
+            "return_240": pct(c[-1], c[-241]) if len(c) >= 241 else D(0),
             "volatility": vol,
             "downside_volatility": downside,
             "ema_slope": pct(ef, es),
