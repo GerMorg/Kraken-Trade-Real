@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.domain.models import Instrument, PortfolioState
+from app.domain.models import Instrument
 from app.domain.states import Direction, ProductType
 from app.trading.intent import OrderIntentBuilder
 from app.trading.tactical import TacticalTrader
