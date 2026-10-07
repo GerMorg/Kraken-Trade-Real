@@ -620,6 +620,17 @@ class TradingRuntime:
                     refreshed+=1
 
             selected=[instrument for instrument in selected if instrument.symbol in snapshots]
+            if self.tactical is not None:
+                try:
+                    self.tactical.set_instruments(self.instruments)
+                    self.tactical.configure_stream(latest_spot_payload)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_STREAM_CONFIG_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error=f"{type(exc).__name__}:{str(exc)[:400]}",
+                    )
             self.audit.emit(
                 "CYCLE_MARKET_QUOTES_REFRESHED",
                 "INFO",
