@@ -61,7 +61,7 @@ def _evaluate(
     spread_bps: D = D("5"),
 ):
     history = _history(now, direction)
-    last = history[-1][1] * (D("1") + (D("0.003") if direction > 0 else D("-0.003")))
+    last = history[-1][1] * (D("1") + (D("0.006") if direction > 0 else D("-0.006")))
     if direction > 0:
         bid, ask = last - D("0.025"), last + D("0.025")
         bids = [(last - D("0.10") * i, D("10")) for i in range(5)]
