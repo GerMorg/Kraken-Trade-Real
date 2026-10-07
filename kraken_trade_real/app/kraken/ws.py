@@ -51,6 +51,7 @@ class WebSocketSupervisor:
         self._thread: threading.Thread | None = None
         self._symbols: tuple[str, ...] = ()
         self._subscribed_symbols: tuple[str, ...] = ()
+        self._logical_to_wire: dict[str, str] = {}
         self._tickers: dict[str, dict[str, Any]] = {}
         self._books: dict[str, dict[str, dict[str, D]]] = {}
         self._trades: dict[str, deque[tuple[float, D, D, str]]] = {}
@@ -77,12 +78,21 @@ class WebSocketSupervisor:
         self._resubscribe.set()
         self.connected = False
 
-    def set_symbols(self, symbols: list[str] | tuple[str, ...]) -> None:
+    def set_symbols(
+        self,
+        symbols: list[str] | tuple[str, ...],
+        aliases: dict[str, str] | None = None,
+    ) -> None:
         normalized = tuple(sorted({str(symbol).strip() for symbol in symbols if str(symbol).strip()}))
         with self._lock:
-            if normalized == self._symbols:
+            new_aliases = {
+                logical: str((aliases or {}).get(logical, logical))
+                for logical in normalized
+            }
+            if normalized == self._symbols and new_aliases == self._logical_to_wire:
                 return
             self._symbols = normalized
+            self._logical_to_wire = new_aliases
         self._resubscribe.set()
 
     def symbols(self) -> tuple[str, ...]:
@@ -127,11 +137,12 @@ class WebSocketSupervisor:
 
     def market_snapshot(self, symbol: str) -> dict[str, Any] | None:
         with self._lock:
-            ticker = dict(self._tickers.get(symbol, {}))
+            wire_symbol = self._logical_to_wire.get(symbol, symbol)
+            ticker = dict(self._tickers.get(wire_symbol, {}))
             if not ticker:
                 return None
-            book = self._books.get(symbol, {"bids": {}, "asks": {}})
-            prices = tuple(self._prices.get(symbol, ()))
+            book = self._books.get(wire_symbol, {"bids": {}, "asks": {}})
+            prices = tuple(self._prices.get(wire_symbol, ()))
             bids = tuple(
                 sorted(
                     ((price, qty) for price, qty in book.get("bids", {}).items() if qty > 0),
@@ -171,7 +182,8 @@ class WebSocketSupervisor:
     def trade_metrics(self, symbol: str, lookback_seconds: float = 900.0) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            rows = list(self._trades.get(symbol, ()))
+            wire_symbol = self._logical_to_wire.get(symbol, symbol)
+            rows = list(self._trades.get(wire_symbol, ()))
         rows = [row for row in rows if now - row[0] <= lookback_seconds]
         if not rows:
             return {
