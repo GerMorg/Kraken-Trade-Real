@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import time
+import threading
 from typing import Any, Iterable
 
 from app.domain.models import Instrument, OrderIntent, is_valid_kraken_client_order_id
@@ -40,6 +41,7 @@ class TradingAuthority:
         self.audit = audit
         self.policy = policy
         self.reconciler = reconciler
+        self._submission_lock = threading.RLock()
 
     def reconcile_pending(
         self,
@@ -181,6 +183,10 @@ class TradingAuthority:
         return stats
 
     def submit(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
+        with self._submission_lock:
+            return self._submit_locked(intent, market)
+
+    def _submit_locked(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         self.db.save_order_intent(intent)
         if not is_valid_kraken_client_order_id(intent.client_order_id):
             self.db.update_order_state(
