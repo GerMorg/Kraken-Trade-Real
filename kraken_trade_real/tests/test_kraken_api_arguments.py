@@ -382,3 +382,186 @@ def test_spot_lookup_order_uses_kraken_order_id_not_client_order_id():
     assert captured["method"] == "QueryOrders"
     assert captured["params"] == {"txid": "O-HISTORICAL"}
     assert found[0]["txid"] == "O-HISTORICAL"
+
+
+def test_spot_intent_marks_leveraged_orders_as_margin_funded(config, instrument):
+    from app.domain.models import Decision, Signal
+    from app.trading.intent import OrderIntentBuilder
+
+    signal = Signal(
+        instrument.symbol,
+        Direction.SHORT,
+        Decimal("100"),
+        Decimal("20"),
+        Decimal("0.9"),
+        "TREND",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    decision = Decision(
+        "decision_margin_intent",
+        instrument,
+        signal,
+        Decimal("100"),
+        Decimal("2"),
+        {},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("0"),
+        target_position_eur=Decimal("-100"),
+        execution_direction=Direction.SHORT,
+    )
+    intent = OrderIntentBuilder(40, 45).build(
+        decision,
+        Decimal("2"),
+        "limit",
+        Decimal("1"),
+        Decimal("10"),
+    )
+    assert intent.margin is True
+    assert intent.leverage == Decimal("2")
+
+
+def test_spot_cash_intent_remains_non_margin(config, instrument):
+    from app.domain.models import Decision, Signal
+    from app.trading.intent import OrderIntentBuilder
+
+    signal = Signal(
+        instrument.symbol,
+        Direction.LONG,
+        Decimal("100"),
+        Decimal("20"),
+        Decimal("0.9"),
+        "TREND",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    decision = Decision(
+        "decision_spot_intent",
+        instrument,
+        signal,
+        Decimal("100"),
+        Decimal("1"),
+        {},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("0"),
+        target_position_eur=Decimal("100"),
+        execution_direction=Direction.LONG,
+    )
+    intent = OrderIntentBuilder(40, 45).build(
+        decision,
+        Decimal("1"),
+        "limit",
+        Decimal("1"),
+        Decimal("10"),
+    )
+    assert intent.margin is False
+
+
+def test_valid_reduce_only_exit_bypasses_entry_only_margin_and_loss_gates(
+    config, instrument
+):
+    from dataclasses import replace
+    from app.domain.models import Decision, PortfolioState, Signal
+    from app.risk.engine import RiskEngine
+    from app.risk.margin import MarginEngine
+    from app.risk.leverage import LeverageEngine
+    from app.execution import CostModel
+
+    leveraged = replace(
+        instrument,
+        long_available=True,
+        short_available=True,
+        margin_available=True,
+        leverage_levels=(Decimal("2"), Decimal("3")),
+    )
+    signal = Signal(
+        leveraged.symbol,
+        Direction.LONG,
+        Decimal("0"),
+        Decimal("100"),
+        Decimal("0.1"),
+        "RISK_OFF",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("999")},
+    )
+    decision = Decision(
+        "decision_reduce_only",
+        leveraged,
+        signal,
+        Decimal("0"),
+        Decimal("2"),
+        {"risk_profile": "core"},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("-100"),
+        target_position_eur=Decimal("0"),
+        execution_direction=Direction.LONG,
+        reduce_only=True,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"),
+        cash_eur=Decimal("0"),
+        positions={leveraged.symbol: Decimal("-100")},
+        gross_eur=Decimal("100"),
+        net_eur=Decimal("-100"),
+        daily_pnl_eur=Decimal("-100"),
+        drawdown_pct=Decimal("99"),
+    )
+    risk = RiskEngine(config, MarginEngine(), LeverageEngine(), CostModel())
+    result = risk.evaluate(decision, portfolio, object(), margin_account=None)
+    assert result.allowed is True
+    assert result.checks["reduce_only_semantics"] is True
+
+
+def test_reduce_only_cannot_flip_or_increase_a_position(config, instrument):
+    from app.domain.models import Decision, PortfolioState, Signal
+    from app.risk.engine import RiskEngine
+    from app.risk.margin import MarginEngine
+    from app.risk.leverage import LeverageEngine
+    from app.execution import CostModel
+
+    signal = Signal(
+        instrument.symbol,
+        Direction.LONG,
+        Decimal("100"),
+        Decimal("20"),
+        Decimal("0.9"),
+        "TREND",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    decision = Decision(
+        "decision_invalid_reduce_only",
+        instrument,
+        signal,
+        Decimal("10"),
+        Decimal("1"),
+        {},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("-100"),
+        target_position_eur=Decimal("10"),
+        execution_direction=Direction.LONG,
+        reduce_only=True,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("1000"),
+        cash_eur=Decimal("500"),
+        positions={instrument.symbol: Decimal("-100")},
+        gross_eur=Decimal("100"),
+        net_eur=Decimal("-100"),
+    )
+    risk = RiskEngine(config, MarginEngine(), LeverageEngine(), CostModel())
+    result = risk.evaluate(decision, portfolio, object(), margin_account=None)
+    assert result.allowed is False
+    assert result.checks["reduce_only_semantics"] is False

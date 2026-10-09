@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.28",
+                "User-Agent": "Kraken-Trade-Real/0.1.30",
                 **(headers or {}),
             },
             method=method,
@@ -319,6 +319,14 @@ class KrakenGateway:
                 "INVALID_MARGIN_ARGUMENT: leverage requires a margin order"
             )
         if reduce_only and margin:
+            # Kraken Spot reduce_only is valid only for a genuinely leveraged
+            # order. Passing margin=True with leverage=1 omits the leverage
+            # field above and Kraken rejects reduce_only as an invalid argument.
+            # Do not silently downgrade such a close to a risk-increasing order.
+            if leverage <= Decimal("1"):
+                raise KrakenError(
+                    "INVALID_REDUCE_ONLY_REQUIRES_LEVERAGED_MARGIN_ORDER"
+                )
             body["reduce_only"] = "true"
         if post_only:
             if order_type != "limit":

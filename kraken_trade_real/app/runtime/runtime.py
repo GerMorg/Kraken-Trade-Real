@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable
 
 from app.domain.models import digest_config, new_id
+from app.domain.symbols import resolve_instrument_symbol
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
@@ -430,10 +431,22 @@ class TradingRuntime:
                 require_history=False,
             )
             position_symbols=set(portfolio.positions)
-            position_instruments=[
-                instrument for instrument in self.instruments
-                if instrument.symbol in position_symbols
-            ]
+            position_instrument_by_symbol={}
+            for position_symbol in position_symbols:
+                position_instrument_by_symbol[position_symbol]=resolve_instrument_symbol(
+                    position_symbol,self.instruments
+                )
+            # De-duplicate aliases while ensuring every resolvable held position
+            # is included even when Kraken reports its altname instead of the
+            # app's canonical symbol (for example MINAUSD vs MINA/USD).
+            position_instruments=list({
+                instrument.symbol: instrument
+                for instrument in position_instrument_by_symbol.values()
+                if instrument is not None
+            }.values())
+            position_candidate_symbols={
+                instrument.symbol for instrument in position_instruments
+            }
             history_candidates=self.scanner.build_history_candidates(
                 prefiltered,
                 core_limit=self.config.market_history_candidate_limit,
@@ -444,7 +457,7 @@ class TradingRuntime:
                     self.config,"market_exploration_slots_per_family",2
                 ),
                 cycle_key=cycle_id,
-                preserve_symbols=position_symbols,
+                preserve_symbols=position_symbols | position_candidate_symbols,
             )
             ticker_instruments=[
                 instrument for instrument in self.instruments
@@ -555,13 +568,18 @@ class TradingRuntime:
                     selected.append(instrument)
                     selected_symbols.add(instrument.symbol)
             position_evaluated=sum(
-                1 for instrument in position_instruments
-                if instrument.symbol in selected_symbols
+                1 for instrument in position_instrument_by_symbol.values()
+                if instrument is not None and instrument.symbol in selected_symbols
             )
-            position_missing=sorted(
-                symbol for symbol in position_symbols
-                if symbol not in selected_symbols
-            )
+            position_missing=[]
+            for position_symbol in position_symbols:
+                matched_instrument=position_instrument_by_symbol.get(position_symbol)
+                if (
+                    matched_instrument is None
+                    or matched_instrument.symbol not in selected_symbols
+                ):
+                    position_missing.append(position_symbol)
+            position_missing.sort()
             self.audit.emit(
                 "CYCLE_POSITION_REEVALUATION",
                 "INFO",
@@ -819,6 +837,61 @@ class TradingRuntime:
                 long_signal,short_signal=self.signals.evaluate(
                     instrument,snap,f,regime,news_bps,gemini_bps
                 )
+                # Spot Margin opening and rollover charges must affect the
+                # strategy edge, not merely appear in a separate report. Use
+                # an explicit eight-hour expected holding horizon and a
+                # conservative fallback rate when Kraken does not expose a
+                # current per-position rate in this market snapshot.
+                margin_cost_direction = (
+                    instrument.product_type.value == "SPOT_MARGIN"
+                    or (
+                        instrument.short_available
+                        and instrument.margin_available
+                    )
+                )
+                if margin_cost_direction:
+                    margin_cost_leverage = min(
+                        instrument.max_leverage,
+                        D(str(self.config.risk_max_leverage)),
+                    )
+                    if margin_cost_leverage > D("1"):
+                        margin_hold_hours = D(str(getattr(
+                            self.config, "execution_expected_margin_hold_hours", 8.0
+                        )))
+                        margin_cost_estimate = self.risk.cost_model.estimate(
+                            snap,
+                            max(D("1"), abs(portfolio.positions.get(instrument.symbol, D("0")))),
+                            leverage=margin_cost_leverage,
+                            holding_hours=margin_hold_hours,
+                            margin_open_fee_bps=D(str(getattr(
+                                self.config, "execution_margin_open_fee_bps", 2.0
+                            ))),
+                            margin_rollover_fee_bps=D(str(getattr(
+                                self.config, "execution_margin_rollover_fee_bps", 2.0
+                            ))),
+                        )
+                        financing_bps = margin_cost_estimate.financing_bps
+                        if instrument.product_type.value == "SPOT_MARGIN":
+                            long_signal = __import__("dataclasses").replace(
+                                long_signal,
+                                expected_cost_bps=long_signal.expected_cost_bps + financing_bps,
+                                features={
+                                    **long_signal.features,
+                                    "margin_financing_cost_bps": financing_bps,
+                                    "margin_cost_leverage_assumption": margin_cost_leverage,
+                                    "margin_cost_holding_hours": margin_hold_hours,
+                                },
+                            )
+                        short_signal = __import__("dataclasses").replace(
+                            short_signal,
+                            expected_cost_bps=short_signal.expected_cost_bps + financing_bps,
+                            features={
+                                **short_signal.features,
+                                "margin_financing_cost_bps": financing_bps,
+                                "margin_cost_leverage_assumption": margin_cost_leverage,
+                                "margin_cost_holding_hours": D("8"),
+                            },
+                        )
                 min_cost_eur=self.portfolio.min_cost_eur(instrument)
                 if min_cost_eur is None:
                     reason="FX_RATE_UNAVAILABLE"
@@ -869,12 +942,36 @@ class TradingRuntime:
                         short_expected_cost_bps=str(short_signal.expected_cost_bps),
                         short_net_edge_bps=str(short_signal.net_edge_bps),
                         short_confidence=str(short_signal.confidence),
+                        long_margin_financing_cost_bps=str(
+                            long_signal.features.get("margin_financing_cost_bps", D("0"))
+                        ),
+                        short_margin_financing_cost_bps=str(
+                            short_signal.features.get("margin_financing_cost_bps", D("0"))
+                        ),
                         required_edge_bps=str(self.config.strategy_min_edge_bps),
                         required_confidence=str(self.config.strategy_min_confidence),
                     )
                     continue
 
                 decisions_count+=1
+                if "margin_financing_cost_bps" in decision.signal.features:
+                    self.audit.emit(
+                        "CYCLE_MARGIN_COST_INCLUDED",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        direction=(decision.execution_direction or decision.signal.direction).value,
+                        financing_cost_bps=str(
+                            decision.signal.features["margin_financing_cost_bps"]
+                        ),
+                        leverage_assumption=str(
+                            decision.signal.features.get("margin_cost_leverage_assumption", "1")
+                        ),
+                        expected_holding_hours=str(
+                            decision.signal.features.get("margin_cost_holding_hours", "8")
+                        ),
+                        expected_cost_bps=str(decision.signal.expected_cost_bps),
+                    )
                 if decision.current_position_eur != 0:
                     rebalance_decisions+=1
                 confidence=decision.signal.confidence
@@ -893,20 +990,33 @@ class TradingRuntime:
                     else None
                 )
                 execution_direction = decision.execution_direction or decision.signal.direction
-                require_margin = (
+                opening_short = (
                     instrument.product_type.value == "SPOT_MARGIN"
                     and execution_direction.value == "SHORT"
                     and decision.current_position_eur == 0
                 )
-                lev=self.leverage.choose(
-                    instrument,
-                    f,
-                    confidence,
-                    gross_pct,
-                    margin_level_pct,
-                    self.config.risk_max_leverage,
-                    require_margin=require_margin,
+                closing_existing_short = (
+                    instrument.product_type.value == "SPOT_MARGIN"
+                    and decision.reduce_only
+                    and decision.current_position_eur < 0
+                    and execution_direction.value == "LONG"
                 )
+                require_margin = opening_short or closing_existing_short
+                if closing_existing_short:
+                    # A reduce-only buy must retain Spot Margin semantics even
+                    # when entry-time margin health would prohibit new risk.
+                    # Kraken still requires a leverage level for reduce_only.
+                    lev=min(instrument.max_leverage,D("5"))
+                else:
+                    lev=self.leverage.choose(
+                        instrument,
+                        f,
+                        confidence,
+                        gross_pct,
+                        margin_level_pct,
+                        self.config.risk_max_leverage,
+                        require_margin=require_margin,
+                    )
                 if require_margin and lev < D("2"):
                     reason="SPOT_MARGIN_SHORT_NOT_ELIGIBLE"
                     blockers.append(f"{instrument.symbol}:{reason}")

@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from app.domain.models import Instrument, PortfolioState
+from app.domain.symbols import resolve_instrument_symbol
 
 D = Decimal
 
@@ -308,11 +309,7 @@ class PortfolioReconciler:
                 symbol = str(item.get("pair") or item.get("symbol") or "")
                 if not symbol or symbol in positions:
                     continue
-                instrument = next(
-                    (candidate for candidate in self._spot_instruments()
-                     if candidate.symbol == symbol or candidate.instrument_id == symbol),
-                    None,
-                )
+                instrument = resolve_instrument_symbol(symbol, self._spot_instruments())
                 value = dec(item.get("value") or item.get("cost"))
                 if instrument is not None:
                     rate = self.quote_to_eur_rate(instrument.quote)
@@ -322,7 +319,11 @@ class PortfolioReconciler:
                     continue
                 if str(item.get("type") or "").lower() == "sell":
                     value = -abs(value)
-                positions[symbol] = value
+                # Keep exchange margin positions under the canonical discovered
+                # instrument symbol. Kraken's OpenPositions pair can be an
+                # altname (e.g. MINAUSD) rather than the app's MINA/USD symbol;
+                # otherwise the position is silently omitted from reevaluation.
+                positions[instrument.symbol if instrument is not None else symbol] = value
                 gross += abs(value)
                 net += value
         except Exception as exc:
