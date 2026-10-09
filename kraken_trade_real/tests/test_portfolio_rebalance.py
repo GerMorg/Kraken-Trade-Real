@@ -197,3 +197,64 @@ def test_open_spot_margin_position_leverage_is_reconciled_by_canonical_symbol(
 
     assert portfolio.positions[instrument.symbol] == Decimal("-8.0")
     assert reconciler.position_leverages[instrument.symbol] == Decimal("2")
+
+
+
+def test_spot_rebalance_delta_is_not_called_dust_when_wallet_holds_orderable_balance():
+    from app.portfolio.reconcile import resolve_spot_cash_reduction_quantity
+
+    instrument = Instrument(
+        venue="spot", product_type=ProductType.SPOT,
+        symbol="W/EUR", instrument_id="WEUR", altname="WEUR",
+        base="W", quote="EUR", status="online",
+        margin_available=False, long_available=True, short_available=False,
+        leverage_levels=(Decimal("1"),), min_order_qty=Decimal("0.01"),
+        min_cost=Decimal("1"), lot_decimals=2, price_decimals=4,
+        tick_size=Decimal("0.0001"), margin_class="spot",
+    )
+    quantity, reason = resolve_spot_cash_reduction_quantity(
+        instrument, Decimal("0.01"), Decimal("0.05"), Decimal("4000"),
+        flattening=False,
+    )
+    assert quantity == Decimal("0.05")
+    assert reason == "REBALANCE_DELTA_BELOW_MINIMUM"
+
+
+def test_spot_full_exit_uses_orderable_wallet_balance_instead_of_tiny_eur_delta():
+    from app.portfolio.reconcile import resolve_spot_cash_reduction_quantity
+
+    instrument = Instrument(
+        venue="spot", product_type=ProductType.SPOT,
+        symbol="W/EUR", instrument_id="WEUR", altname="WEUR",
+        base="W", quote="EUR", status="online",
+        margin_available=False, long_available=True, short_available=False,
+        leverage_levels=(Decimal("1"),), min_order_qty=Decimal("0.01"),
+        min_cost=Decimal("1"), lot_decimals=2, price_decimals=4,
+        tick_size=Decimal("0.0001"), margin_class="spot",
+    )
+    quantity, reason = resolve_spot_cash_reduction_quantity(
+        instrument, Decimal("0.01"), Decimal("0.05"), Decimal("4000"),
+        flattening=True,
+    )
+    assert quantity == Decimal("4000.00")
+    assert reason == "FULL_EXIT_BALANCE_RECOVERY"
+
+
+def test_spot_balance_smaller_than_exchange_minimum_is_real_dust():
+    from app.portfolio.reconcile import resolve_spot_cash_reduction_quantity
+
+    instrument = Instrument(
+        venue="spot", product_type=ProductType.SPOT,
+        symbol="W/EUR", instrument_id="WEUR", altname="WEUR",
+        base="W", quote="EUR", status="online",
+        margin_available=False, long_available=True, short_available=False,
+        leverage_levels=(Decimal("1"),), min_order_qty=Decimal("0.01"),
+        min_cost=Decimal("1"), lot_decimals=2, price_decimals=4,
+        tick_size=Decimal("0.0001"), margin_class="spot",
+    )
+    quantity, reason = resolve_spot_cash_reduction_quantity(
+        instrument, Decimal("0.01"), Decimal("0.05"), Decimal("20"),
+        flattening=False,
+    )
+    assert quantity == Decimal("0.05")
+    assert reason == "DUST_POSITION"
