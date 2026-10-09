@@ -109,9 +109,9 @@ def test_cost_model_charges_margin_opening_and_four_hour_rollover():
     )
 
     assert spot.financing_bps == D("0")
-    assert margin_before_rollover.financing_bps == D("1")
-    assert margin_four_hours.financing_bps == D("2")
-    assert margin_eight_hours.financing_bps == D("3")
+    assert margin_before_rollover.financing_bps == D("2")
+    assert margin_four_hours.financing_bps == D("4")
+    assert margin_eight_hours.financing_bps == D("6")
 
 
 def test_cost_model_uses_observed_market_specific_margin_rates():

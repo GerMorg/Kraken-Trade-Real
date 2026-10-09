@@ -145,3 +145,55 @@ def test_reversal_flattens_before_opposite_entry(config, instrument):
     assert decision.execution_direction == Direction.SHORT
     assert decision.reduce_only is True
     assert decision.rationale["reversal_to_flat"] is True
+
+
+def test_subminimum_position_reduction_is_returned_for_runtime_dust_audit(config, instrument):
+    engine = DecisionEngine(config)
+    features = {"volatility": Decimal("2")}
+    long_signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("20"), Decimal("1"),
+        Decimal("0.9"), "TREND_UP", Decimal("0"), Decimal("0"), features,
+    )
+    short_signal = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("0"), Decimal("10"),
+        Decimal("0.1"), "TREND_DOWN", Decimal("0"), Decimal("0"), features,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"),
+        cash_eur=Decimal("80"),
+        positions={instrument.symbol: Decimal("13.6")},
+        gross_eur=Decimal("13.6"),
+        net_eur=Decimal("13.6"),
+    )
+    decision = engine.choose(
+        instrument, long_signal, short_signal, portfolio,
+        "model-test", "config-test", {}, Decimal("0.5"),
+    )
+    assert decision is not None
+    assert decision.reduce_only is True
+    assert decision.current_position_eur == Decimal("13.6")
+    assert decision.target_position_eur == Decimal("13.50")
+    assert decision.target_notional_eur == Decimal("0.10")
+
+
+def test_open_spot_margin_position_leverage_is_reconciled_by_canonical_symbol(
+    db, fake_gateway, instrument
+):
+    fake_gateway.spot_open_positions = lambda: {
+        "O-MARGIN-1": {
+            "pair": instrument.altname,
+            "type": "sell",
+            "value": "8.0",
+            "leverage": "2",
+        }
+    }
+    reconciler = PortfolioReconciler(fake_gateway, db)
+    reconciler.set_market_context(
+        [instrument],
+        {instrument.instrument_id: {"c": ["60005"]}},
+    )
+
+    portfolio = reconciler.reconcile()
+
+    assert portfolio.positions[instrument.symbol] == Decimal("-8.0")
+    assert reconciler.position_leverages[instrument.symbol] == Decimal("2")

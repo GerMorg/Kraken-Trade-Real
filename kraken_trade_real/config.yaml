@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.30
+version: 0.1.32
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -61,8 +61,8 @@ options:
   risk_cash_reserve_pct: 20.0
   execution_max_slippage_bps: 40.0
   execution_expected_margin_hold_hours: 8.0
-  execution_margin_open_fee_bps: 2.0
-  execution_margin_rollover_fee_bps: 2.0
+  execution_margin_open_fee_bps: 4.0
+  execution_margin_rollover_fee_bps: 4.0
   execution_fx_cost_bps: 40.0
   execution_allow_position_funding: true
   execution_fx_position_switch_min_edge_bps: 250.0
@@ -85,8 +85,8 @@ options:
   tax_enabled: true
   tax_provider_classification: "FOREIGN"
   tax_report_enabled: true
-  tactical_enabled: false
-  tactical_shadow_mode: true
+  tactical_enabled: true
+  tactical_shadow_mode: false
   tactical_allow_short: true
   tactical_portfolio_pct: 25.0
   tactical_max_capital_eur: 15.0

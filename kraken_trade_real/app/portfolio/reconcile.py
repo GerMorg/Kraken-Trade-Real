@@ -54,6 +54,8 @@ class PortfolioReconciler:
         self.spot_margin_account: dict[str, Any] | None = None
         self.futures_margin_account: dict[str, Any] | None = None
         self.cash_balances: dict[str, D] = {}
+        # Exchange-reported Spot Margin/Futures leverage keyed by canonical symbol.
+        self.position_leverages: dict[str, D] = {}
         self.instruments: list[Instrument] = []
         self.spot_tickers: dict[str, Any] = {}
 
@@ -224,6 +226,7 @@ class PortfolioReconciler:
     def reconcile(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
         positions: dict[str, D] = {}
+        self.position_leverages = {}
         self.cash_balances = {}
         self.spot_margin_account = None
         self.futures_margin_account = None
@@ -307,9 +310,15 @@ class PortfolioReconciler:
                 if not isinstance(item, dict):
                     continue
                 symbol = str(item.get("pair") or item.get("symbol") or "")
-                if not symbol or symbol in positions:
+                if not symbol:
                     continue
                 instrument = resolve_instrument_symbol(symbol, self._spot_instruments())
+                position_symbol = instrument.symbol if instrument is not None else symbol
+                position_leverage = dec(item.get("leverage"))
+                if position_leverage > 0:
+                    self.position_leverages[position_symbol] = position_leverage
+                if position_symbol in positions:
+                    continue
                 value = dec(item.get("value") or item.get("cost"))
                 if instrument is not None:
                     rate = self.quote_to_eur_rate(instrument.quote)
@@ -323,7 +332,7 @@ class PortfolioReconciler:
                 # instrument symbol. Kraken's OpenPositions pair can be an
                 # altname (e.g. MINAUSD) rather than the app's MINA/USD symbol;
                 # otherwise the position is silently omitted from reevaluation.
-                positions[instrument.symbol if instrument is not None else symbol] = value
+                positions[position_symbol] = value
                 gross += abs(value)
                 net += value
         except Exception as exc:
@@ -366,6 +375,9 @@ class PortfolioReconciler:
                         if str(item.get("side", "buy")).lower() != "buy":
                             position = -abs(value)
                         positions[symbol] = position
+                        reported_leverage = dec(item.get("leverage"))
+                        if reported_leverage > 0:
+                            self.position_leverages[symbol] = reported_leverage
                         gross += abs(position)
                         net += position
             except Exception as exc:

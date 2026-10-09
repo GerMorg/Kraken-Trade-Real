@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.32
+
+- Prioritize an explicit held-position exit over position-size targeting; stale positions target zero rather than retaining unintended residual exposure, while negative-edge telemetry remains compatible.
+- Require held positions to clear the configured expected-return/cost ratio rather than retaining risk with a barely positive edge.
+- Track exchange-reported leverage for Spot Margin and Futures positions; use position-specific leverage for carry assumptions and Spot Margin short closes when available.
+- Raise the legacy generic margin-fee fallback from 2 to 4 basis points for opening and rollover assumptions, while preserving deliberately supplied non-legacy rates. Kraken's displayed rate is asset-specific and may be dynamic; these estimates are logged as assumptions, not exchange-confirmed charges.
+- Estimate Spot Margin rollover carry per direction using the same pre-trade leverage selector as execution, identify the assumption source in logs, and do not apply Spot Margin rollover assumptions to derivatives.
+- Keep below-minimum residuals open and auditable, explicitly logging that no close order was sent and the residual was not marked closed.
+- Enable Tactical by default on a fresh install in live-intent mode while global live trading remains disabled and the global kill switch remains enabled. Existing Home Assistant options remain preserved and must be reviewed after upgrade.
+- Bump Home Assistant app, package, Docker label, and Kraken User-Agent to 0.1.32.
+
+## 0.1.31
+
+- Close a held position when its current-direction signal no longer clears the configured edge/confidence policy or expected return no longer covers estimated costs; do not keep risk open merely because its net edge remains slightly positive.
+- Keep the existing staged reversal behavior and validated reduce-only risk path.
+- Add regression coverage for a short whose positive net edge falls below the economic entry floor.
+- Bump Home Assistant app, package, and Kraken User-Agent versions to 0.1.31.
+
+
 ## 0.1.30
 
 - Resolve Kraken Spot Margin position aliases (for example `MINAUSD`) to canonical discovered symbols so held positions are included in every market-selection and reevaluation cycle.

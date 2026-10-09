@@ -456,3 +456,51 @@ def test_acknowledged_order_is_reconciled_and_closed_fill_is_terminal(config, db
     assert row is not None
     assert row["state"] == OrderState.FILLED.value
     assert row["kraken_order_id"] == "O-CLOSED"
+
+
+def test_reduce_only_exits_bypass_daily_order_limit_and_direction_cooldown(
+    config, db, instrument
+):
+    from app.domain.models import MarketSnapshot
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    now = time.time()
+    market = MarketSnapshot(
+        instrument.symbol,
+        Decimal("60005"),
+        Decimal("60000"),
+        Decimal("60010"),
+        Decimal("1000"),
+        now,
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+    authority = TradingAuthority(
+        config, object(), db, AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    # Exhaust the normal entry budget with submitted/canceled orders in the same
+    # direction, which would trigger both the daily limit and direction cooldown.
+    for i in range(config.execution_max_orders_per_day):
+        prior = OrderIntent(
+            f"intent_prior_{i}", f"client_prior_{i}", f"decision_prior_{i}",
+            instrument, Direction.LONG, "buy", "limit", Decimal("0.001"),
+            Decimal("60000"), Decimal("2"), True, False, Decimal("30"),
+            Decimal("40"), 45, state=OrderState.INTENT_CREATED,
+        )
+        db.save_order_intent(prior)
+        db.update_order_state(
+            prior.client_order_id, OrderState.CANCELED.value, submitted_at=now
+        )
+
+    close_short = OrderIntent(
+        "intent_reduce_only", "client_reduce_only", "decision_reduce_only",
+        instrument, Direction.LONG, "buy", "limit", Decimal("0.001"),
+        Decimal("60000"), Decimal("2"), True, True, Decimal("-20"),
+        Decimal("40"), 45, state=OrderState.INTENT_CREATED,
+    )
+    check = authority._preflight(close_short, market)
+    assert check["allowed"] is True
+    assert check["reason"] == "PRECHECK_OK"

@@ -125,8 +125,30 @@ class DecisionEngine:
             "execution_direction": execution_direction,
             "reduce_only": reduce_only,
             "reversal_to_flat": reversal,
-            "balanced": trade_notional < min_cost_eur,
+            # A reduction below exchange minimums still needs a Decision so runtime
+            # can log the retained residual as DUST instead of silently ignoring it.
+            "balanced": trade_notional < min_cost_eur and not reduce_only,
         }
+
+    def _held_position_needs_exit(self, signal: Signal, scale: D) -> bool:
+        """Exit held risk when its signal no longer clears entry-quality economics.
+
+        A merely positive edge is not enough to justify continuing to pay spread,
+        fees and (where applicable) financing. Use the same confidence and edge
+        floors as entry selection, plus a hard expected-return-versus-cost check.
+        """
+        calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
+        ok, _, _ = self._edge_policy(signal, calibrated)
+        cost_ratio = max(
+            D("1"),
+            D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10))),
+        )
+        required_return = signal.expected_cost_bps * cost_ratio
+        return (
+            not ok
+            or signal.expected_return_bps < required_return
+            or signal.net_edge_bps <= D("0")
+        )
 
     def rejection_reason(
         self,
@@ -140,14 +162,16 @@ class DecisionEngine:
         scale = self._confidence_scale(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
+        if current != 0:
+            held_signal = long_signal if current > 0 else short_signal
+            if self._held_position_needs_exit(held_signal, scale):
+                return "REBALANCE_EXIT"
 
         candidates = self._candidate_signals(
             instrument, long_signal, short_signal, scale, current=current
         )
         if not candidates and current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if held_signal.net_edge_bps <= D("0"):
-                return "REBALANCE_EXIT"
             if held_signal.confidence * scale < D(str(self.config.strategy_min_confidence)):
                 return "MIN_CONFIDENCE"
             return "TARGET_BALANCED"
@@ -197,7 +221,11 @@ class DecisionEngine:
         )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return "TARGET_BALANCED"
-        if effective_min_cost > 0 and plan["trade_notional_eur"] < effective_min_cost:
+        if (
+            effective_min_cost > 0
+            and plan["trade_notional_eur"] < effective_min_cost
+            and not plan["reduce_only"]
+        ):
             return "MINIMUM_COST"
         return "NO_ACTION"
 
@@ -222,17 +250,23 @@ class DecisionEngine:
         force_flatten = False
         edge_tier = "STANDARD"
         edge_threshold = D(str(self.config.strategy_min_edge_bps))
-        if candidates:
+        held_signal = long_signal if current > 0 else short_signal
+        held_needs_exit = current != 0 and self._held_position_needs_exit(
+            held_signal, scale
+        )
+        # A stale held-position signal must take priority over position-size
+        # targeting. Otherwise the sizing branch can keep an unintended residual.
+        if held_needs_exit:
+            signal = held_signal
+            force_flatten = True
+        elif candidates:
             candidates.sort(
                 key=lambda item: (item[0].net_edge_bps, item[0].confidence),
                 reverse=True,
             )
             signal, edge_threshold, edge_tier = candidates[0]
         elif current != 0:
-            signal = long_signal if current > 0 else short_signal
-            if signal.net_edge_bps > D("0"):
-                return None
-            force_flatten = True
+            return None
         else:
             return None
 
@@ -247,9 +281,21 @@ class DecisionEngine:
             effective_min_cost,
             force_flatten=force_flatten,
         )
+        if force_flatten and current != 0:
+            # Preserve the explicit two-stage reversal state: flatten now, wait
+            # for a fresh cycle before considering a new order in the other direction.
+            plan["reversal_to_flat"] = any(
+                (current > 0 and candidate[0].direction == Direction.SHORT)
+                or (current < 0 and candidate[0].direction == Direction.LONG)
+                for candidate in candidates
+            )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return None
-        if effective_min_cost > 0 and plan["trade_notional_eur"] < effective_min_cost:
+        if (
+            effective_min_cost > 0
+            and plan["trade_notional_eur"] < effective_min_cost
+            and not plan["reduce_only"]
+        ):
             return None
         execution_direction = plan["execution_direction"]
         if execution_direction is None:
@@ -268,9 +314,16 @@ class DecisionEngine:
             "trade_notional_eur": str(plan["trade_notional_eur"]),
             "reduce_only": plan["reduce_only"],
             "reversal_to_flat": plan["reversal_to_flat"],
-            "rebalance_action": "FLATTEN_NEGATIVE_EDGE" if force_flatten else "",
+            "rebalance_action": (
+                "FLATTEN_NEGATIVE_EDGE"
+                if force_flatten and signal.net_edge_bps <= D("0")
+                else "FLATTEN_STALE_EDGE" if force_flatten else ""
+            ),
             "rebalance_reason": (
-                "held_position_net_edge_non_positive" if force_flatten else ""
+                "held_position_net_edge_non_positive"
+                if force_flatten and signal.net_edge_bps <= D("0")
+                else "held_position_failed_current_edge_or_confidence_or_cost_guard"
+                if force_flatten else ""
             ),
             "min_cost_eur": str(effective_min_cost),
             "edge_threshold_bps": str(edge_threshold),
