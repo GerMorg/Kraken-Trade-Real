@@ -10,6 +10,7 @@ from typing import Any
 
 from app.domain.models import Decision, Instrument, MarketSnapshot, PortfolioState, Signal, new_id
 from app.domain.states import Direction, ProductType
+from app.domain.symbols import canonical_asset, resolve_instrument_symbol
 
 
 D = Decimal
@@ -96,6 +97,16 @@ class TacticalTrader:
         self._last_signal_reason = "NOT_EVALUATED"
         self._signal_rejections: Counter[str] = Counter()
         self._last_diagnostic_at = 0.0
+        self._candidate_diagnostics: dict[str, Any] = {
+            "entry_candidates": 0,
+            "active_position_streams": 0,
+            "unique_base_assets": 0,
+            "duplicate_quote_pairs_removed": 0,
+            "held_asset_pairs_excluded": 0,
+            "duplicate_symbol_rows_removed": 0,
+            "quote_pair_choices": {},
+        }
+        self._ranked_instruments: dict[str, Instrument] = {}
         self._load_positions()
 
     def start(self) -> None:
@@ -145,28 +156,43 @@ class TacticalTrader:
     ) -> None:
         candidates = self._rank_candidates(instruments, snapshots)
         with self._lock:
+            ordered_instruments = dict(self._ranked_instruments)
+            # Keep a current instrument object for every ranked symbol; never rebuild
+            # this mapping by iterating the original universe (which loses score order).
+            for instrument in instruments:
+                ordered_instruments.setdefault(instrument.symbol, instrument)
+            for symbol, instrument in self._candidates.items():
+                ordered_instruments.setdefault(symbol, instrument)
+            self._candidates = {
+                symbol: ordered_instruments[symbol]
+                for symbol in candidates
+                if symbol in ordered_instruments
+            }
             self._snapshots = {
                 symbol: snapshots[symbol]
                 for symbol in candidates
                 if symbol in snapshots
             }
-            self._candidates = {
-                instrument.symbol: instrument
-                for instrument in instruments
-                if instrument.symbol in candidates
-            }
             self._news_effects = {
                 symbol: news_effects.get(symbol, D("0"))
                 for symbol in self._candidates
             }
-            self._gemini_bps = gemini_bps
+            self._gemini_bps = D(str(gemini_bps))
+            selected_instruments = list(self._candidates.values())
+            candidate_diagnostics = dict(self._candidate_diagnostics)
+
         aliases = {
-            instrument.symbol: str(instrument.metadata.get("wsname") or instrument.symbol)
-            for instrument in self._candidates.values()
+            instrument.symbol: str(
+                (instrument.metadata or {}).get("wsname") or instrument.symbol
+            )
+            for instrument in selected_instruments
         }
-        self.websocket.set_symbols(list(candidates), aliases=aliases)
+        # Open Tactical positions stay subscribed even when their market falls
+        # outside the entry-candidate ranking; otherwise their exit logic loses
+        # live prices and reversal signals.
+        self.websocket.set_symbols(list(self._candidates), aliases=aliases)
         if bool(getattr(self.config, "tactical_seed_history", True)):
-            for instrument in self._candidates.values():
+            for instrument in selected_instruments:
                 snapshot = snapshots.get(instrument.symbol)
                 if snapshot is not None and len(snapshot.closes) >= 2:
                     self.websocket.seed_price_history(
@@ -174,11 +200,24 @@ class TacticalTrader:
                         snapshot.closes,
                         snapshot.timestamp,
                     )
+        symbols = list(self._candidates)
         self.audit.emit(
             "TACTICAL_CANDIDATES_UPDATED",
             "INFO",
-            candidates=len(candidates),
-            symbols=list(candidates)[:12],
+            # candidates/symbols both describe the complete live WebSocket set.
+            candidates=len(symbols),
+            symbols=symbols,
+            entry_candidates=candidate_diagnostics.get("entry_candidates", 0),
+            active_position_streams=candidate_diagnostics.get("active_position_streams", 0),
+            unique_base_assets=candidate_diagnostics.get("unique_base_assets", 0),
+            duplicate_quote_pairs_removed=candidate_diagnostics.get(
+                "duplicate_quote_pairs_removed", 0
+            ),
+            held_asset_pairs_excluded=candidate_diagnostics.get("held_asset_pairs_excluded", 0),
+            duplicate_symbol_rows_removed=candidate_diagnostics.get(
+                "duplicate_symbol_rows_removed", 0
+            ),
+            quote_pair_choices=candidate_diagnostics.get("quote_pair_choices", {}),
         )
 
     def status(self) -> dict[str, Any]:
@@ -189,6 +228,9 @@ class TacticalTrader:
                 "shadow_mode": bool(getattr(self.config, "tactical_shadow_mode", True)),
                 "ws_connected": bool(getattr(self.websocket, "connected", False)),
                 "candidate_count": len(self._candidates),
+                "entry_candidate_count": int(self._candidate_diagnostics.get("entry_candidates", 0)),
+                "unique_base_asset_count": int(self._candidate_diagnostics.get("unique_base_assets", 0)),
+                "duplicate_quote_pairs_removed": int(self._candidate_diagnostics.get("duplicate_quote_pairs_removed", 0)),
                 "position_count": len(self._positions),
                 "position_symbol": position.symbol if position else "",
                 "position_direction": position.direction.value if position else "",
@@ -228,40 +270,222 @@ class TacticalTrader:
         while not self._stop_event.wait(1.0):
             self.run_once()
 
+    def tracked_position_symbols(self) -> tuple[str, ...]:
+        """Return all persisted Tactical positions that must remain monitored."""
+        with self._lock:
+            return tuple(sorted(self._positions))
+
+    @staticmethod
+    def _asset_key_from_symbol(
+        symbol: str,
+        instruments: list[Instrument] | tuple[Instrument, ...],
+    ) -> str:
+        instrument = resolve_instrument_symbol(str(symbol), instruments)
+        if instrument is not None:
+            return canonical_asset(instrument.base)
+        raw = str(symbol or "").strip()
+        if "/" in raw:
+            return canonical_asset(raw.split("/", 1)[0])
+        return ""
+
+    @staticmethod
+    def _held_asset_keys(
+        portfolio: PortfolioState | None,
+        instruments: list[Instrument] | tuple[Instrument, ...],
+    ) -> set[str]:
+        held: set[str] = set()
+        positions = getattr(portfolio, "positions", {}) if portfolio is not None else {}
+        if not isinstance(positions, dict):
+            return held
+        for symbol, value in positions.items():
+            try:
+                position_value = D(str(value or "0"))
+            except (ArithmeticError, TypeError, ValueError):
+                # Ignore malformed legacy position values without skipping
+                # subsequent positions or hiding candidate ranking failures.
+                position_value = D("0")
+            if position_value == 0:
+                continue
+            instrument = resolve_instrument_symbol(str(symbol), instruments)
+            if instrument is not None:
+                key = canonical_asset(instrument.base)
+            else:
+                raw = str(symbol or "").strip()
+                key = canonical_asset(raw.split("/", 1)[0]) if "/" in raw else ""
+            if key:
+                held.add(key)
+        return held
+
     def _rank_candidates(
         self,
         instruments: list[Instrument],
         snapshots: dict[str, MarketSnapshot],
     ) -> list[str]:
+        # Candidate slots represent assets, not quote pairs. EUR/USD listings for
+        # the same base must not consume multiple slots or permit duplicate exposure.
         max_candidates = max(
             4, int(getattr(self.config, "tactical_candidate_limit", 12))
         )
-        scored: list[tuple[D, str]] = []
+        with self._lock:
+            active_positions = dict(self._positions)
+            previous_candidates = dict(self._candidates)
+            portfolio = self._portfolio
+
+        known_instruments: dict[str, Instrument] = {
+            instrument.symbol: instrument for instrument in instruments
+        }
+        for symbol, instrument in previous_candidates.items():
+            known_instruments.setdefault(symbol, instrument)
+
+        active_instruments: dict[str, Instrument] = {}
+        for symbol in sorted(active_positions):
+            active_instrument: Instrument | None = known_instruments.get(symbol)
+            if active_instrument is None:
+                resolved = resolve_instrument_symbol(
+                    symbol, list(known_instruments.values())
+                )
+                active_instrument = (
+                    resolved if isinstance(resolved, Instrument) else None
+                )
+            if active_instrument is None:
+                try:
+                    from_db = self._instrument_from_db(symbol)
+                    active_instrument = (
+                        from_db if isinstance(from_db, Instrument) else None
+                    )
+                except Exception:
+                    active_instrument = None
+            if active_instrument is not None and active_instrument.venue == "spot":
+                active_instruments[active_instrument.symbol] = active_instrument
+                known_instruments.setdefault(active_instrument.symbol, active_instrument)
+
+        active_symbols = list(active_instruments)
+        active_base_keys = {
+            canonical_asset(instrument.base) for instrument in active_instruments.values()
+        }
+        blocked_base_keys = self._held_asset_keys(
+            portfolio, list(known_instruments.values())
+        ) | active_base_keys
+
+        # Duplicate rows for the exact same symbol are a separate data-quality
+        # issue; discard them before grouping different quote markets by base.
+        unique_by_symbol: dict[str, Instrument] = {}
+        duplicate_symbol_rows_removed = 0
         for instrument in instruments:
+            if instrument.symbol in unique_by_symbol:
+                duplicate_symbol_rows_removed += 1
+                continue
+            unique_by_symbol[instrument.symbol] = instrument
+
+        by_base: dict[str, list[tuple[D, D, D, str, Instrument]]] = {}
+        held_asset_pairs_excluded = 0
+        eligible_markets = 0
+        for instrument in unique_by_symbol.values():
+            # Active positions are force-included in the stream separately, not
+            # treated as fresh entry candidates.
+            if instrument.symbol in active_instruments:
+                continue
+            if instrument.venue != "spot" or not instrument.tradeable:
+                continue
+            if (instrument.metadata or {}).get("asset_class") == "tokenized_asset":
+                continue
             snapshot = snapshots.get(instrument.symbol)
-            if snapshot is None or instrument.symbol in self._positions:
+            if snapshot is None or snapshot.price <= 0:
                 continue
-            if instrument.venue != "spot":
-                continue
-            if not instrument.tradeable:
-                continue
-            if instrument.metadata.get("asset_class") == "tokenized_asset":
-                continue
-            if snapshot.price <= 0 or snapshot.spread_bps > D(
+            if snapshot.spread_bps > D(
                 str(getattr(self.config, "tactical_max_spread_bps", 25))
             ):
                 continue
+
+            base_key = canonical_asset(instrument.base)
+            if not base_key or base_key in blocked_base_keys:
+                if base_key in blocked_base_keys:
+                    held_asset_pairs_excluded += 1
+                continue
+
             volatility = self._realized_volatility(snapshot.closes)
-            liquidity = max(D("1"), snapshot.volume_24h)
-            score = volatility * D("3") + liquidity.ln() - snapshot.spread_bps * D("0.25")
-            scored.append((score, instrument.symbol))
-        scored.sort(reverse=True)
-        return [symbol for _, symbol in scored[:max_candidates]]
+            quote_rate = D("1")
+            rate_lookup = getattr(self.portfolio, "quote_to_eur_rate", None)
+            if callable(rate_lookup):
+                try:
+                    converted_rate = rate_lookup(instrument.quote)
+                    if converted_rate is not None and D(str(converted_rate)) > 0:
+                        quote_rate = D(str(converted_rate))
+                except Exception:
+                    # Do not silently discard FX valuation failures: use the
+                    # explicit neutral rate only for ranking, not order funding.
+                    quote_rate = D("1")
+            turnover_eur = (
+                max(D("0"), D(str(snapshot.volume_24h)))
+                * snapshot.price
+                * quote_rate
+            )
+            liquidity_score = max(D("1"), turnover_eur).ln()
+            score = (
+                volatility * D("3")
+                + liquidity_score
+                - snapshot.spread_bps * D("0.25")
+            )
+            by_base.setdefault(base_key, []).append(
+                (score, snapshot.spread_bps, turnover_eur, instrument.symbol, instrument)
+            )
+            eligible_markets += 1
+
+        best_by_base: list[tuple[D, D, D, str, Instrument]] = []
+        duplicate_quote_pairs_removed = 0
+        quote_pair_choices: dict[str, dict[str, Any]] = {}
+        for base_key, rows in by_base.items():
+            # Higher score first; use tighter spread, greater EUR turnover and
+            # finally symbol order as deterministic tie breakers.
+            rows.sort(key=lambda row: (-row[0], row[1], -row[2], row[3]))
+            best_by_base.append(rows[0])
+            duplicate_quote_pairs_removed += max(0, len(rows) - 1)
+            if len(rows) > 1:
+                quote_pair_choices[base_key] = {
+                    "selected": rows[0][3],
+                    "alternatives": [
+                        {
+                            "symbol": row[3],
+                            "score": str(row[0]),
+                            "spread_bps": str(row[1]),
+                            "turnover_24h_eur": str(row[2]),
+                        }
+                        for row in rows[1:]
+                    ],
+                }
+
+        best_by_base.sort(key=lambda row: (-row[0], row[1], -row[2], row[3]))
+        entry_rows = best_by_base[:max_candidates]
+        entry_symbols = [row[3] for row in entry_rows]
+        ordered_symbols = list(dict.fromkeys(active_symbols + entry_symbols))
+        ranked_instruments = dict(active_instruments)
+        ranked_instruments.update({row[3]: row[4] for row in entry_rows})
+        unique_asset_keys = {
+            canonical_asset(ranked_instruments[symbol].base)
+            for symbol in ordered_symbols
+            if symbol in ranked_instruments
+        }
+
+        diagnostics = {
+            "eligible_markets": eligible_markets,
+            "entry_candidates": len(entry_symbols),
+            "active_position_streams": len(active_symbols),
+            "unique_base_assets": len(unique_asset_keys),
+            "duplicate_quote_pairs_removed": duplicate_quote_pairs_removed,
+            "held_asset_pairs_excluded": held_asset_pairs_excluded,
+            "duplicate_symbol_rows_removed": duplicate_symbol_rows_removed,
+            "quote_pair_choices": quote_pair_choices,
+        }
+        with self._lock:
+            self._candidate_diagnostics = diagnostics
+            self._ranked_instruments = ranked_instruments
+        return ordered_symbols
 
     def _evaluate_entries(self, now: float) -> None:
         with self._lock:
             candidates = list(self._candidates.values())
             portfolio = self._portfolio
+            active_position_symbols = tuple(self._positions)
         if portfolio is None or portfolio.equity_eur <= 0:
             return
         if self._daily_loss_blocked(portfolio):
@@ -271,11 +495,18 @@ class TacticalTrader:
             self._last_action = "TRADE_BUDGET_BLOCK"
             return
 
+        blocked_base_keys = self._held_asset_keys(portfolio, candidates)
+        for active_symbol in active_position_symbols:
+            active_key = self._asset_key_from_symbol(active_symbol, candidates)
+            if active_key:
+                blocked_base_keys.add(active_key)
+
         signals: list[TacticalSignal] = []
         rejection_counts: Counter[str] = Counter()
         evaluated = 0
         for instrument in candidates:
-            if instrument.symbol in portfolio.positions:
+            if canonical_asset(instrument.base) in blocked_base_keys:
+                rejection_counts["BASE_ASSET_ALREADY_HELD"] += 1
                 continue
             evaluated += 1
             state = self.websocket.market_snapshot(instrument.symbol)
@@ -516,6 +747,29 @@ class TacticalTrader:
             instrument = self._candidates.get(signal.symbol)
             portfolio = self._portfolio
         if instrument is None or portfolio is None or portfolio.equity_eur <= 0:
+            return
+
+        asset_key = canonical_asset(instrument.base)
+        with self._lock:
+            tracked_symbols = tuple(self._positions)
+            instrument_universe = list(self._candidates.values())
+        if instrument not in instrument_universe:
+            instrument_universe.append(instrument)
+        blocked_assets = self._held_asset_keys(portfolio, instrument_universe)
+        for tracked_symbol in tracked_symbols:
+            tracked_key = self._asset_key_from_symbol(tracked_symbol, instrument_universe)
+            if tracked_key:
+                blocked_assets.add(tracked_key)
+        if asset_key in blocked_assets:
+            self.audit.emit(
+                "TACTICAL_ENTRY_BLOCKED",
+                "WARNING",
+                symbol=signal.symbol,
+                direction=signal.direction.value,
+                reason="BASE_ASSET_ALREADY_HELD",
+                base_asset=asset_key,
+            )
+            self._last_action = "ENTRY_BLOCKED_DUPLICATE_ASSET"
             return
 
         notional = min(

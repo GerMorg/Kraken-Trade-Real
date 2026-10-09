@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 from app.domain.models import Instrument, MarketSnapshot
+from app.domain.symbols import canonical_asset
 
 
 D = Decimal
@@ -216,15 +217,8 @@ class MarketScanner:
 
     @staticmethod
     def _canonical_asset(value: str) -> str:
-        asset = str(value or "").upper().strip()
-        aliases = {"XBT": "BTC", "XXBT": "BTC", "XETH": "ETH", "XXETH": "ETH"}
-        if asset in aliases:
-            return aliases[asset]
-        if asset.startswith("XX") and len(asset) > 2:
-            return asset[2:]
-        if asset.startswith(("X", "Z")) and len(asset) > 3:
-            return asset[1:]
-        return asset
+        # Compatibility wrapper; canonicalisation is shared with portfolio and Tactical.
+        return canonical_asset(value)
 
     def select_for_cycle(
         self,

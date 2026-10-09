@@ -3,18 +3,22 @@ from __future__ import annotations
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.domain.models import Instrument
+from app.domain.models import Instrument, MarketSnapshot, PortfolioState
 from app.domain.states import Direction, ProductType
+from app.domain.symbols import canonical_asset
 from app.trading.intent import OrderIntentBuilder
-from app.trading.tactical import TacticalTrader
+from app.trading.tactical import TacticalPosition, TacticalTrader
 
 
 D = Decimal
 
 
 class DummyAudit:
-    def emit(self, *args, **kwargs):
-        return None
+    def __init__(self):
+        self.events = []
+
+    def emit(self, code, level="INFO", **payload):
+        self.events.append((code, level, payload))
 
 
 class DummyRecovery:
@@ -25,14 +29,22 @@ class DummyRecovery:
 class DummyWS:
     connected = False
 
+    def __init__(self):
+        self.symbols = ()
+        self.aliases = {}
+
     def start(self):
         return None
 
     def stop(self):
         return None
 
-    def set_symbols(self, symbols):
+    def set_symbols(self, symbols, aliases=None):
         self.symbols = tuple(symbols)
+        self.aliases = dict(aliases or {})
+
+    def seed_price_history(self, symbol, closes, end_timestamp=None):
+        return None
 
     def market_snapshot(self, symbol):
         return None
@@ -289,3 +301,187 @@ def test_tactical_adaptive_entry_can_clear_cost_without_requiring_280_bps():
     assert trader._adaptive_entry_allowed(
         D("250"), D("240"), D("0.80"), True, D("230"), D("0.75"), D("15")
     ) is False
+
+
+def pair_instrument(
+    symbol,
+    base,
+    quote,
+    *,
+    short_available=True,
+    product_type=ProductType.SPOT_MARGIN,
+):
+    return Instrument(
+        venue="spot",
+        product_type=product_type,
+        symbol=symbol,
+        instrument_id=symbol.replace("/", ""),
+        altname=symbol.replace("/", ""),
+        base=base,
+        quote=quote,
+        status="online",
+        margin_available=product_type == ProductType.SPOT_MARGIN,
+        long_available=True,
+        short_available=short_available,
+        leverage_levels=(D("1"), D("2"), D("3")),
+        min_order_qty=D("0.001"),
+        min_cost=D("1"),
+        lot_decimals=8,
+        price_decimals=8,
+        tick_size=D("0.00000001"),
+        margin_class="spot-margin",
+        metadata={
+            "leverage_sell": ["2", "3"],
+            "wsname": symbol,
+        },
+    )
+
+
+def ranking_snapshot(symbol, spread_bps, *, volume=D("10000")):
+    closes = tuple(
+        D(value)
+        for value in ("10", "10.1", "10.05", "10.2", "10.25", "10.3", "10.4", "10.35")
+    )
+    mid = closes[-1]
+    half_spread = mid * D(str(spread_bps)) / D("20000")
+    return MarketSnapshot(
+        symbol=symbol,
+        price=mid,
+        bid=mid - half_spread,
+        ask=mid + half_spread,
+        volume_24h=D(str(volume)),
+        timestamp=1000.0,
+        closes=closes,
+    )
+
+
+def test_tactical_candidate_selection_deduplicates_quote_pairs_and_keeps_rank_order():
+    websocket = DummyWS()
+    audit = DummyAudit()
+    trader = TacticalTrader(
+        cfg(tactical_candidate_limit=12),
+        DummyDB(),
+        audit,
+        None,
+        websocket,
+        None,
+        None,
+        None,
+        None,
+    )
+    # Deliberately provide instruments in an order different from their market scores.
+    instruments = [
+        pair_instrument("STRK/EUR", "STRK", "EUR"),
+        pair_instrument("MINA/USD", "MINA", "USD"),
+        pair_instrument("STRK/USD", "STRK", "USD"),
+        pair_instrument("BTC/USD", "XXBT", "USD"),
+        pair_instrument("MINA/EUR", "MINA", "EUR"),
+    ]
+    spreads = {
+        "STRK/EUR": D("12"),
+        "MINA/USD": D("10"),
+        "STRK/USD": D("3"),
+        "BTC/USD": D("1"),
+        "MINA/EUR": D("2"),
+    }
+    snapshots = {
+        symbol: ranking_snapshot(symbol, spread)
+        for symbol, spread in spreads.items()
+    }
+
+    trader.update_context(instruments, snapshots, {}, D("0"))
+
+    assert list(trader._candidates) == ["BTC/USD", "MINA/EUR", "STRK/USD"]
+    assert websocket.symbols == ("BTC/USD", "MINA/EUR", "STRK/USD")
+    base_keys = [canonical_asset(item.base) for item in trader._candidates.values()]
+    assert len(base_keys) == len(set(base_keys)) == 3
+    assert trader._candidate_diagnostics["duplicate_quote_pairs_removed"] == 2
+    event = next(event for event in audit.events if event[0] == "TACTICAL_CANDIDATES_UPDATED")
+    assert event[2]["candidates"] == len(event[2]["symbols"]) == 3
+    assert event[2]["entry_candidates"] == 3
+    assert event[2]["duplicate_quote_pairs_removed"] == 2
+    assert event[2]["quote_pair_choices"]["STRK"]["selected"] == "STRK/USD"
+    assert event[2]["quote_pair_choices"]["STRK"]["alternatives"][0]["symbol"] == "STRK/EUR"
+    assert event[2]["quote_pair_choices"]["MINA"]["selected"] == "MINA/EUR"
+    assert event[2]["quote_pair_choices"]["MINA"]["alternatives"][0]["symbol"] == "MINA/USD"
+
+
+def test_tactical_keeps_open_position_stream_and_excludes_other_quote_for_held_base():
+    websocket = DummyWS()
+    audit = DummyAudit()
+    trader = TacticalTrader(
+        cfg(),
+        DummyDB(),
+        audit,
+        None,
+        websocket,
+        None,
+        None,
+        None,
+        None,
+    )
+    opened_at = 1000.0
+    trader._positions["MINA/USD"] = TacticalPosition(
+        "MINA/USD",
+        "spot",
+        Direction.SHORT,
+        D("10"),
+        D("10"),
+        D("10"),
+        D("10"),
+        D("20"),
+        D("2"),
+        opened_at,
+        "test-order",
+        D("1"),
+    )
+    trader.update_portfolio(
+        PortfolioState(equity_eur=D("100"), positions={"MINA/EUR": D("5")})
+    )
+    instruments = [
+        pair_instrument("MINA/EUR", "MINA", "EUR"),
+        pair_instrument("ETH/EUR", "XETH", "EUR"),
+        pair_instrument("MINA/USD", "MINA", "USD"),
+    ]
+    # The open position does not need to survive the fresh-entry snapshot filter
+    # to remain subscribed and managed.
+    snapshots = {
+        "MINA/EUR": ranking_snapshot("MINA/EUR", D("2")),
+        "ETH/EUR": ranking_snapshot("ETH/EUR", D("4")),
+    }
+
+    trader.update_context(instruments, snapshots, {}, D("0"))
+
+    assert list(trader._candidates) == ["MINA/USD", "ETH/EUR"]
+    assert websocket.symbols == ("MINA/USD", "ETH/EUR")
+    assert "MINA/EUR" not in trader._candidates
+    event = next(event for event in audit.events if event[0] == "TACTICAL_CANDIDATES_UPDATED")
+    assert event[2]["active_position_streams"] == 1
+    assert event[2]["held_asset_pairs_excluded"] == 1
+    assert event[2]["candidates"] == len(event[2]["symbols"]) == 2
+
+
+def test_canonical_asset_normalizes_kraken_legacy_aliases():
+    assert canonical_asset("XBT") == "BTC"
+    assert canonical_asset("XXBT") == "BTC"
+    assert canonical_asset("XETH") == "ETH"
+    assert canonical_asset("XXETH") == "ETH"
+    assert canonical_asset("XETC") == "ETC"
+    assert canonical_asset("XLTC") == "LTC"
+    assert canonical_asset("XMLN") == "MLN"
+    assert canonical_asset("XREP") == "REP"
+    assert canonical_asset("XXDG") == "DOGE"
+    assert canonical_asset("XDG") == "DOGE"
+    assert canonical_asset("XXLM") == "XLM"
+    assert canonical_asset("XXMR") == "XMR"
+    assert canonical_asset("XXRP") == "XRP"
+    assert canonical_asset("XZEC") == "ZEC"
+    assert canonical_asset("ZEUR") == "EUR"
+    assert canonical_asset("ZUSD") == "USD"
+
+
+def test_canonical_asset_does_not_strip_real_x_or_z_prefixed_tickers():
+    assert canonical_asset("ZBCN") == "ZBCN"
+    assert canonical_asset("ZETA") == "ZETA"
+    assert canonical_asset("XCN") == "XCN"
+    assert canonical_asset("ZRX") == "ZRX"

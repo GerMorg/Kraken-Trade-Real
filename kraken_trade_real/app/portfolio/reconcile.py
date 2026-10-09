@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from app.domain.models import Instrument, PortfolioState, quantize_order_quantity
-from app.domain.symbols import resolve_instrument_symbol
+from app.domain.symbols import canonical_asset, resolve_instrument_symbol
 
 D = Decimal
 
@@ -19,31 +19,6 @@ def dec(v: Any) -> D:
         return D(str(v if v not in (None, "") else "0"))
     except (InvalidOperation, ValueError):
         return D(0)
-
-
-def canonical_asset(value: Any) -> str:
-    asset = str(value or "").upper().strip()
-    aliases = {
-        "XBT": "BTC",
-        "XXBT": "BTC",
-        "XETH": "ETH",
-        "XXETH": "ETH",
-        "ZUSD": "USD",
-        "ZEUR": "EUR",
-        "ZGBP": "GBP",
-        "ZCHF": "CHF",
-        "ZCAD": "CAD",
-        "ZJPY": "JPY",
-        "ZAUD": "AUD",
-        "ZNZD": "NZD",
-    }
-    if asset in aliases:
-        return aliases[asset]
-    if asset.startswith("XX") and len(asset) > 2:
-        return asset[2:]
-    if asset.startswith(("X", "Z")) and len(asset) > 3:
-        return asset[1:]
-    return asset
 
 
 class PortfolioReconciler:
