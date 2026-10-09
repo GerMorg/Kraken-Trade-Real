@@ -877,6 +877,14 @@ class TradingRuntime:
                         if portfolio.equity_eur > 0 else D("999")
                     )
                     max_supported_leverage = min(instrument.max_leverage, D("5"))
+                    conservative_held_leverage = min(
+                        D("5"),
+                        max(
+                            D("2"),
+                            max_supported_leverage,
+                            D(str(self.config.risk_max_leverage)),
+                        ),
+                    )
 
                     def add_margin_cost(signal):
                         held_direction = (
@@ -890,13 +898,13 @@ class TradingRuntime:
                             instrument.symbol
                         )
                         if held_direction and held_leverage is not None and held_leverage > 1:
-                            cost_leverage = min(held_leverage, max_supported_leverage)
+                            cost_leverage = min(held_leverage, D("5"))
                             leverage_source = "KRAKEN_OPEN_POSITION"
                         elif held_direction and signal.direction.value == "LONG":
                             cost_leverage = D("1")
                             leverage_source = "CASH_POSITION_DEFAULT"
                         elif held_direction and signal.direction.value == "SHORT":
-                            cost_leverage = max_supported_leverage
+                            cost_leverage = conservative_held_leverage
                             leverage_source = "CONSERVATIVE_POSITION_FALLBACK"
                         else:
                             requires_margin = signal.direction.value == "SHORT"
@@ -918,9 +926,22 @@ class TradingRuntime:
                             else:
                                 cost_leverage = max(D("1"), selected_leverage)
                                 leverage_source = "PRETRADE_LEVERAGE_MODEL"
-                        if signal.direction.value == "SHORT" and not instrument.short_available:
+                        if (
+                            signal.direction.value == "SHORT"
+                            and not instrument.short_available
+                            and not held_direction
+                        ):
                             cost_leverage = D("1")
                             leverage_source = "SHORT_UNAVAILABLE"
+                        configured_open_fee = D(str(getattr(
+                            self.config, "execution_margin_open_fee_bps", 4.0
+                        )))
+                        configured_rollover_fee = D(str(getattr(
+                            self.config, "execution_margin_rollover_fee_bps", 4.0
+                        )))
+                        opening_fee_assumption = (
+                            D("0") if held_direction else configured_open_fee
+                        )
                         estimate = self.risk.cost_model.estimate(
                             snap,
                             max(
@@ -931,18 +952,10 @@ class TradingRuntime:
                             ),
                             leverage=cost_leverage,
                             holding_hours=margin_hold_hours,
-                            # Entry fees are sunk for the currently held direction.
-                            # Only prospective carry should influence the hold/exit test.
-                            margin_open_fee_bps=(
-                                D("0")
-                                if held_direction
-                                else D(str(getattr(
-                                    self.config, "execution_margin_open_fee_bps", 2.0
-                                )))
-                            ),
-                            margin_rollover_fee_bps=D(str(getattr(
-                                self.config, "execution_margin_rollover_fee_bps", 2.0
-                            ))),
+                            # Entry fees are sunk for a held position; only prospective
+                            # rollovers should affect the hold/exit decision.
+                            margin_open_fee_bps=opening_fee_assumption,
+                            margin_rollover_fee_bps=configured_rollover_fee,
                         )
                         return __import__("dataclasses").replace(
                             signal,
@@ -954,6 +967,9 @@ class TradingRuntime:
                                 "margin_cost_leverage_source": leverage_source,
                                 "margin_cost_holding_hours": margin_hold_hours,
                                 "margin_cost_includes_open_fee": not held_direction,
+                                "margin_cost_open_fee_assumption_bps": opening_fee_assumption,
+                                "margin_cost_rollover_fee_assumption_bps": configured_rollover_fee,
+                                "margin_cost_rate_source": "CONFIG_FALLBACK_NOT_EXCHANGE_CONFIRMED",
                             },
                         )
 
@@ -1040,6 +1056,15 @@ class TradingRuntime:
                         leverage_assumption_source=str(
                             decision.signal.features.get("margin_cost_leverage_source", "UNKNOWN")
                         ),
+                        open_fee_assumption_bps=str(
+                            decision.signal.features.get("margin_cost_open_fee_assumption_bps", "0")
+                        ),
+                        rollover_fee_assumption_bps=str(
+                            decision.signal.features.get("margin_cost_rollover_fee_assumption_bps", "0")
+                        ),
+                        rate_source=str(
+                            decision.signal.features.get("margin_cost_rate_source", "UNKNOWN")
+                        ),
                         expected_holding_hours=str(
                             decision.signal.features.get("margin_cost_holding_hours", "8")
                         ),
@@ -1082,7 +1107,7 @@ class TradingRuntime:
                         instrument.symbol
                     )
                     lev = (
-                        held_short_leverage
+                        min(held_short_leverage, D("5"))
                         if held_short_leverage is not None and held_short_leverage > D("1")
                         else min(instrument.max_leverage, D("5"))
                     )

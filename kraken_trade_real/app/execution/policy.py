@@ -31,9 +31,10 @@ class CostModel:
     # Kraken Spot Margin rollover begins after four hours and repeats every
     # four hours. Rates vary by asset and market conditions, so callers may
     # provide the observed rate in market.metadata. The fallback is a
-    # conservative 2 bps (0.02%) per four-hour period on borrowed notional.
-    DEFAULT_MARGIN_OPEN_FEE_BPS = D("2")
-    DEFAULT_MARGIN_ROLLOVER_FEE_BPS = D("2")
+    # conservative 4 bps (0.04%) per component on borrowed notional. Rates
+    # vary by asset and conditions; this is a fallback, not a live quote.
+    DEFAULT_MARGIN_OPEN_FEE_BPS = D("4")
+    DEFAULT_MARGIN_ROLLOVER_FEE_BPS = D("4")
     MARGIN_ROLLOVER_INTERVAL_HOURS = D("4")
 
     def estimate(

@@ -174,3 +174,26 @@ def test_subminimum_position_reduction_is_returned_for_runtime_dust_audit(config
     assert decision.current_position_eur == Decimal("13.6")
     assert decision.target_position_eur == Decimal("13.50")
     assert decision.target_notional_eur == Decimal("0.10")
+
+
+def test_open_spot_margin_position_leverage_is_reconciled_by_canonical_symbol(
+    db, fake_gateway, instrument
+):
+    fake_gateway.spot_open_positions = lambda: {
+        "O-MARGIN-1": {
+            "pair": instrument.altname,
+            "type": "sell",
+            "value": "8.0",
+            "leverage": "2",
+        }
+    }
+    reconciler = PortfolioReconciler(fake_gateway, db)
+    reconciler.set_market_context(
+        [instrument],
+        {instrument.instrument_id: {"c": ["60005"]}},
+    )
+
+    portfolio = reconciler.reconcile()
+
+    assert portfolio.positions[instrument.symbol] == Decimal("-8.0")
+    assert reconciler.position_leverages[instrument.symbol] == Decimal("2")

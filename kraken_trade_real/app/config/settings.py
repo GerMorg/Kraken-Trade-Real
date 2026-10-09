@@ -150,6 +150,12 @@ class Config:
                 value = min(hi, value)
             return value
 
+        def margin_rate(name: str) -> float:
+            value = f(name, 4.0, 0.0, 1000.0)
+            # Migrate the old generic 2bp fallback to a conservative 4bp
+            # assumption; explicit asset-specific rates (for example 2.1) remain valid.
+            return 4.0 if value == 2.0 else value
+
         cfg = cls(
             api_key=str(raw.get("kraken_api_key", os.getenv("KRAKEN_API_KEY", ""))).strip(),
             api_secret=str(raw.get("kraken_api_secret", os.getenv("KRAKEN_API_SECRET", ""))).strip(),
@@ -195,11 +201,11 @@ class Config:
             execution_expected_margin_hold_hours=f(
                 "execution_expected_margin_hold_hours", 8.0, 0.25, 168.0
             ),
-            execution_margin_open_fee_bps=f(
-                "execution_margin_open_fee_bps", 2.0, 0.0, 1000.0
+            execution_margin_open_fee_bps=margin_rate(
+                "execution_margin_open_fee_bps"
             ),
-            execution_margin_rollover_fee_bps=f(
-                "execution_margin_rollover_fee_bps", 2.0, 0.0, 1000.0
+            execution_margin_rollover_fee_bps=margin_rate(
+                "execution_margin_rollover_fee_bps"
             ),
             execution_order_timeout_seconds=i("execution_order_timeout_seconds", 45, 5),
             execution_max_reprices=i("execution_max_reprices", 2, 0),

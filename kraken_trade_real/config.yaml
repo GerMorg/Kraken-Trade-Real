@@ -61,8 +61,8 @@ options:
   risk_cash_reserve_pct: 20.0
   execution_max_slippage_bps: 40.0
   execution_expected_margin_hold_hours: 8.0
-  execution_margin_open_fee_bps: 2.0
-  execution_margin_rollover_fee_bps: 2.0
+  execution_margin_open_fee_bps: 4.0
+  execution_margin_rollover_fee_bps: 4.0
   execution_fx_cost_bps: 40.0
   execution_allow_position_funding: true
   execution_fx_position_switch_min_edge_bps: 250.0
