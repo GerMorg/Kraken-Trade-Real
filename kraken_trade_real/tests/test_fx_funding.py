@@ -109,7 +109,10 @@ def test_eur_usd_funding_executes_conversion():
     assert result["ready"] is True
     assert result["converted"] is True
     assert db.rows[0].instrument.symbol == "EUR/USD"
+    assert db.rows[0].side == "sell"
+    # EUR is base in EUR/USD; acquiring USD sells EUR at the bid.
     assert db.rows[0].quantity > Decimal("16")
+    assert db.rows[0].quantity < Decimal("19")
 
 
 def test_usd_to_eur_conversion_is_supported():
@@ -181,3 +184,50 @@ def test_fx_funding_reserves_last_order_slot():
     assert result["ready"] is False
     assert result["reason"] == "DAILY_ORDER_LIMIT_FX_RESERVE"
     assert gateway.calls == []
+
+
+def test_position_funding_bridge_refreshes_proceeds_and_sells_eur_to_fund_usd():
+    portfolio = _Portfolio()
+    portfolio.balances = {"EUR": Decimal("0"), "USD": Decimal("0"), "BTC": Decimal("1")}
+    db = _DB()
+
+    class UpdatingGateway(_Gateway):
+        def __init__(self):
+            super().__init__()
+            self.eur = Decimal("0")
+            self.usd = Decimal("0")
+            self.btc = Decimal("1")
+
+        def spot_balance(self):
+            return {"ZEUR": str(self.eur), "ZUSD": str(self.usd), "XXBT": str(self.btc)}
+
+    gateway = UpdatingGateway()
+
+    class UpdatingAuthority(_Authority):
+        def submit_funding_order(self, intent, timeout_seconds=30.0):
+            db.save_order_intent(intent)
+            if intent.instrument.symbol == "BTC/EUR" and intent.side == "sell":
+                gateway.btc -= intent.quantity
+                gateway.eur += intent.quantity * Decimal("45400")
+            elif intent.instrument.symbol == "EUR/USD" and intent.side == "sell":
+                gateway.eur -= intent.quantity
+                gateway.usd += intent.quantity * Decimal("1.099")
+            return {"state": OrderState.FILLED.value, "kraken_order_id": "FX-1"}
+
+    manager = FXConversionManager(
+        _Config(), db, _Audit(), UpdatingAuthority(gateway, db), portfolio,
+        [
+            _instrument("BTC/EUR", "BTC", "EUR", "XXBTZEUR"),
+            _instrument("EUR/USD", "EUR", "USD", "ZEURZUSD"),
+        ],
+    )
+    result = manager.ensure_quote_funds(
+        quote="USD", required_quote=Decimal("1000"), cycle_id="cycle_bridge",
+        dependent_edge_bps=Decimal("600"), protected_symbol="ETH/USD",
+    )
+    assert result["ready"] is True
+    assert len(db.rows) == 2
+    assert db.rows[0].instrument.symbol == "BTC/EUR"
+    assert db.rows[0].side == "sell"
+    assert db.rows[1].instrument.symbol == "EUR/USD"
+    assert db.rows[1].side == "sell"

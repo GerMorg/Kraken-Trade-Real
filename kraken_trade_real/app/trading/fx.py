@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any
 
-from app.domain.models import OrderIntent, new_client_order_id
+from app.domain.models import OrderIntent, new_client_order_id, quantize_order_quantity
 from app.domain.states import Direction, OrderState
 
 D = Decimal
@@ -81,6 +81,7 @@ class FXConversionManager:
 
     def _make_intent(self, instrument: Any, side: str, quantity: D, decision_id: str,
                      expected_edge_bps: D = D("0"), reduce_only: bool = False) -> OrderIntent:
+        quantity = quantize_order_quantity(instrument, quantity)
         return OrderIntent(
             intent_id=f"fund_{new_client_order_id()}",
             client_order_id=new_client_order_id(),
@@ -104,12 +105,7 @@ class FXConversionManager:
         self.audit.emit(
             "FUNDING_ORDER_RESULT",
             "INFO" if result.get("state") in {OrderState.FILLED.value, OrderState.PARTIALLY_FILLED.value} else "WARNING",
-            cycle_id=cycle_id, purpose=purpose, symbol=intent.instrument.symbol,
-            side=intent.side, quantity=str(intent.quantity), result=result,
-        )
-        return result
-
-    def _find_position_source(self, target: str, required: D, cycle_id: str,
+            cycle_id=cycle_id, purpose=purpose, symbol=intent.instrument.symbo    def _find_position_source(self, target: str, required: D, cycle_id: str,
                               dependent_edge_bps: D, protected_symbol: str | None) -> dict[str, Any]:
         if not bool(getattr(self.config, "execution_allow_position_funding", True)):
             return {"ready": False, "reason": "POSITION_FUNDING_DISABLED"}
@@ -118,6 +114,10 @@ class FXConversionManager:
                     "dependent_net_edge_bps": str(dependent_edge_bps),
                     "required_min_edge_bps": str(self._position_switch_min_edge_bps())}
         balances = self.authority.gateway.spot_balance()
+        fx_pair = self._fx_pair()
+        fx_bid = self._price(fx_pair, "sell") if fx_pair is not None else D("0")
+        fx_ask = self._price(fx_pair, "buy") if fx_pair is not None else D("0")
+        fx_cost = self._fx_cost_bps()
         candidates = []
         for asset, raw_qty in (balances or {}).items():
             base = canonical_asset(asset)
@@ -137,83 +137,146 @@ class FXConversionManager:
                 bid = self._price(instrument, "sell")
                 if bid <= 0:
                     continue
-                value = qty * bid
-                candidates.append((value, instrument, qty, bid, quote))
+                if quote == "USD":
+                    if fx_ask <= 0:
+                        continue
+                    value_eur = qty * bid / fx_ask
+                else:
+                    value_eur = qty * bid
+                candidates.append((value_eur, instrument, qty, bid, quote))
         candidates.sort(key=lambda item: item[0], reverse=True)
         if not candidates:
             return {"ready": False, "reason": "POSITION_FUNDING_SOURCE_UNAVAILABLE"}
 
-        fx_cost = self._fx_cost_bps()
-        for value, instrument, balance_qty, bid, quote in candidates:
-            target_value = required
+        for _, instrument, balance_qty, bid, quote in candidates:
             if quote == target:
-                needed_qty = min(balance_qty, target_value / bid * (D("1") + fx_cost / D("10000")))
-                if needed_qty < instrument.min_order_qty:
+                needed_quote = required
+            elif {quote, target} == {"EUR", "USD"}:
+                if fx_pair is None or fx_bid <= 0 or fx_ask <= 0:
                     continue
-                if needed_qty * bid < instrument.min_cost:
-                    continue
-                if self._daily_count() >= int(getattr(self.config, "execution_max_orders_per_day", 10)) - 1:
-                    return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
-                result = self._execute(
-                    self._make_intent(instrument, "sell", needed_qty, f"fund_{cycle_id}", dependent_edge_bps, True),
-                    cycle_id, "POSITION_TO_QUOTE",
+                conversion_target = required * (D("1") + fx_cost / D("10000"))
+                needed_quote = (
+                    conversion_target / fx_bid
+                    if target == "USD" and quote == "EUR"
+                    else conversion_target * fx_ask
                 )
-                if result.get("state") in {OrderState.FILLED.value, OrderState.PARTIALLY_FILLED.value}:
-                    return {"ready": True, "converted": True, "source": instrument.symbol,
-                            "source_type": "POSITION", "result": result}
-                return {"ready": False, "reason": "POSITION_FUNDING_ORDER_NOT_FILLED", "result": result}
+            else:
+                continue
 
-            # A EUR position can fund USD through EUR/USD; a USD position can fund EUR.
-            if {quote, target} == {"EUR", "USD"}:
-                bridge_required = required * (D("1") + fx_cost / D("10000"))
-                needed_qty = min(balance_qty, bridge_required / bid)
-                if needed_qty < instrument.min_order_qty or needed_qty * bid < instrument.min_cost:
-                    continue
-                if self._daily_count() >= int(getattr(self.config, "execution_max_orders_per_day", 10)) - 2:
-                    return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
-                sell = self._execute(
-                    self._make_intent(instrument, "sell", needed_qty, f"fund_{cycle_id}", dependent_edge_bps, True),
-                    cycle_id, "POSITION_TO_FX_BRIDGE",
-                )
-                if sell.get("state") not in {OrderState.FILLED.value, OrderState.PARTIALLY_FILLED.value}:
-                    return {"ready": False, "reason": "POSITION_FUNDING_ORDER_NOT_FILLED", "result": sell}
-                return self._convert_cash(target, required, cycle_id, dependent_edge_bps,
-                                          source_hint=quote, already_funded=True)
+            desired_qty = min(
+                balance_qty,
+                needed_quote / bid * (D("1") + fx_cost / D("10000")),
+            )
+            needed_qty = quantize_order_quantity(instrument, desired_qty, rounding=ROUND_DOWN)
+            if needed_qty < instrument.min_order_qty or needed_qty * bid < instrument.min_cost:
+                continue
+            if needed_qty * bid < needed_quote:
+                continue
+            reserve_orders = 1 if quote == target else 2
+            if self._daily_count() >= int(
+                getattr(self.config, "execution_max_orders_per_day", 10)
+            ) - reserve_orders:
+                return {"ready": False, "reason": "DAILY_ORDER_LIMIT_FX_RESERVE"}
+
+            result = self._execute(
+                self._make_intent(
+                    instrument, "sell", needed_qty, f"fund_{cycle_id}",
+                    dependent_edge_bps, True,
+                ),
+                cycle_id, "POSITION_TO_QUOTE" if quote == target else "POSITION_TO_FX_BRIDGE",
+            )
+            if result.get("state") not in {OrderState.FILLED.value, OrderState.PARTIALLY_FILLED.value}:
+                return {"ready": False, "reason": "POSITION_FUNDING_ORDER_NOT_FILLED", "result": result}
+            if quote == target:
+                return {"ready": True, "converted": True, "source": instrument.symbol,
+                        "source_type": "POSITION", "result": result}
+            return self._convert_cash(
+                target, required, cycle_id, dependent_edge_bps,
+                source_hint=quote, already_funded=True,
+            )
         return {"ready": False, "reason": "POSITION_FUNDING_SOURCE_TOO_SMALL"}
+
+int=quote, already_funded=True)
+        return {"ready": False, "reason": "POSITION_FUNDING_SOURCE_TOO_SMALL"}
+
+    def _exchange_cash_balance(self, asset: str) -> D | None:
+        """Read fresh balances after a just-confirmed position liquidation."""
+        try:
+            balances = self.authority.gateway.spot_balance()
+        except Exception:
+            return None
+        target = canonical_asset(asset)
+        total = D("0")
+        for raw_asset, raw_quantity in (balances or {}).items():
+            if canonical_asset(raw_asset) == target:
+                total += D(str(raw_quantity or "0"))
+        return total
 
     def _convert_cash(self, target: str, required: D, cycle_id: str,
                        dependent_edge_bps: D, source_hint: str | None = None,
                        already_funded: bool = False) -> dict[str, Any]:
         target = canonical_asset(target)
         available = self.portfolio.cash_balance(target)
+        if already_funded:
+            refreshed = self._exchange_cash_balance(target)
+            if refreshed is None:
+                return {"ready": False, "reason": "FX_BALANCE_REFRESH_FAILED",
+                        "target_asset": target}
+            available = refreshed
         if available >= required:
             return {"ready": True, "converted": False, "reason": "QUOTE_FUNDS_AVAILABLE"}
+
         fx = self._fx_pair()
         if fx is None:
             return {"ready": False, "reason": "EUR_USD_INSTRUMENT_UNAVAILABLE"}
 
         source = "EUR" if target == "USD" else "USD"
-        if source_hint and canonical_asset(source_hint) == source:
-            pass
-        source_available = self.portfolio.cash_balance(source)
+        if source_hint and canonical_asset(source_hint) != source:
+            return {"ready": False, "reason": "FX_SOURCE_CURRENCY_MISMATCH",
+                    "expected_source": source, "source_hint": canonical_asset(source_hint)}
+        if already_funded:
+            refreshed_source = self._exchange_cash_balance(source)
+            if refreshed_source is None:
+                return {"ready": False, "reason": "FX_BALANCE_REFRESH_FAILED",
+                        "source_asset": source}
+            source_available = refreshed_source
+        else:
+            source_available = self.portfolio.cash_balance(source)
+
         missing = max(D("0"), required - available)
         cost_bps = self._fx_cost_bps()
         target_with_reserve = missing * (D("1") + cost_bps / D("10000"))
         if target == "USD":
-            ask = self._price(fx, "buy")
-            if ask <= 0:
+            # EUR/USD is USD per EUR; to acquire USD, sell the base EUR at bid.
+            bid = self._price(fx, "sell")
+            if bid <= 0:
                 return {"ready": False, "reason": "EUR_USD_PRICE_UNAVAILABLE"}
-            quantity = target_with_reserve / ask
-            side = "buy"
-            source_required = quantity * ask
+            quantity = quantize_order_quantity(
+                fx, target_with_reserve / bid, rounding=ROUND_UP
+            )
+            side = "sell"
+            source_required = quantity
+            reference_price = bid
         else:
+            # To acquire EUR, buy the base EUR at ask using USD.
             ask = self._price(fx, "buy")
             if ask <= 0:
                 return {"ready": False, "reason": "EUR_USD_PRICE_UNAVAILABLE"}
-            # Buy EUR with USD; Kraken volume is EUR (the base asset).
-            quantity = target_with_reserve
+            quantity = quantize_order_quantity(
+                fx, target_with_reserve, rounding=ROUND_UP
+            )
             side = "buy"
             source_required = quantity * ask
+            reference_price = ask
+
+        if (
+            quantity < fx.min_order_qty
+            or (fx.min_cost > 0 and quantity * reference_price < fx.min_cost)
+        ):
+            return {"ready": False, "reason": "FX_ORDER_BELOW_EXCHANGE_MINIMUM",
+                    "quantity": str(quantity), "minimum_quantity": str(fx.min_order_qty),
+                    "estimated_value": str(quantity * reference_price),
+                    "minimum_cost": str(fx.min_cost)}
         if source_available <= 0 or source_available < source_required:
             return {"ready": False, "reason": "FX_SOURCE_FUNDS_UNAVAILABLE",
                     "source_asset": source, "available_source": str(source_available),

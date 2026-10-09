@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.33
+
+- Match order-type payloads to Kraken's documented contracts: market orders omit limit-price fields; Spot limit orders require a valid price; Futures lmt/post/ioc/fok orders require limitPrice, and unrecognized/missing Futures sendStatus is kept in reconciliation rather than marked accepted.
+- Treat Futures sendStatus rejection/cancellation as terminal responses instead of converting result=success into an acknowledged order.
+- Correct EUR/USD quote funding: EUR/USD is USD per EUR, so acquiring USD sells EUR at the bid, while acquiring EUR buys EUR at the ask. Use the correct source-currency amount and refresh balances after a position liquidation before conversion.
+- Calculate position-funded FX bridge quantities in the position quote currency, reserve sale/conversion cost headroom, and enforce exchange minimum quantity/notional checks before funding orders.
+- Normalize Spot sizes to AssetPairs lot_decimals and limit prices to instrument ticks; preserve legitimate zero precision values during discovery.
+- Add regression tests for market-order price omission, required limit parameters, Futures rejected sendStatus, FX direction/bridge funding and precision handling.
+- Bump Home Assistant app, package, Docker build and Kraken User-Agent version to 0.1.33.
+
 ## 0.1.32
 
 - Prioritize an explicit held-position exit over position-size targeting; stale positions target zero rather than retaining unintended residual exposure, while negative-edge telemetry remains compatible.

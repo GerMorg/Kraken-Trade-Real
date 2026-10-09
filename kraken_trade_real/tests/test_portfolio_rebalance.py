@@ -68,7 +68,7 @@ def test_usd_quote_is_converted_to_eur_for_order_sizing(db, fake_gateway):
         Decimal("90"),
         Decimal("60000"),
     )
-    assert qty == Decimal("0.001666666666666666666666666667")
+    assert qty == Decimal("0.0016")
 
 
 def test_decision_reduces_existing_position_instead_of_ignoring_it(config, instrument):
