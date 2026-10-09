@@ -989,15 +989,21 @@ class TradingRuntime:
                     and execution_direction.value == "LONG"
                 )
                 require_margin = opening_short or closing_existing_short
-                lev=self.leverage.choose(
-                    instrument,
-                    f,
-                    confidence,
-                    gross_pct,
-                    margin_level_pct,
-                    self.config.risk_max_leverage,
-                    require_margin=require_margin,
-                )
+                if closing_existing_short:
+                    # A reduce-only buy must retain Spot Margin semantics even
+                    # when entry-time margin health would prohibit new risk.
+                    # Kraken still requires a leverage level for reduce_only.
+                    lev=min(instrument.max_leverage,D("5"))
+                else:
+                    lev=self.leverage.choose(
+                        instrument,
+                        f,
+                        confidence,
+                        gross_pct,
+                        margin_level_pct,
+                        self.config.risk_max_leverage,
+                        require_margin=require_margin,
+                    )
                 if require_margin and lev < D("2"):
                     reason="SPOT_MARGIN_SHORT_NOT_ELIGIBLE"
                     blockers.append(f"{instrument.symbol}:{reason}")
