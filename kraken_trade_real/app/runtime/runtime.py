@@ -851,11 +851,20 @@ class TradingRuntime:
                         D(str(self.config.risk_max_leverage)),
                     )
                     if margin_cost_leverage > D("1"):
+                        margin_hold_hours = D(str(getattr(
+                            self.config, "execution_expected_margin_hold_hours", 8.0
+                        )))
                         margin_cost_estimate = self.risk.cost_model.estimate(
                             snap,
                             max(D("1"), abs(portfolio.positions.get(instrument.symbol, D("0")))),
                             leverage=margin_cost_leverage,
-                            holding_hours=D("8"),
+                            holding_hours=margin_hold_hours,
+                            margin_open_fee_bps=D(str(getattr(
+                                self.config, "execution_margin_open_fee_bps", 2.0
+                            ))),
+                            margin_rollover_fee_bps=D(str(getattr(
+                                self.config, "execution_margin_rollover_fee_bps", 2.0
+                            ))),
                         )
                         financing_bps = margin_cost_estimate.financing_bps
                         if instrument.product_type.value == "SPOT_MARGIN":
@@ -866,7 +875,7 @@ class TradingRuntime:
                                     **long_signal.features,
                                     "margin_financing_cost_bps": financing_bps,
                                     "margin_cost_leverage_assumption": margin_cost_leverage,
-                                    "margin_cost_holding_hours": D("8"),
+                                    "margin_cost_holding_hours": margin_hold_hours,
                                 },
                             )
                         short_signal = __import__("dataclasses").replace(
