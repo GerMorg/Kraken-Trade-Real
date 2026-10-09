@@ -197,3 +197,55 @@ def test_leverage_engine_never_returns_float_for_float_configured_max(instrument
     )
     assert isinstance(chosen, Decimal)
     assert chosen == Decimal("2")
+
+
+
+def test_risk_engine_normalizes_float_leverage_from_legacy_decision(config, instrument):
+    from app.domain.models import Decision, PortfolioState, Signal
+    from app.domain.states import Direction
+
+    signal = Signal(
+        instrument.symbol,
+        Direction.LONG,
+        Decimal("100"),
+        Decimal("10"),
+        Decimal("0.9"),
+        "TEST",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("2")},
+    )
+    decision = Decision(
+        "decision-float-leverage",
+        instrument,
+        signal,
+        Decimal("10"),
+        2.0,  # Legacy or external producers may violate the Decimal type contract.
+        {"min_cost_eur": "0.5"},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("0"),
+        target_position_eur=Decimal("10"),
+        execution_direction=Direction.LONG,
+        reduce_only=False,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"),
+        cash_eur=Decimal("100"),
+        positions={},
+        gross_eur=Decimal("0"),
+        net_eur=Decimal("0"),
+        margin_used_eur=Decimal("0"),
+    )
+    result = RiskEngine(
+        config, MarginEngine(), LeverageEngine(), CostModel()
+    ).evaluate(
+        decision,
+        portfolio,
+        SimpleNamespace(),
+        {"free_margin": "100", "margin_level_pct": "500"},
+    )
+    assert result.allowed is True
+    assert isinstance(result.effective_leverage, Decimal)
+    assert result.effective_leverage == Decimal("2")
