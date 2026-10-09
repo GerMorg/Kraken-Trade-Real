@@ -11,5 +11,6 @@ class OrderIntentBuilder:
         return OrderIntent(new_id("intent"),new_client_order_id(),decision.decision_id,decision.instrument,
             decision.execution_direction or decision.signal.direction,
             "buy" if (decision.execution_direction or decision.signal.direction)==Direction.LONG else "sell",
-            order_type,quantity,limit_price,leverage,decision.instrument.product_type!=ProductType.SPOT,
+            order_type,quantity,limit_price,leverage,
+            decision.instrument.product_type!=ProductType.SPOT or leverage>D("1"),
             reduce_only,decision.signal.net_edge_bps,self.max_slippage,self.timeout_seconds,post_only)
