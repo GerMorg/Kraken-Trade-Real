@@ -929,12 +929,36 @@ class TradingRuntime:
                         short_expected_cost_bps=str(short_signal.expected_cost_bps),
                         short_net_edge_bps=str(short_signal.net_edge_bps),
                         short_confidence=str(short_signal.confidence),
+                        long_margin_financing_cost_bps=str(
+                            long_signal.features.get("margin_financing_cost_bps", D("0"))
+                        ),
+                        short_margin_financing_cost_bps=str(
+                            short_signal.features.get("margin_financing_cost_bps", D("0"))
+                        ),
                         required_edge_bps=str(self.config.strategy_min_edge_bps),
                         required_confidence=str(self.config.strategy_min_confidence),
                     )
                     continue
 
                 decisions_count+=1
+                if "margin_financing_cost_bps" in decision.signal.features:
+                    self.audit.emit(
+                        "CYCLE_MARGIN_COST_INCLUDED",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        direction=(decision.execution_direction or decision.signal.direction).value,
+                        financing_cost_bps=str(
+                            decision.signal.features["margin_financing_cost_bps"]
+                        ),
+                        leverage_assumption=str(
+                            decision.signal.features.get("margin_cost_leverage_assumption", "1")
+                        ),
+                        expected_holding_hours=str(
+                            decision.signal.features.get("margin_cost_holding_hours", "8")
+                        ),
+                        expected_cost_bps=str(decision.signal.expected_cost_bps),
+                    )
                 if decision.current_position_eur != 0:
                     rebalance_decisions+=1
                 confidence=decision.signal.confidence
