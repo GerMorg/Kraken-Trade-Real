@@ -105,7 +105,12 @@ class FXConversionManager:
         self.audit.emit(
             "FUNDING_ORDER_RESULT",
             "INFO" if result.get("state") in {OrderState.FILLED.value, OrderState.PARTIALLY_FILLED.value} else "WARNING",
-            cycle_id=cycle_id, purpose=purpose, symbol=intent.instrument.symbo    def _find_position_source(self, target: str, required: D, cycle_id: str,
+            cycle_id=cycle_id, purpose=purpose, symbol=intent.instrument.symbol,
+            side=intent.side, quantity=str(intent.quantity), result=result,
+        )
+        return result
+
+    def _find_position_source(self, target: str, required: D, cycle_id: str,
                               dependent_edge_bps: D, protected_symbol: str | None) -> dict[str, Any]:
         if not bool(getattr(self.config, "execution_allow_position_funding", True)):
             return {"ready": False, "reason": "POSITION_FUNDING_DISABLED"}
@@ -155,6 +160,8 @@ class FXConversionManager:
                 if fx_pair is None or fx_bid <= 0 or fx_ask <= 0:
                     continue
                 conversion_target = required * (D("1") + fx_cost / D("10000"))
+                # EUR/USD is USD per EUR. If the holding is priced in EUR and
+                # the dependent trade needs USD, estimate required EUR at bid.
                 needed_quote = (
                     conversion_target / fx_bid
                     if target == "USD" and quote == "EUR"
@@ -194,9 +201,6 @@ class FXConversionManager:
                 target, required, cycle_id, dependent_edge_bps,
                 source_hint=quote, already_funded=True,
             )
-        return {"ready": False, "reason": "POSITION_FUNDING_SOURCE_TOO_SMALL"}
-
-int=quote, already_funded=True)
         return {"ready": False, "reason": "POSITION_FUNDING_SOURCE_TOO_SMALL"}
 
     def _exchange_cash_balance(self, asset: str) -> D | None:
@@ -247,7 +251,7 @@ int=quote, already_funded=True)
         cost_bps = self._fx_cost_bps()
         target_with_reserve = missing * (D("1") + cost_bps / D("10000"))
         if target == "USD":
-            # EUR/USD is USD per EUR; to acquire USD, sell the base EUR at bid.
+            # EUR/USD is USD per EUR. To acquire USD, sell base EUR at the bid.
             bid = self._price(fx, "sell")
             if bid <= 0:
                 return {"ready": False, "reason": "EUR_USD_PRICE_UNAVAILABLE"}
@@ -258,7 +262,7 @@ int=quote, already_funded=True)
             source_required = quantity
             reference_price = bid
         else:
-            # To acquire EUR, buy the base EUR at ask using USD.
+            # To acquire EUR, buy base EUR at ask using USD.
             ask = self._price(fx, "buy")
             if ask <= 0:
                 return {"ready": False, "reason": "EUR_USD_PRICE_UNAVAILABLE"}
