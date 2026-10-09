@@ -1331,6 +1331,7 @@ class TradingRuntime:
                     snap.spread_bps,
                     decision.signal.net_edge_bps,
                     f.get("volatility",D("999")),
+                    reduce_only=decision.reduce_only,
                 )
                 execution_direction=decision.execution_direction or decision.signal.direction
                 price=snap.ask if execution_direction.value=="LONG" else snap.bid

@@ -385,7 +385,11 @@ class TradingAuthority:
             "SELECT COUNT(*) AS n FROM orders WHERE submitted_at IS NOT NULL AND state != 'REJECTED' "
             "AND submitted_at>=strftime('%s','now','start of day')"
         )
-        if count and int(count["n"]) >= self.config.execution_max_orders_per_day:
+        if (
+            count
+            and int(count["n"]) >= self.config.execution_max_orders_per_day
+            and not intent.reduce_only
+        ):
             return {"state": OrderState.REJECTED.value, "reason": "DAILY_ORDER_LIMIT"}
         open_orders = self.db.query(
             "SELECT client_order_id,state FROM orders WHERE symbol=? "
@@ -573,7 +577,7 @@ class TradingAuthority:
             "ORDER BY submitted_at DESC LIMIT 1",
             (intent.instrument.symbol, intent.direction.value),
         )
-        if recent:
+        if recent and not intent.reduce_only:
             age = time_since(recent[0]["submitted_at"])
             if age < 60:
                 return {
