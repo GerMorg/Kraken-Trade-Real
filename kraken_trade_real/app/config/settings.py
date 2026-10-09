@@ -49,6 +49,9 @@ class Config:
     risk_max_drawdown_pct: float
     risk_cash_reserve_pct: float
     execution_max_slippage_bps: float
+    execution_expected_margin_hold_hours: float
+    execution_margin_open_fee_bps: float
+    execution_margin_rollover_fee_bps: float
     execution_order_timeout_seconds: int
     execution_max_reprices: int
     execution_max_orders_per_day: int
@@ -189,6 +192,15 @@ class Config:
             risk_max_drawdown_pct=f("risk_max_drawdown_pct", 8.0, 0.1, 100.0),
             risk_cash_reserve_pct=f("risk_cash_reserve_pct", 20.0, 0.0, 100.0),
             execution_max_slippage_bps=f("execution_max_slippage_bps", 40.0, 0.0, 2000.0),
+            execution_expected_margin_hold_hours=f(
+                "execution_expected_margin_hold_hours", 8.0, 0.25, 168.0
+            ),
+            execution_margin_open_fee_bps=f(
+                "execution_margin_open_fee_bps", 2.0, 0.0, 1000.0
+            ),
+            execution_margin_rollover_fee_bps=f(
+                "execution_margin_rollover_fee_bps", 2.0, 0.0, 1000.0
+            ),
             execution_order_timeout_seconds=i("execution_order_timeout_seconds", 45, 5),
             execution_max_reprices=i("execution_max_reprices", 2, 0),
             execution_max_orders_per_day=i("execution_max_orders_per_day", 10, 1),
