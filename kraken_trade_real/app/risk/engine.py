@@ -119,10 +119,13 @@ class RiskEngine:
                 if delta > 0
                 else True
             ),
-            "leverage_bound": d.leverage <= min(
-                self.IMMUTABLE_MAX_LEVERAGE,
-                D(str(self.config.risk_max_leverage)),
-                d.instrument.max_leverage,
+            "leverage_bound": (
+                valid_reduction
+                or d.leverage <= min(
+                    self.IMMUTABLE_MAX_LEVERAGE,
+                    D(str(self.config.risk_max_leverage)),
+                    d.instrument.max_leverage,
+                )
             ),
             # Entry thresholds protect new risk. They must not block
             # reduce-only exits, whose purpose is to remove existing risk.
