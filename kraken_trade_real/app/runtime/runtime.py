@@ -11,6 +11,10 @@ import time
 from typing import Any, Callable
 
 from app.domain.models import digest_config, new_id
+from app.portfolio.reconcile import (
+    minimum_orderable_spot_quantity,
+    resolve_spot_cash_reduction_quantity,
+)
 from app.domain.symbols import resolve_instrument_symbol
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
@@ -23,6 +27,41 @@ D=Decimal
 
 class _StageTimeout(TimeoutError):
     pass
+
+
+def _direction_value(direction: Any) -> str:
+    return str(getattr(direction, "value", direction) or "").strip().upper()
+
+
+def _requires_spot_margin_short_risk(
+    instrument: Any, direction: Any, reduce_only: bool
+) -> bool:
+    """Any new/increased Spot Margin short needs a sell-side leverage level."""
+    return (
+        instrument.venue == "spot"
+        and str(getattr(instrument.product_type, "value", instrument.product_type)) == "SPOT_MARGIN"
+        and _direction_value(direction) == "SHORT"
+        and not reduce_only
+    )
+
+
+def _is_spot_cash_long_reduction(
+    instrument: Any,
+    direction: Any,
+    reduce_only: bool,
+    current_position_eur: Decimal,
+    exchange_margin_position: bool,
+) -> bool:
+    """Recognize a sale of held base assets, not a Spot Margin short entry."""
+    return (
+        instrument.venue == "spot"
+        and str(getattr(instrument.product_type, "value", instrument.product_type))
+        in {"SPOT", "SPOT_MARGIN"}
+        and _direction_value(direction) == "SHORT"
+        and reduce_only
+        and current_position_eur > 0
+        and not exchange_margin_position
+    )
 
 
 def _run_with_hard_timeout(
@@ -1088,19 +1127,29 @@ class TradingRuntime:
                     else None
                 )
                 execution_direction = decision.execution_direction or decision.signal.direction
-                opening_short = (
-                    instrument.product_type.value == "SPOT_MARGIN"
-                    and execution_direction.value == "SHORT"
-                    and decision.current_position_eur == 0
+                opening_short = _requires_spot_margin_short_risk(
+                    instrument, execution_direction, decision.reduce_only
                 )
                 closing_existing_short = (
-                    instrument.product_type.value == "SPOT_MARGIN"
+                    instrument.venue == "spot"
+                    and instrument.product_type.value == "SPOT_MARGIN"
                     and decision.reduce_only
                     and decision.current_position_eur < 0
                     and execution_direction.value == "LONG"
                 )
+                closing_existing_cash_long = _is_spot_cash_long_reduction(
+                    instrument,
+                    execution_direction,
+                    decision.reduce_only,
+                    decision.current_position_eur,
+                    instrument.symbol in self.portfolio.position_leverages,
+                )
                 require_margin = opening_short or closing_existing_short
-                if closing_existing_short:
+                if closing_existing_cash_long:
+                    # Selling base assets already held in the Spot wallet is a
+                    # cash reduction, not a new margin short. Never attach leverage.
+                    lev = D("1")
+                elif closing_existing_short:
                     # Reuse Kraken's reported leverage when possible; Kraken still
                     # requires a leveraged Spot order to close the financed short.
                     held_short_leverage = self.portfolio.position_leverages.get(
@@ -1112,7 +1161,7 @@ class TradingRuntime:
                         else min(instrument.max_leverage, D("5"))
                     )
                 else:
-                    lev=self.leverage.choose(
+                    lev = self.leverage.choose(
                         instrument,
                         f,
                         confidence,
@@ -1241,11 +1290,74 @@ class TradingRuntime:
                     )
                     continue
 
-                quantity=self.portfolio.quantity_for_eur(
+                quantity = self.portfolio.quantity_for_eur(
                     instrument,
                     decision.target_notional_eur,
                     snap.price,
                 )
+                execution_direction = decision.execution_direction or decision.signal.direction
+                spot_cash_reduction = _is_spot_cash_long_reduction(
+                    instrument,
+                    execution_direction,
+                    decision.reduce_only,
+                    decision.current_position_eur,
+                    instrument.symbol in self.portfolio.position_leverages,
+                )
+                reduction_quantity_status = ""
+                requested_quantity = quantity
+                if (
+                    spot_cash_reduction
+                    and self.portfolio.quote_to_eur_rate(instrument.quote) is not None
+                ):
+                    quantity, reduction_quantity_status = resolve_spot_cash_reduction_quantity(
+                        instrument,
+                        snap.price,
+                        quantity,
+                        self.portfolio.cash_balance(instrument.base),
+                        flattening=decision.target_position_eur == 0,
+                    )
+                    if reduction_quantity_status in {
+                        "FULL_EXIT_BALANCE_RECOVERY", "BALANCE_CLAMPED"
+                    }:
+                        self.audit.emit(
+                            "CYCLE_SPOT_REDUCTION_QUANTITY_RECONCILED",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            requested_quantity=str(requested_quantity),
+                            order_quantity=str(quantity),
+                            available_base_quantity=str(
+                                self.portfolio.cash_balance(instrument.base)
+                            ),
+                            current_position_eur=str(decision.current_position_eur),
+                            target_position_eur=str(decision.target_position_eur),
+                            reason=reduction_quantity_status,
+                        )
+                    elif reduction_quantity_status in {
+                        "REBALANCE_DELTA_BELOW_MINIMUM", "DUST_POSITION"
+                    }:
+                        reason = reduction_quantity_status
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason] = no_action_reasons.get(reason, 0) + 1
+                        self.audit.emit(
+                            "CYCLE_REBALANCE_BELOW_MINIMUM",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            reason=reason,
+                            requested_quantity=str(requested_quantity),
+                            minimum_orderable_quantity=str(
+                                minimum_orderable_spot_quantity(instrument, snap.price)
+                            ),
+                            available_base_quantity=str(
+                                self.portfolio.cash_balance(instrument.base)
+                            ),
+                            current_position_eur=str(decision.current_position_eur),
+                            target_position_eur=str(decision.target_position_eur),
+                            target_delta_eur=str(decision.target_notional_eur),
+                            action="NO_ORDER_UNTIL_DELTA_IS_ORDERABLE",
+                        )
+                        continue
                 if quantity is None or quantity <= 0:
                     reason="FX_RATE_UNAVAILABLE"
                     blockers.append(f"{instrument.symbol}:{reason}")
