@@ -337,21 +337,25 @@ class TacticalTrader:
 
         active_instruments: dict[str, Instrument] = {}
         for symbol in sorted(active_positions):
-            instrument: Instrument | None = known_instruments.get(symbol)
-            if instrument is None:
+            active_instrument: Instrument | None = known_instruments.get(symbol)
+            if active_instrument is None:
                 resolved = resolve_instrument_symbol(
                     symbol, list(known_instruments.values())
                 )
-                instrument = resolved if isinstance(resolved, Instrument) else None
-            if instrument is None:
+                active_instrument = (
+                    resolved if isinstance(resolved, Instrument) else None
+                )
+            if active_instrument is None:
                 try:
                     from_db = self._instrument_from_db(symbol)
-                    instrument = from_db if isinstance(from_db, Instrument) else None
+                    active_instrument = (
+                        from_db if isinstance(from_db, Instrument) else None
+                    )
                 except Exception:
-                    instrument = None
-            if instrument is not None and instrument.venue == "spot":
-                active_instruments[instrument.symbol] = instrument
-                known_instruments.setdefault(instrument.symbol, instrument)
+                    active_instrument = None
+            if active_instrument is not None and active_instrument.venue == "spot":
+                active_instruments[active_instrument.symbol] = active_instrument
+                known_instruments.setdefault(active_instrument.symbol, active_instrument)
 
         active_symbols = list(active_instruments)
         active_base_keys = {
