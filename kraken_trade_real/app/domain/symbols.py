@@ -7,18 +7,19 @@ from typing import Any
 def canonical_asset(value: Any) -> str:
     """Normalize Kraken asset aliases to one canonical asset code."""
     asset = str(value or "").upper().strip()
+    # Kraken's legacy X/Z prefixes are not a general naming rule. Strip them
+    # only through the known Asset Info aliases; a real ticker such as ZBCN
+    # or ZETA must remain intact rather than silently becoming BCN/ETA.
     aliases = {
-        "XBT": "BTC", "XXBT": "BTC", "XETH": "ETH", "XXETH": "ETH",
-        "ZUSD": "USD", "ZEUR": "EUR", "ZGBP": "GBP", "ZCHF": "CHF",
-        "ZCAD": "CAD", "ZJPY": "JPY", "ZAUD": "AUD", "ZNZD": "NZD",
+        "XBT": "BTC", "XXBT": "BTC",
+        "XETH": "ETH", "XXETH": "ETH",
+        "XETC": "ETC", "XLTC": "LTC", "XMLN": "MLN", "XREP": "REP",
+        "XXDG": "DOGE", "XDG": "DOGE", "XXLM": "XLM", "XXMR": "XMR",
+        "XXRP": "XRP", "XZEC": "ZEC",
+        "ZAUD": "AUD", "ZCAD": "CAD", "ZEUR": "EUR", "ZGBP": "GBP",
+        "ZJPY": "JPY", "ZUSD": "USD", "ZCHF": "CHF", "ZNZD": "NZD",
     }
-    if asset in aliases:
-        return aliases[asset]
-    if asset.startswith("XX") and len(asset) > 2:
-        return asset[2:]
-    if asset.startswith(("X", "Z")) and len(asset) > 3:
-        return asset[1:]
-    return asset
+    return aliases.get(asset, asset)
 
 
 def normalized_symbol(value: Any) -> str:
