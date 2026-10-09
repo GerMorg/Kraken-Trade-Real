@@ -506,7 +506,7 @@ def test_valid_reduce_only_exit_bypasses_entry_only_margin_and_loss_gates(
         execution_direction=Direction.LONG,
         reduce_only=True,
     )
-    portfolio = __import__("app.domain.models", fromlist=["PortfolioState"]).PortfolioState(
+    portfolio = PortfolioState(
         equity_eur=Decimal("100"),
         cash_eur=Decimal("0"),
         positions={leveraged.symbol: Decimal("-100")},
