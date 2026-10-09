@@ -22,8 +22,11 @@ class LeverageEngine:
         require_margin: bool = False,
     ) -> D:
         available_levels = tuple(instrument.leverage_levels or (D("1"),))
-        metadata = instrument.metadata if isinstance(instrument.metadata, dict) else {}
-        if instrument.venue == "spot" and instrument.product_type.value == "SPOT_MARGIN":
+        raw_metadata = getattr(instrument, "metadata", None)
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        product_type = getattr(instrument, "product_type", None)
+        product_type_value = str(getattr(product_type, "value", product_type))
+        if getattr(instrument, "venue", None) == "spot" and product_type_value == "SPOT_MARGIN":
             # Kraken publishes separate leverage_buy and leverage_sell lists.
             # The union stored on Instrument must not size a short on buy leverage.
             side_key = "leverage_sell" if require_margin else "leverage_buy"
