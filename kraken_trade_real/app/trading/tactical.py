@@ -104,6 +104,7 @@ class TacticalTrader:
             "duplicate_quote_pairs_removed": 0,
             "held_asset_pairs_excluded": 0,
             "duplicate_symbol_rows_removed": 0,
+            "quote_pair_choices": {},
         }
         self._ranked_instruments: dict[str, Instrument] = {}
         self._load_positions()
@@ -216,6 +217,7 @@ class TacticalTrader:
             duplicate_symbol_rows_removed=candidate_diagnostics.get(
                 "duplicate_symbol_rows_removed", 0
             ),
+            quote_pair_choices=candidate_diagnostics.get("quote_pair_choices", {}),
         )
 
     def status(self) -> dict[str, Any]:
@@ -431,12 +433,26 @@ class TacticalTrader:
 
         best_by_base: list[tuple[D, D, D, str, Instrument]] = []
         duplicate_quote_pairs_removed = 0
-        for rows in by_base.values():
+        quote_pair_choices: dict[str, dict[str, Any]] = {}
+        for base_key, rows in by_base.items():
             # Higher score first; use tighter spread, greater EUR turnover and
             # finally symbol order as deterministic tie breakers.
             rows.sort(key=lambda row: (-row[0], row[1], -row[2], row[3]))
             best_by_base.append(rows[0])
             duplicate_quote_pairs_removed += max(0, len(rows) - 1)
+            if len(rows) > 1:
+                quote_pair_choices[base_key] = {
+                    "selected": rows[0][3],
+                    "alternatives": [
+                        {
+                            "symbol": row[3],
+                            "score": str(row[0]),
+                            "spread_bps": str(row[1]),
+                            "turnover_24h_eur": str(row[2]),
+                        }
+                        for row in rows[1:]
+                    ],
+                }
 
         best_by_base.sort(key=lambda row: (-row[0], row[1], -row[2], row[3]))
         entry_rows = best_by_base[:max_candidates]
@@ -458,6 +474,7 @@ class TacticalTrader:
             "duplicate_quote_pairs_removed": duplicate_quote_pairs_removed,
             "held_asset_pairs_excluded": held_asset_pairs_excluded,
             "duplicate_symbol_rows_removed": duplicate_symbol_rows_removed,
+            "quote_pair_choices": quote_pair_choices,
         }
         with self._lock:
             self._candidate_diagnostics = diagnostics
