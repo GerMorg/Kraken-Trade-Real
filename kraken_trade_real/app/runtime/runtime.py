@@ -853,6 +853,24 @@ class TradingRuntime:
                         40,
                         int(getattr(self.config, "tactical_candidate_limit", 12)) * 4,
                     )]
+                    # A Tactical position must retain its stream even when its
+                    # market falls outside the current strategy ranking/history window.
+                    tracked_symbols = set()
+                    tracked_positions = getattr(
+                        self.tactical, "tracked_position_symbols", None
+                    )
+                    if callable(tracked_positions):
+                        tracked_symbols = set(tracked_positions())
+                    seed_symbols = {instrument.symbol for instrument in tactical_seed}
+                    if tracked_symbols - seed_symbols:
+                        universe_by_symbol = {
+                            instrument.symbol: instrument for instrument in self.instruments
+                        }
+                        for symbol in sorted(tracked_symbols - seed_symbols):
+                            instrument = universe_by_symbol.get(symbol)
+                            if instrument is not None:
+                                tactical_seed.append(instrument)
+                                seed_symbols.add(symbol)
                     tactical_news = {
                         instrument.symbol: self.news.effect_for(instrument.symbol, news)
                         for instrument in tactical_seed
