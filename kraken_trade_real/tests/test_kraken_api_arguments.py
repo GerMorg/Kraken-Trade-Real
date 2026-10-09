@@ -692,3 +692,60 @@ def test_builder_normalizes_market_price_and_spot_lot_precision(config, instrume
     )
     assert intent.quantity == Decimal("0.0012")
     assert intent.limit_price is None
+
+
+
+def test_margin_engine_uses_sell_specific_spot_leverage_for_shorts(instrument):
+    from dataclasses import replace
+    from app.risk.leverage import LeverageEngine
+
+    instrument = replace(
+        instrument,
+        leverage_levels=(Decimal("2"), Decimal("3")),
+        metadata={"leverage_buy": ["3"], "leverage_sell": ["2"]},
+        short_available=True,
+    )
+    engine = LeverageEngine()
+    features = {
+        "volatility": Decimal("2"),
+        "spread_bps": Decimal("10"),
+        "trend": Decimal("1"),
+    }
+    short_leverage = engine.choose(
+        instrument, features, Decimal("0.9"), Decimal("20"), Decimal("500"),
+        Decimal("5"), require_margin=True,
+    )
+    long_leverage = engine.choose(
+        instrument, features, Decimal("0.9"), Decimal("20"), Decimal("500"),
+        Decimal("5"), require_margin=False,
+    )
+    assert short_leverage == Decimal("2")
+    assert long_leverage == Decimal("3")
+
+
+def test_margin_engine_never_uses_buy_leverage_as_short_fallback(instrument):
+    from dataclasses import replace
+    from app.risk.leverage import LeverageEngine
+
+    instrument = replace(
+        instrument,
+        leverage_levels=(Decimal("2"), Decimal("3")),
+        metadata={"leverage_buy": ["2", "3"], "leverage_sell": []},
+        short_available=True,
+    )
+    leverage = LeverageEngine().choose(
+        instrument,
+        {"volatility": Decimal("2"), "spread_bps": Decimal("10"), "trend": Decimal("1")},
+        Decimal("0.9"), Decimal("20"), Decimal("500"), Decimal("5"),
+        require_margin=True,
+    )
+    assert leverage == Decimal("0")
+
+
+def test_any_increasing_spot_margin_short_requires_margin_even_when_already_short(instrument):
+    from app.runtime.runtime import _requires_spot_margin_short_risk
+
+    assert _requires_spot_margin_short_risk(instrument, Direction.SHORT, False) is True
+    # Cash-Spot sells that reduce a held position do not count as opening a short.
+    assert _requires_spot_margin_short_risk(instrument, Direction.SHORT, True) is False
+    assert _requires_spot_margin_short_risk(instrument, Direction.LONG, False) is False

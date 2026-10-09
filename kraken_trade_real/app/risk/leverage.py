@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -21,7 +21,36 @@ class LeverageEngine:
         configured_max: D,
         require_margin: bool = False,
     ) -> D:
-        available = max(instrument.leverage_levels or (D("1"),))
+        available_levels = tuple(instrument.leverage_levels or (D("1"),))
+        raw_metadata = getattr(instrument, "metadata", None)
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        product_type = getattr(instrument, "product_type", None)
+        product_type_value = str(getattr(product_type, "value", product_type))
+        if getattr(instrument, "venue", None) == "spot" and product_type_value == "SPOT_MARGIN":
+            # Kraken publishes separate leverage_buy and leverage_sell lists.
+            # The union stored on Instrument must not size a short on buy leverage.
+            side_key = "leverage_sell" if require_margin else "leverage_buy"
+            raw_levels = metadata.get(side_key)
+            if require_margin and not instrument.short_available:
+                return D("0")
+            if isinstance(raw_levels, (list, tuple)):
+                parsed = []
+                for raw_level in raw_levels:
+                    try:
+                        level = D(str(raw_level))
+                    except (InvalidOperation, ValueError):
+                        continue
+                    if level > 0:
+                        parsed.append(level)
+                if parsed:
+                    available_levels = tuple(parsed)
+                elif require_margin:
+                    # Never fall back to buy leverage for a Spot Margin short.
+                    return D("0")
+                else:
+                    # No buy-side margin level means a cash Spot long, leverage 1.
+                    available_levels = (D("1"),)
+        available = max(available_levels, default=D("1"))
         max_allowed = min(
             available,
             configured_max,
