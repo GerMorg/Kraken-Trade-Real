@@ -4,6 +4,7 @@
 
 - Resolve Kraken Spot Margin position aliases (for example `MINAUSD`) to canonical discovered symbols so held positions are included in every market-selection and reevaluation cycle.
 - Include conservative expected Spot Margin opening and four-hour rollover costs in Core strategy edge calculations; expose the assumed leverage, holding horizon, and cost in structured logs.
+- Expose the expected holding horizon, margin opening-fee estimate, and four-hour rollover estimate as Home Assistant options; the configured rates are estimates unless Kraken supplies an instrument-specific rate.
 - Set Spot order margin funding from the actual leverage level, not merely the instrument's margin capability; cash Spot reductions are no longer sent as invalid reduce-only margin orders.
 - Preserve the Spot Margin path when closing existing shorts, allow validated reduce-only exits through entry-only loss/drawdown/exposure/margin gates, and reject any reduce-only target that flips or increases exposure.
 - Add regression tests for symbol alias resolution, time-based financing estimates, and reduce-only order arguments.
