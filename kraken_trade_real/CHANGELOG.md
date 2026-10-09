@@ -2,7 +2,7 @@
 
 ## 0.1.37
 
-- Deduplicate Tactical entry candidates by canonical base asset across EUR/USD markets, ranking quote pairs by spread, volatility and EUR-normalized 24-hour turnover.
+- Deduplicate Tactical entry candidates by canonical base asset across EUR/USD markets, rank quote pairs by spread, volatility and EUR-normalized 24-hour turnover, and log the selected market plus discarded alternatives for each duplicated base.
 - Preserve every open Tactical position's instrument in the live WebSocket subscription even when it falls outside the current market-ranking window.
 - Keep Tactical's instrument map in actual rank order; report the complete stream symbol list and distinguish entry candidates, held-base exclusions, exact duplicate rows and quote-pair deduplication.
 - Block duplicate Tactical exposure when the same base asset is already held under another quote symbol, including a final entry-time guard.
