@@ -571,11 +571,15 @@ class TradingRuntime:
                 1 for instrument in position_instrument_by_symbol.values()
                 if instrument is not None and instrument.symbol in selected_symbols
             )
-            position_missing=sorted(
-                symbol for symbol in position_symbols
-                if position_instrument_by_symbol.get(symbol) is None
-                or position_instrument_by_symbol[symbol].symbol not in selected_symbols
-            )
+            position_missing=[]
+            for position_symbol in position_symbols:
+                matched_instrument=position_instrument_by_symbol.get(position_symbol)
+                if (
+                    matched_instrument is None
+                    or matched_instrument.symbol not in selected_symbols
+                ):
+                    position_missing.append(position_symbol)
+            position_missing.sort()
             self.audit.emit(
                 "CYCLE_POSITION_REEVALUATION",
                 "INFO",
