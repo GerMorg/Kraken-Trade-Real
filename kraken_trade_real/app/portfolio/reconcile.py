@@ -308,9 +308,21 @@ class PortfolioReconciler:
                 symbol = str(item.get("pair") or item.get("symbol") or "")
                 if not symbol or symbol in positions:
                     continue
+                spot_instruments = self._spot_instruments()
+                symbol_key = "".join(char for char in symbol.upper() if char.isalnum())
                 instrument = next(
-                    (candidate for candidate in self._spot_instruments()
-                     if candidate.symbol == symbol or candidate.instrument_id == symbol),
+                    (
+                        candidate for candidate in spot_instruments
+                        if symbol in {
+                            candidate.symbol, candidate.instrument_id, candidate.altname
+                        }
+                        or symbol_key in {
+                            "".join(char for char in alias.upper() if char.isalnum())
+                            for alias in (
+                                candidate.symbol, candidate.instrument_id, candidate.altname
+                            )
+                        }
+                    ),
                     None,
                 )
                 value = dec(item.get("value") or item.get("cost"))
@@ -322,7 +334,11 @@ class PortfolioReconciler:
                     continue
                 if str(item.get("type") or "").lower() == "sell":
                     value = -abs(value)
-                positions[symbol] = value
+                # Keep exchange margin positions under the canonical discovered
+                # instrument symbol. Kraken's OpenPositions pair can be an
+                # altname (e.g. MINAUSD) rather than the app's MINA/USD symbol;
+                # otherwise the position is silently omitted from reevaluation.
+                positions[instrument.symbol if instrument is not None else symbol] = value
                 gross += abs(value)
                 net += value
         except Exception as exc:
