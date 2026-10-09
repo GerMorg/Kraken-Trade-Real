@@ -47,7 +47,7 @@ class RiskEngine:
         valid_reduction = (
             d.reduce_only
             and current != 0
-            and desired_abs <= current_abs
+            and desired_abs < current_abs
             and (desired == 0 or current * desired > 0)
         )
         gross_after = p.gross_eur - current_abs + desired_abs
