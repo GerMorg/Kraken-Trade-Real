@@ -21,7 +21,16 @@ class LeverageEngine:
         configured_max: D,
         require_margin: bool = False,
     ) -> D:
-        available_levels = tuple(instrument.leverage_levels or (D("1"),))
+        # Config is loaded from JSON and uses floats. Convert before any min/max
+        # operation: min(Decimal, float) can return a float, leaking it into orders.
+        configured_max = D(str(configured_max))
+        confidence = D(str(confidence))
+        portfolio_gross_pct = D(str(portfolio_gross_pct))
+        if margin_level_pct is not None:
+            margin_level_pct = D(str(margin_level_pct))
+        available_levels = tuple(
+            D(str(level)) for level in (instrument.leverage_levels or (D("1"),))
+        )
         raw_metadata = getattr(instrument, "metadata", None)
         metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
         product_type = getattr(instrument, "product_type", None)
