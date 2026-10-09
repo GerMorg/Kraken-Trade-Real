@@ -125,7 +125,9 @@ class DecisionEngine:
             "execution_direction": execution_direction,
             "reduce_only": reduce_only,
             "reversal_to_flat": reversal,
-            "balanced": trade_notional < min_cost_eur,
+            # A reduction below exchange minimums still needs a Decision so runtime
+            # can log the retained residual as DUST instead of silently ignoring it.
+            "balanced": trade_notional < min_cost_eur and not reduce_only,
         }
 
     def _held_position_needs_exit(self, signal: Signal, scale: D) -> bool:
@@ -219,7 +221,11 @@ class DecisionEngine:
         )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return "TARGET_BALANCED"
-        if effective_min_cost > 0 and plan["trade_notional_eur"] < effective_min_cost:
+        if (
+            effective_min_cost > 0
+            and plan["trade_notional_eur"] < effective_min_cost
+            and not plan["reduce_only"]
+        ):
             return "MINIMUM_COST"
         return "NO_ACTION"
 
@@ -275,9 +281,21 @@ class DecisionEngine:
             effective_min_cost,
             force_flatten=force_flatten,
         )
+        if force_flatten and current != 0:
+            # Preserve the explicit two-stage reversal state: flatten now, wait
+            # for a fresh cycle before considering a new order in the other direction.
+            plan["reversal_to_flat"] = any(
+                (current > 0 and candidate[0].direction == Direction.SHORT)
+                or (current < 0 and candidate[0].direction == Direction.LONG)
+                for candidate in candidates
+            )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return None
-        if effective_min_cost > 0 and plan["trade_notional_eur"] < effective_min_cost:
+        if (
+            effective_min_cost > 0
+            and plan["trade_notional_eur"] < effective_min_cost
+            and not plan["reduce_only"]
+        ):
             return None
         execution_direction = plan["execution_direction"]
         if execution_direction is None:

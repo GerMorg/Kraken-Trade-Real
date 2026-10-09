@@ -931,9 +931,15 @@ class TradingRuntime:
                             ),
                             leverage=cost_leverage,
                             holding_hours=margin_hold_hours,
-                            margin_open_fee_bps=D(str(getattr(
-                                self.config, "execution_margin_open_fee_bps", 2.0
-                            ))),
+                            # Entry fees are sunk for the currently held direction.
+                            # Only prospective carry should influence the hold/exit test.
+                            margin_open_fee_bps=(
+                                D("0")
+                                if held_direction
+                                else D(str(getattr(
+                                    self.config, "execution_margin_open_fee_bps", 2.0
+                                )))
+                            ),
                             margin_rollover_fee_bps=D(str(getattr(
                                 self.config, "execution_margin_rollover_fee_bps", 2.0
                             ))),
@@ -947,6 +953,7 @@ class TradingRuntime:
                                 "margin_cost_leverage_assumption": cost_leverage,
                                 "margin_cost_leverage_source": leverage_source,
                                 "margin_cost_holding_hours": margin_hold_hours,
+                                "margin_cost_includes_open_fee": not held_direction,
                             },
                         )
 
