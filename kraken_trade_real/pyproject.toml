@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kraken-trade-real"
-version = "0.1.36"
+version = "0.1.37"
 description = "Autonomous Kraken trading Home Assistant app"
 requires-python = ">=3.12"
 dependencies = [
