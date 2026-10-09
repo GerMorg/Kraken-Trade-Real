@@ -28,18 +28,55 @@ class CostEstimate:
 
 
 class CostModel:
-    def estimate(self, market: Any, notional_eur: D, leverage: D= D("1"),
-                 fee_bps: D=D("40"), funding_bps: D=D("0"), fx_bps: D=D("0")) -> CostEstimate:
-        spread=market.spread_bps
-        volatility=D(str(max(D("0"),market.metadata.get("volatility",D("0"))))) if hasattr(market,"metadata") else D("0")
-        impact=max(D("2"), notional_eur/max(D("1"),market.volume_24h)*D("10000"))
-        slippage=max(D("2"),min(D("80"),volatility*D("2")))
-        financing=D("0") if leverage<=1 else (leverage-D("1"))*D("4")
-        safety=max(D("5"),slippage*D("0.25"))
+    # Kraken Spot Margin rollover begins after four hours and repeats every
+    # four hours. Rates vary by asset and market conditions, so callers may
+    # provide the observed rate in market.metadata. The fallback is a
+    # conservative 2 bps (0.02%) per four-hour period on borrowed notional.
+    DEFAULT_MARGIN_OPEN_FEE_BPS = D("2")
+    DEFAULT_MARGIN_ROLLOVER_FEE_BPS = D("2")
+    MARGIN_ROLLOVER_INTERVAL_HOURS = D("4")
+
+    def estimate(
+        self,
+        market: Any,
+        notional_eur: D,
+        leverage: D = D("1"),
+        fee_bps: D = D("40"),
+        funding_bps: D = D("0"),
+        fx_bps: D = D("0"),
+        holding_hours: D = D("4"),
+    ) -> CostEstimate:
+        spread = D(str(market.spread_bps))
+        metadata = market.metadata if hasattr(market, "metadata") else {}
+        volatility = D(str(max(D("0"), metadata.get("volatility", D("0")))))
+        impact = max(D("2"), notional_eur / max(D("1"), D(str(market.volume_24h))) * D("10000"))
+        slippage = max(D("2"), min(D("80"), volatility * D("2")))
+        if leverage <= D("1"):
+            financing = D("0")
+        else:
+            borrowed_share = (leverage - D("1")) / leverage
+            opening_rate = D(str(metadata.get(
+                "margin_open_fee_bps", self.DEFAULT_MARGIN_OPEN_FEE_BPS
+            )))
+            rollover_rate = D(str(metadata.get(
+                "margin_rollover_fee_bps", self.DEFAULT_MARGIN_ROLLOVER_FEE_BPS
+            )))
+            hours = max(D("0"), D(str(holding_hours)))
+            # A rollover is charged at each completed four-hour boundary.
+            rollover_periods = int(hours / self.MARGIN_ROLLOVER_INTERVAL_HOURS)
+            financing = borrowed_share * (
+                opening_rate + rollover_rate * D(rollover_periods)
+            )
+        safety = max(D("5"), slippage * D("0.25"))
         return CostEstimate(
-            fee_bps=fee_bps,spread_bps=spread,slippage_bps=slippage,
-            impact_bps=impact,funding_bps=funding_bps,financing_bps=financing,
-            fx_bps=fx_bps,safety_buffer_bps=safety,
+            fee_bps=fee_bps,
+            spread_bps=spread,
+            slippage_bps=slippage,
+            impact_bps=impact,
+            funding_bps=funding_bps,
+            financing_bps=financing,
+            fx_bps=fx_bps,
+            safety_buffer_bps=safety,
         )
 
 
