@@ -137,9 +137,14 @@ class DecisionEngine:
         """
         calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
         ok, _, _ = self._edge_policy(signal, calibrated)
+        cost_ratio = max(
+            D("1"),
+            D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10))),
+        )
+        required_return = signal.expected_cost_bps * cost_ratio
         return (
             not ok
-            or signal.expected_return_bps < signal.expected_cost_bps
+            or signal.expected_return_bps < required_return
             or signal.net_edge_bps <= D("0")
         )
 
@@ -155,14 +160,16 @@ class DecisionEngine:
         scale = self._confidence_scale(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
+        if current != 0:
+            held_signal = long_signal if current > 0 else short_signal
+            if self._held_position_needs_exit(held_signal, scale):
+                return "REBALANCE_EXIT"
 
         candidates = self._candidate_signals(
             instrument, long_signal, short_signal, scale, current=current
         )
         if not candidates and current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if self._held_position_needs_exit(held_signal, scale):
-                return "REBALANCE_EXIT"
             if held_signal.confidence * scale < D(str(self.config.strategy_min_confidence)):
                 return "MIN_CONFIDENCE"
             return "TARGET_BALANCED"
@@ -237,17 +244,23 @@ class DecisionEngine:
         force_flatten = False
         edge_tier = "STANDARD"
         edge_threshold = D(str(self.config.strategy_min_edge_bps))
-        if candidates:
+        held_signal = long_signal if current > 0 else short_signal
+        held_needs_exit = current != 0 and self._held_position_needs_exit(
+            held_signal, scale
+        )
+        # A stale held-position signal must take priority over position-size
+        # targeting. Otherwise the sizing branch can keep an unintended residual.
+        if held_needs_exit:
+            signal = held_signal
+            force_flatten = True
+        elif candidates:
             candidates.sort(
                 key=lambda item: (item[0].net_edge_bps, item[0].confidence),
                 reverse=True,
             )
             signal, edge_threshold, edge_tier = candidates[0]
         elif current != 0:
-            signal = long_signal if current > 0 else short_signal
-            if not self._held_position_needs_exit(signal, scale):
-                return None
-            force_flatten = True
+            return None
         else:
             return None
 
@@ -283,9 +296,15 @@ class DecisionEngine:
             "trade_notional_eur": str(plan["trade_notional_eur"]),
             "reduce_only": plan["reduce_only"],
             "reversal_to_flat": plan["reversal_to_flat"],
-            "rebalance_action": "FLATTEN_STALE_EDGE" if force_flatten else "",
+            "rebalance_action": (
+                "FLATTEN_NEGATIVE_EDGE"
+                if force_flatten and signal.net_edge_bps <= D("0")
+                else "FLATTEN_STALE_EDGE" if force_flatten else ""
+            ),
             "rebalance_reason": (
-                "held_position_failed_current_edge_or_confidence_or_cost_guard"
+                "held_position_net_edge_non_positive"
+                if force_flatten and signal.net_edge_bps <= D("0")
+                else "held_position_failed_current_edge_or_confidence_or_cost_guard"
                 if force_flatten else ""
             ),
             "min_cost_eur": str(effective_min_cost),

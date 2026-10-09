@@ -221,8 +221,8 @@ class Config:
                 raw.get("tax_provider_classification", "FOREIGN")
             ).strip().upper(),
             tax_report_enabled=b("tax_report_enabled", True),
-            tactical_enabled=b("tactical_enabled", False),
-            tactical_shadow_mode=b("tactical_shadow_mode", True),
+            tactical_enabled=b("tactical_enabled", True),
+            tactical_shadow_mode=b("tactical_shadow_mode", False),
             tactical_allow_short=b("tactical_allow_short", True),
             tactical_portfolio_pct=f("tactical_portfolio_pct", 25.0, 1.0, 25.0),
             tactical_max_capital_eur=f("tactical_max_capital_eur", 15.0, 5.0, 1000.0),
@@ -306,5 +306,6 @@ class Config:
         )
         if cfg.tactical_min_expected_move_bps <= minimum_cost:
             raise ValueError("tactical minimum expected move must clear configured costs")
-        if not cfg.tactical_shadow_mode and not cfg.live_enabled:
-            raise ValueError("live tactical mode requires live_enabled")
+        # Tactical may be configured in live-intent mode while global order
+        # submission remains disabled. TradingAuthority is the final gate and
+        # requires live_enabled=True and kill_switch=False for actual orders.

@@ -324,6 +324,23 @@ class TradingRuntime:
             tactical_enabled=bool(getattr(self.config, "tactical_enabled", False)),
             tactical_shadow_mode=bool(getattr(self.config, "tactical_shadow_mode", True)),
             tactical_allow_short=bool(getattr(self.config, "tactical_allow_short", True)),
+            tactical_effective_live_enabled=bool(
+                getattr(self.config, "tactical_enabled", False)
+                and not getattr(self.config, "tactical_shadow_mode", True)
+                and self.config.live_enabled
+                and not self.config.kill_switch
+            ),
+            tactical_live_block_reason=(
+                "TACTICAL_DISABLED"
+                if not getattr(self.config, "tactical_enabled", False)
+                else "SHADOW_MODE"
+                if getattr(self.config, "tactical_shadow_mode", True)
+                else "GLOBAL_KILL_SWITCH"
+                if self.config.kill_switch
+                else "CORE_LIVE_TRADING_DISABLED"
+                if not self.config.live_enabled
+                else ""
+            ),
         )
         if self.tactical is not None:
             try:
@@ -837,31 +854,82 @@ class TradingRuntime:
                 long_signal,short_signal=self.signals.evaluate(
                     instrument,snap,f,regime,news_bps,gemini_bps
                 )
-                # Spot Margin opening and rollover charges must affect the
-                # strategy edge, not merely appear in a separate report. Use
-                # an explicit eight-hour expected holding horizon and a
-                # conservative fallback rate when Kraken does not expose a
-                # current per-position rate in this market snapshot.
+                # Apply opening/rollover financing only to Kraken Spot Margin.
+                # Use the same direction-specific leverage selection as execution and
+                # prefer exchange-reported leverage for already-open positions.
+                current_position_for_cost = portfolio.positions.get(instrument.symbol, D("0"))
                 margin_cost_direction = (
-                    instrument.product_type.value == "SPOT_MARGIN"
-                    or (
-                        instrument.short_available
-                        and instrument.margin_available
-                    )
+                    instrument.venue == "spot"
+                    and instrument.product_type.value == "SPOT_MARGIN"
                 )
                 if margin_cost_direction:
-                    margin_cost_leverage = min(
-                        instrument.max_leverage,
-                        D(str(self.config.risk_max_leverage)),
+                    margin_hold_hours = D(str(getattr(
+                        self.config, "execution_expected_margin_hold_hours", 8.0
+                    )))
+                    margin_account_for_cost = self.portfolio.spot_margin_account
+                    margin_level_for_cost = (
+                        D(str(margin_account_for_cost.get("margin_level_pct") or 0))
+                        if isinstance(margin_account_for_cost, dict)
+                        else None
                     )
-                    if margin_cost_leverage > D("1"):
-                        margin_hold_hours = D(str(getattr(
-                            self.config, "execution_expected_margin_hold_hours", 8.0
-                        )))
-                        margin_cost_estimate = self.risk.cost_model.estimate(
+                    gross_pct_for_cost = (
+                        portfolio.gross_eur / portfolio.equity_eur * 100
+                        if portfolio.equity_eur > 0 else D("999")
+                    )
+                    max_supported_leverage = min(instrument.max_leverage, D("5"))
+
+                    def add_margin_cost(signal):
+                        held_direction = (
+                            current_position_for_cost > 0
+                            and signal.direction.value == "LONG"
+                        ) or (
+                            current_position_for_cost < 0
+                            and signal.direction.value == "SHORT"
+                        )
+                        held_leverage = self.portfolio.position_leverages.get(
+                            instrument.symbol
+                        )
+                        if held_direction and held_leverage is not None and held_leverage > 1:
+                            cost_leverage = min(held_leverage, max_supported_leverage)
+                            leverage_source = "KRAKEN_OPEN_POSITION"
+                        elif held_direction and signal.direction.value == "LONG":
+                            cost_leverage = D("1")
+                            leverage_source = "CASH_POSITION_DEFAULT"
+                        elif held_direction and signal.direction.value == "SHORT":
+                            cost_leverage = max_supported_leverage
+                            leverage_source = "CONSERVATIVE_POSITION_FALLBACK"
+                        else:
+                            requires_margin = signal.direction.value == "SHORT"
+                            selected_leverage = self.leverage.choose(
+                                instrument,
+                                f,
+                                signal.confidence,
+                                gross_pct_for_cost,
+                                margin_level_for_cost,
+                                self.config.risk_max_leverage,
+                                require_margin=requires_margin,
+                            )
+                            if selected_leverage <= 0 and requires_margin:
+                                cost_leverage = min(
+                                    max_supported_leverage,
+                                    D(str(self.config.risk_max_leverage)),
+                                )
+                                leverage_source = "CONSERVATIVE_UNAVAILABLE_MARGIN_FALLBACK"
+                            else:
+                                cost_leverage = max(D("1"), selected_leverage)
+                                leverage_source = "PRETRADE_LEVERAGE_MODEL"
+                        if signal.direction.value == "SHORT" and not instrument.short_available:
+                            cost_leverage = D("1")
+                            leverage_source = "SHORT_UNAVAILABLE"
+                        estimate = self.risk.cost_model.estimate(
                             snap,
-                            max(D("1"), abs(portfolio.positions.get(instrument.symbol, D("0")))),
-                            leverage=margin_cost_leverage,
+                            max(
+                                D("1"),
+                                abs(current_position_for_cost),
+                                portfolio.equity_eur
+                                * D(str(self.config.risk_max_position_pct)) / 100,
+                            ),
+                            leverage=cost_leverage,
                             holding_hours=margin_hold_hours,
                             margin_open_fee_bps=D(str(getattr(
                                 self.config, "execution_margin_open_fee_bps", 2.0
@@ -870,28 +938,20 @@ class TradingRuntime:
                                 self.config, "execution_margin_rollover_fee_bps", 2.0
                             ))),
                         )
-                        financing_bps = margin_cost_estimate.financing_bps
-                        if instrument.product_type.value == "SPOT_MARGIN":
-                            long_signal = __import__("dataclasses").replace(
-                                long_signal,
-                                expected_cost_bps=long_signal.expected_cost_bps + financing_bps,
-                                features={
-                                    **long_signal.features,
-                                    "margin_financing_cost_bps": financing_bps,
-                                    "margin_cost_leverage_assumption": margin_cost_leverage,
-                                    "margin_cost_holding_hours": margin_hold_hours,
-                                },
-                            )
-                        short_signal = __import__("dataclasses").replace(
-                            short_signal,
-                            expected_cost_bps=short_signal.expected_cost_bps + financing_bps,
+                        return __import__("dataclasses").replace(
+                            signal,
+                            expected_cost_bps=signal.expected_cost_bps + estimate.financing_bps,
                             features={
-                                **short_signal.features,
-                                "margin_financing_cost_bps": financing_bps,
-                                "margin_cost_leverage_assumption": margin_cost_leverage,
-                                "margin_cost_holding_hours": D("8"),
+                                **signal.features,
+                                "margin_financing_cost_bps": estimate.financing_bps,
+                                "margin_cost_leverage_assumption": cost_leverage,
+                                "margin_cost_leverage_source": leverage_source,
+                                "margin_cost_holding_hours": margin_hold_hours,
                             },
                         )
+
+                    long_signal = add_margin_cost(long_signal)
+                    short_signal = add_margin_cost(short_signal)
                 min_cost_eur=self.portfolio.min_cost_eur(instrument)
                 if min_cost_eur is None:
                     reason="FX_RATE_UNAVAILABLE"
@@ -960,12 +1020,18 @@ class TradingRuntime:
                         "INFO",
                         cycle_id=cycle_id,
                         symbol=instrument.symbol,
-                        direction=(decision.execution_direction or decision.signal.direction).value,
+                        direction=decision.signal.direction.value,
+                        execution_direction=(
+                            decision.execution_direction or decision.signal.direction
+                        ).value,
                         financing_cost_bps=str(
                             decision.signal.features["margin_financing_cost_bps"]
                         ),
                         leverage_assumption=str(
                             decision.signal.features.get("margin_cost_leverage_assumption", "1")
+                        ),
+                        leverage_assumption_source=str(
+                            decision.signal.features.get("margin_cost_leverage_source", "UNKNOWN")
                         ),
                         expected_holding_hours=str(
                             decision.signal.features.get("margin_cost_holding_hours", "8")
@@ -1003,10 +1069,16 @@ class TradingRuntime:
                 )
                 require_margin = opening_short or closing_existing_short
                 if closing_existing_short:
-                    # A reduce-only buy must retain Spot Margin semantics even
-                    # when entry-time margin health would prohibit new risk.
-                    # Kraken still requires a leverage level for reduce_only.
-                    lev=min(instrument.max_leverage,D("5"))
+                    # Reuse Kraken's reported leverage when possible; Kraken still
+                    # requires a leveraged Spot order to close the financed short.
+                    held_short_leverage = self.portfolio.position_leverages.get(
+                        instrument.symbol
+                    )
+                    lev = (
+                        held_short_leverage
+                        if held_short_leverage is not None and held_short_leverage > D("1")
+                        else min(instrument.max_leverage, D("5"))
+                    )
                 else:
                     lev=self.leverage.choose(
                         instrument,
@@ -1174,6 +1246,9 @@ class TradingRuntime:
                             quantity=str(quantity),minimum_order_qty=str(minimum_qty),
                             position_value_eur=str(decision.current_position_eur),
                             action="NO_ORDER_UNTIL_POSITION_CHANGES",
+                            position_retained=True,
+                            marked_closed=False,
+                            retry_when_orderable=True,
                         )
                         continue
                     if minimum_cost > 0 and estimated_notional < minimum_cost:
@@ -1187,6 +1262,9 @@ class TradingRuntime:
                             estimated_order_value=str(estimated_notional),
                             minimum_order_cost=str(minimum_cost),
                             action="NO_ORDER_UNTIL_POSITION_CHANGES",
+                            position_retained=True,
+                            marked_closed=False,
+                            retry_when_orderable=True,
                         )
                         continue
                 if (

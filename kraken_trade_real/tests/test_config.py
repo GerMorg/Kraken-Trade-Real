@@ -12,6 +12,12 @@ def test_real_trading_defaults_to_disabled():
     assert cfg.market_exploration_slots_per_family >= 1
     assert cfg.execution_reconciliation_limit >= 1
     assert cfg.execution_reconciliation_stale_seconds >= 5
+    # Tactical can evaluate live-intent signals on a fresh install, while real
+    # submissions remain globally disabled and the kill switch stays enabled.
+    assert cfg.tactical_enabled is True
+    assert cfg.tactical_shadow_mode is False
+    assert cfg.live_enabled is False
+    assert cfg.kill_switch is True
 
 
 def test_config_rejects_inconsistent_risk(tmp_path):

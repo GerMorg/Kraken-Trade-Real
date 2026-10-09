@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.32
+
+- Prioritize an explicit held-position exit over position-size targeting; stale positions target zero rather than retaining unintended residual exposure, while negative-edge telemetry remains compatible.
+- Require held positions to clear the configured expected-return/cost ratio rather than retaining risk with a barely positive edge.
+- Track exchange-reported leverage for Spot Margin and Futures positions; use position-specific leverage for carry assumptions and Spot Margin short closes when available.
+- Estimate Spot Margin rollover carry per direction using the same pre-trade leverage selector as execution, identify the assumption source in logs, and do not apply Spot Margin rollover assumptions to derivatives.
+- Keep below-minimum residuals open and auditable, explicitly logging that no close order was sent and the residual was not marked closed.
+- Enable Tactical by default on a fresh install in live-intent mode while global live trading remains disabled and the global kill switch remains enabled. Existing Home Assistant options remain preserved and must be reviewed after upgrade.
+- Bump Home Assistant app, package, Docker label, and Kraken User-Agent to 0.1.32.
+
 ## 0.1.31
 
 - Close a held position when its current-direction signal no longer clears the configured edge/confidence policy or expected return no longer covers estimated costs; do not keep risk open merely because its net edge remains slightly positive.

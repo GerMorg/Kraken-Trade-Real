@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.31
+version: 0.1.32
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -85,8 +85,8 @@ options:
   tax_enabled: true
   tax_provider_classification: "FOREIGN"
   tax_report_enabled: true
-  tactical_enabled: false
-  tactical_shadow_mode: true
+  tactical_enabled: true
+  tactical_shadow_mode: false
   tactical_allow_short: true
   tactical_portfolio_pct: 25.0
   tactical_max_capital_eur: 15.0
