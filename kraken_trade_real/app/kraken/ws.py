@@ -401,6 +401,51 @@ class WebSocketSupervisor:
         for message in messages:
             ws.send(json.dumps(message, separators=(",", ":")))
 
+    def _unsubscribe(self, ws: Any, symbols: tuple[str, ...]) -> None:
+        """Remove only the symbols that left the Tactical candidate set."""
+        if not symbols:
+            return
+        messages = (
+            {
+                "method": "unsubscribe",
+                "params": {"channel": "ticker", "symbol": list(symbols), "event_trigger": "bbo"},
+            },
+            {
+                "method": "unsubscribe",
+                "params": {"channel": "book", "symbol": list(symbols), "depth": 10},
+            },
+            {
+                "method": "unsubscribe",
+                "params": {"channel": "trade", "symbol": list(symbols)},
+            },
+        )
+        for message in messages:
+            ws.send(json.dumps(message, separators=(",", ":")))
+
+    def _update_subscriptions(
+        self,
+        ws: Any,
+        previous_symbols: tuple[str, ...],
+        next_symbols: tuple[str, ...],
+    ) -> None:
+        """Delta-update subscriptions without dropping the live connection."""
+        previous = set(previous_symbols)
+        current = set(next_symbols)
+        removed = tuple(sorted(previous - current))
+        added = tuple(sorted(current - previous))
+        if removed:
+            self._unsubscribe(ws, removed)
+        if added:
+            self._subscribe(ws, added)
+        if added or removed:
+            self.audit.emit(
+                "TACTICAL_WS_SUBSCRIPTION_SET_UPDATED",
+                "INFO",
+                added_symbols=list(added),
+                removed_symbols=list(removed),
+                subscribed_symbols=len(current),
+            )
+
     def _run(self) -> None:
         reconnect_delay = 1.0
         while not self.stop_event.is_set():
@@ -417,6 +462,7 @@ class WebSocketSupervisor:
                 ws.settimeout(1.0)
                 self._subscribe(ws, wire_symbols)
                 self._subscribed_symbols = symbols
+                subscribed_wire_symbols = wire_symbols
                 self.connected = True
                 self.last_error = ""
                 self.audit.emit(
@@ -428,17 +474,22 @@ class WebSocketSupervisor:
                 reconnect_delay = 1.0
                 while not self.stop_event.is_set():
                     current = self.symbols()
-                    if current != self._subscribed_symbols or self._resubscribe.is_set():
+                    current_wire_symbols = self.wire_symbols()
+                    if (
+                        current != self._subscribed_symbols
+                        or current_wire_symbols != subscribed_wire_symbols
+                        or self._resubscribe.is_set()
+                    ):
                         self._resubscribe.clear()
-                        try:
-                            ws.close()
-                        except Exception as exc:
-                            self.audit.emit(
-                                "TACTICAL_WS_CLOSE_FAILED",
-                                "WARNING",
-                                error_type=type(exc).__name__,
-                            )
-                        break
+                        # Candidate rotation is a normal operation. Update only the
+                        # changed symbol subscriptions instead of closing/reopening
+                        # the WebSocket on every five-minute scan.
+                        self._update_subscriptions(
+                            ws, subscribed_wire_symbols, current_wire_symbols
+                        )
+                        self._subscribed_symbols = current
+                        subscribed_wire_symbols = current_wire_symbols
+                        continue
                     try:
                         payload = ws.recv()
                     except websocket.WebSocketTimeoutException:
