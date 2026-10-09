@@ -36,7 +36,7 @@ class RiskEngine:
     ) -> RiskResult:
         # Decisions restored from legacy state/tests or external strategies may
         # contain float leverage. Risk arithmetic is Decimal-only.
-        leverage = D(str(leverage))
+        leverage = D(str(d.leverage))
         execution_direction = d.execution_direction or d.signal.direction
         direction = execution_direction.value
 
