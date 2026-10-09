@@ -833,6 +833,52 @@ class TradingRuntime:
                 long_signal,short_signal=self.signals.evaluate(
                     instrument,snap,f,regime,news_bps,gemini_bps
                 )
+                # Spot Margin opening and rollover charges must affect the
+                # strategy edge, not merely appear in a separate report. Use
+                # an explicit eight-hour expected holding horizon and a
+                # conservative fallback rate when Kraken does not expose a
+                # current per-position rate in this market snapshot.
+                margin_cost_direction = (
+                    instrument.product_type.value == "SPOT_MARGIN"
+                    or (
+                        instrument.short_available
+                        and instrument.margin_available
+                    )
+                )
+                if margin_cost_direction:
+                    margin_cost_leverage = min(
+                        instrument.max_leverage,
+                        D(str(self.config.risk_max_leverage)),
+                    )
+                    if margin_cost_leverage > D("1"):
+                        margin_cost_estimate = self.risk.cost_model.estimate(
+                            snap,
+                            max(D("1"), abs(portfolio.positions.get(instrument.symbol, D("0")))),
+                            leverage=margin_cost_leverage,
+                            holding_hours=D("8"),
+                        )
+                        financing_bps = margin_cost_estimate.financing_bps
+                        if instrument.product_type.value == "SPOT_MARGIN":
+                            long_signal = __import__("dataclasses").replace(
+                                long_signal,
+                                expected_cost_bps=long_signal.expected_cost_bps + financing_bps,
+                                features={
+                                    **long_signal.features,
+                                    "margin_financing_cost_bps": financing_bps,
+                                    "margin_cost_leverage_assumption": margin_cost_leverage,
+                                    "margin_cost_holding_hours": D("8"),
+                                },
+                            )
+                        short_signal = __import__("dataclasses").replace(
+                            short_signal,
+                            expected_cost_bps=short_signal.expected_cost_bps + financing_bps,
+                            features={
+                                **short_signal.features,
+                                "margin_financing_cost_bps": financing_bps,
+                                "margin_cost_leverage_assumption": margin_cost_leverage,
+                                "margin_cost_holding_hours": D("8"),
+                            },
+                        )
                 min_cost_eur=self.portfolio.min_cost_eur(instrument)
                 if min_cost_eur is None:
                     reason="FX_RATE_UNAVAILABLE"
