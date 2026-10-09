@@ -560,7 +560,11 @@ class TradingAuthority:
             "AND state != 'REJECTED' "
             "AND submitted_at>=strftime('%s','now','start of day')"
         )
-        if count and int(count["n"]) >= self.config.execution_max_orders_per_day:
+        if (
+            count
+            and int(count["n"]) >= self.config.execution_max_orders_per_day
+            and not intent.reduce_only
+        ):
             return {
                 "allowed": False,
                 "reason": "DAILY_ORDER_LIMIT",
