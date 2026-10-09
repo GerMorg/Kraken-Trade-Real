@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.35
+
+- Fix cycle failures caused by float-valued configuration leaking through `LeverageEngine.choose` into the Decimal-only margin cost model.
+- Normalize numeric inputs at the CostModel boundary and convert leverage/risk inputs to Decimal before min/max selection so order and cost calculations remain type-consistent.
+- Add regression tests for float leverage, float cost configuration and Decimal return types.
+- Bump Home Assistant app, Python package, Docker build and Kraken User-Agent to 0.1.35.
+
+
 ## 0.1.34
 
 - Fix Spot Margin leverage selection to use Kraken's direction-specific leverage_buy/leverage_sell values; any new or increased Spot Margin short must select a sell-supported leverage even if the portfolio already has a short.

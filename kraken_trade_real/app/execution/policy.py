@@ -49,6 +49,19 @@ class CostModel:
         margin_open_fee_bps: D | None = None,
         margin_rollover_fee_bps: D | None = None,
     ) -> CostEstimate:
+        # This API sits at a boundary between runtime/config values (often float)
+        # and the Decimal-only cost model. Normalize every numeric input once so
+        # a valid leverage such as 2.0 cannot abort a complete trading cycle.
+        notional_eur = D(str(notional_eur))
+        leverage = D(str(leverage))
+        fee_bps = D(str(fee_bps))
+        funding_bps = D(str(funding_bps))
+        fx_bps = D(str(fx_bps))
+        holding_hours = D(str(holding_hours))
+        if margin_open_fee_bps is not None:
+            margin_open_fee_bps = D(str(margin_open_fee_bps))
+        if margin_rollover_fee_bps is not None:
+            margin_rollover_fee_bps = D(str(margin_rollover_fee_bps))
         spread = D(str(market.spread_bps))
         metadata = market.metadata if hasattr(market, "metadata") else {}
         volatility = D(str(max(D("0"), metadata.get("volatility", D("0")))))
