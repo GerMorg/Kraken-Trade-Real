@@ -408,7 +408,7 @@ class WebSocketSupervisor:
         messages = (
             {
                 "method": "unsubscribe",
-                "params": {"channel": "ticker", "symbol": list(symbols)},
+                "params": {"channel": "ticker", "symbol": list(symbols), "event_trigger": "bbo"},
             },
             {
                 "method": "unsubscribe",
