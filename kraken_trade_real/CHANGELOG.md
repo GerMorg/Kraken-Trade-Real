@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.36
+
+- Keep the Tactical Kraken WebSocket connection alive when the candidate set rotates; unsubscribe removed symbols and subscribe added symbols incrementally instead of reconnecting every cycle.
+- Add regression tests ensuring only delta symbols are sent and an unchanged candidate set produces no wire messages.
+- Bump Home Assistant app, Python package, Docker build and Kraken User-Agent to 0.1.36.
+
+
 ## 0.1.35
 
 - Fix cycle failures caused by float-valued configuration leaking through `LeverageEngine.choose` into the Decimal-only margin cost model.
