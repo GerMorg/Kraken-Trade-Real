@@ -44,6 +44,12 @@ class RiskEngine:
 
         current_abs = abs(current)
         desired_abs = abs(desired)
+        valid_reduction = (
+            d.reduce_only
+            and current != 0
+            and desired_abs <= current_abs
+            and (desired == 0 or current * desired > 0)
+        )
         gross_after = p.gross_eur - current_abs + desired_abs
         net_after = p.net_eur - current + desired
         delta = desired - current
@@ -89,26 +95,27 @@ class RiskEngine:
 
         checks = {
             "instrument_direction": (
-                d.reduce_only
+                valid_reduction
                 or (
                     d.instrument.long_available
                     if direction == "LONG"
                     else d.instrument.short_available
                 )
             ),
-            "daily_loss": p.daily_pnl_eur >= -(
+            "daily_loss": valid_reduction or p.daily_pnl_eur >= -(
                 eq * D(str(self.config.risk_daily_loss_pct)) / 100
             ),
-            "drawdown": p.drawdown_pct <= D(str(self.config.risk_max_drawdown_pct)),
-            "position_limit": pos_pct <= position_limit_pct,
-            "gross_limit": gross_pct <= D(str(self.config.risk_max_gross_pct)),
-            "net_limit": net_pct <= D(str(self.config.risk_max_net_pct)),
+            "drawdown": valid_reduction or p.drawdown_pct <= D(str(self.config.risk_max_drawdown_pct)),
+            "position_limit": valid_reduction or pos_pct <= position_limit_pct,
+            "gross_limit": valid_reduction or gross_pct <= D(str(self.config.risk_max_gross_pct)),
+            "net_limit": valid_reduction or net_pct <= D(str(self.config.risk_max_net_pct)),
             "open_positions_limit": (
                 not is_new_position
                 or len(p.positions) < self.config.risk_max_open_positions
             ),
             "cash_reserve": (
-                p.cash_eur >= eq * D(str(self.config.risk_cash_reserve_pct)) / 100
+                valid_reduction
+                or p.cash_eur >= eq * D(str(self.config.risk_cash_reserve_pct)) / 100
                 if delta > 0
                 else True
             ),
@@ -120,7 +127,7 @@ class RiskEngine:
             # Entry thresholds protect new risk. They must not block
             # reduce-only exits, whose purpose is to remove existing risk.
             "edge_positive": (
-                d.reduce_only
+                valid_reduction
                 or (
                     d.signal.net_edge_bps >= risk_edge_threshold
                     and d.signal.expected_return_bps >= (
@@ -129,19 +136,21 @@ class RiskEngine:
                 )
             ),
             "confidence": (
-                d.reduce_only
+                valid_reduction
                 or d.signal.confidence >= D(str(self.config.strategy_min_confidence))
             ),
             "extreme_volatility": (
-                d.reduce_only
+                valid_reduction
                 or d.signal.features.get("volatility", D(999)) <= volatility_limit
             ),
         }
 
-        if min_cost_eur > 0:
-            checks["minimum_cost"] = d.reduce_only or desired_abs >= min_cost_eur
+        checks["reduce_only_semantics"] = (not d.reduce_only) or valid_reduction
 
-        if d.leverage > 1:
+        if min_cost_eur > 0:
+            checks["minimum_cost"] = valid_reduction or desired_abs >= min_cost_eur
+
+        if d.leverage > 1 and not valid_reduction:
             checks["margin_available"] = margin_account is not None
             if margin_account is not None:
                 requested_margin = desired_abs / d.leverage
