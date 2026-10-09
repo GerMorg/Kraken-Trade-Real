@@ -50,7 +50,14 @@ class InstrumentDiscovery:
             sell_levels = tuple(_d(x, "1") for x in (raw.get("leverage_sell") or []))
             leverage = tuple(sorted(set(buy_levels + sell_levels)))
             margin_available = bool(buy_levels or sell_levels)
-            pair_decimals = int(raw.get("pair_decimals") or 8)
+            pair_decimals_raw = raw.get("pair_decimals")
+            pair_decimals = max(
+                0, min(18, int(pair_decimals_raw if pair_decimals_raw is not None else 8))
+            )
+            lot_decimals_raw = raw.get("lot_decimals")
+            lot_decimals = max(
+                0, min(18, int(lot_decimals_raw if lot_decimals_raw is not None else 8))
+            )
             metadata = dict(raw)
             if metadata.get("aclass_base") == "tokenized_asset":
                 metadata["asset_class"] = "tokenized_asset"
@@ -70,7 +77,7 @@ class InstrumentDiscovery:
                     leverage_levels=leverage or (Decimal("1"),),
                     min_order_qty=_d(raw.get("ordermin")),
                     min_cost=_d(raw.get("costmin")),
-                    lot_decimals=int(raw.get("lot_decimals") or 8),
+                    lot_decimals=lot_decimals,
                     price_decimals=pair_decimals,
                     tick_size=Decimal("1").scaleb(-pair_decimals),
                     margin_class="spot-margin" if margin_available else "spot",

@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 import time
 from typing import Any
 
-from app.domain.models import Instrument, PortfolioState
+from app.domain.models import Instrument, PortfolioState, quantize_order_quantity
 from app.domain.symbols import resolve_instrument_symbol
 
 D = Decimal
@@ -182,7 +182,8 @@ class PortfolioReconciler:
             return None
         quote_notional = notional_eur / rate
         if instrument.venue != "futures":
-            return quote_notional / price
+            quantity = quantize_order_quantity(instrument, quote_notional / price)
+            return quantity if quantity > 0 else None
 
         contract_size = dec(
             instrument.metadata.get("contractSize")

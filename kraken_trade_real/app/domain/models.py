@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass,field
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any
 import hashlib
 import json
@@ -92,3 +92,35 @@ def is_valid_kraken_client_order_id(value: str) -> bool:
     except (ValueError, AttributeError):
         return len(value) <= 18 and all(32 <= ord(char) <= 126 for char in value)
 def digest_config(data:Any)->str:return hashlib.sha256(json.dumps(data,sort_keys=True,default=str,separators=(",",":")).encode()).hexdigest()
+
+
+def quantize_order_quantity(
+    instrument: Instrument,
+    quantity: Decimal,
+    *,
+    rounding: str = ROUND_DOWN,
+) -> Decimal:
+    """Normalize Spot base-asset volume to Kraken AssetPairs lot precision."""
+    value = Decimal(str(quantity))
+    if instrument.venue != "spot":
+        return value
+    decimals = max(0, min(18, int(instrument.lot_decimals)))
+    return value.quantize(Decimal("1").scaleb(-decimals), rounding=rounding)
+
+
+def quantize_limit_price(
+    instrument: Instrument,
+    price: Decimal | None,
+    side: str,
+) -> Decimal | None:
+    """Align to a venue tick while retaining marketability of executable limits."""
+    if price is None:
+        return None
+    value = Decimal(str(price))
+    tick = Decimal(str(instrument.tick_size))
+    if value <= 0 or tick <= 0:
+        return value
+    # For an executable buy limit, round up to the next legal tick; for a sell,
+    # round down. This avoids turning a marketable limit into a passive non-fill.
+    rounding = ROUND_UP if str(side).lower() == "buy" else ROUND_DOWN
+    return (value / tick).to_integral_value(rounding=rounding) * tick

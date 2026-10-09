@@ -254,7 +254,73 @@ class TradingAuthority:
                     post_only=intent.post_only,
                 )
                 status = response.get("sendStatus", {}) if isinstance(response, dict) else {}
+                status = status if isinstance(status, dict) else {}
+                exchange_status = str(status.get("status") or "").strip().lower()
                 order_id = status.get("order_id") or status.get("orderId")
+                if exchange_status == "rejected":
+                    error_text = str(
+                        status.get("rejectionReason")
+                        or status.get("reason")
+                        or "FUTURES_SEND_STATUS_REJECTED"
+                    )[:700]
+                    self.db.update_order_state(
+                        intent.client_order_id,
+                        OrderState.REJECTED.value,
+                        kraken_order_id=order_id,
+                        last_error=error_text,
+                    )
+                    self.audit.emit(
+                        "ORDER_REJECTED_EXCHANGE",
+                        "WARNING",
+                        intent_id=intent.intent_id,
+                        venue="futures",
+                        exchange_status=exchange_status,
+                        error=error_text,
+                    )
+                    return {
+                        "state": OrderState.REJECTED.value,
+                        "reason": "KRAKEN_ORDER_REJECTED",
+                        "exchange_status": exchange_status,
+                        "exchange_error": error_text,
+                        "reconciled": True,
+                    }
+                if exchange_status in {"cancelled", "canceled"}:
+                    self.db.update_order_state(
+                        intent.client_order_id,
+                        OrderState.CANCELED.value,
+                        kraken_order_id=order_id,
+                        last_error="FUTURES_ORDER_CANCELLED_AT_SUBMISSION",
+                    )
+                    return {
+                        "state": OrderState.CANCELED.value,
+                        "reason": "FUTURES_ORDER_CANCELLED_AT_SUBMISSION",
+                        "exchange_status": exchange_status,
+                        "reconciled": True,
+                    }
+                if exchange_status not in {
+                    "placed", "filled", "partiallyfilled", "partially_filled",
+                    "pending", "received", "acknowledged",
+                } or not order_id:
+                    self.db.update_order_state(
+                        intent.client_order_id,
+                        OrderState.UNKNOWN_RECONCILING.value,
+                        kraken_order_id=order_id,
+                        last_error="FUTURES_SEND_STATUS_MISSING_OR_UNRECOGNIZED",
+                    )
+                    self.audit.emit(
+                        "ORDER_RECONCILING",
+                        "WARNING",
+                        intent_id=intent.intent_id,
+                        venue="futures",
+                        exchange_status=exchange_status or "MISSING",
+                        has_order_id=bool(order_id),
+                    )
+                    return {
+                        "state": OrderState.UNKNOWN_RECONCILING.value,
+                        "reason": "FUTURES_SEND_STATUS_MISSING_OR_UNRECOGNIZED",
+                        "kraken_order_id": order_id,
+                        "reconciled": False,
+                    }
             else:
                 response = self.gateway.submit_spot_order(
                     instrument_id=intent.instrument.instrument_id,
@@ -426,7 +492,11 @@ class TradingAuthority:
             self.db.update_order_state(intent.client_order_id, OrderState.ACKNOWLEDGED.value, kraken_order_id=order_id)
             deadline = time.monotonic() + max(1.0, float(timeout_seconds))
             while time.monotonic() < deadline:
-                found = self.gateway.lookup_order(client_order_id=intent.client_order_id, instrument=intent.instrument)
+                found = self.gateway.lookup_order(
+                    client_order_id=intent.client_order_id,
+                    instrument=intent.instrument,
+                    kraken_order_id=order_id,
+                )
                 if found:
                     state, resolved_id = self.reconciler.reconcile(found)
                     if state != OrderState.UNKNOWN_RECONCILING:
@@ -492,12 +562,21 @@ class TradingAuthority:
             return {"allowed": False, "reason": "SHORT_NOT_AVAILABLE"}
         if intent.quantity < intent.instrument.min_order_qty:
             return {"allowed": False, "reason": "MIN_ORDER_QTY"}
-        if (
-            intent.instrument.venue != "futures"
-            and intent.limit_price
-            and intent.quantity * intent.limit_price < intent.instrument.min_cost
-        ):
-            return {"allowed": False, "reason": "MIN_ORDER_COST"}
+        if intent.instrument.venue != "futures" and intent.instrument.min_cost > 0:
+            order_reference_price = intent.limit_price
+            if order_reference_price is None:
+                side_price = (
+                    getattr(market, "ask", None)
+                    if intent.side.lower() == "buy"
+                    else getattr(market, "bid", None)
+                )
+                order_reference_price = side_price or getattr(market, "price", None)
+            if (
+                order_reference_price is not None
+                and D(str(order_reference_price)) > 0
+                and intent.quantity * D(str(order_reference_price)) < intent.instrument.min_cost
+            ):
+                return {"allowed": False, "reason": "MIN_ORDER_COST"}
         if intent.leverage < D("1"):
             return {"allowed": False, "reason": "LEVERAGE_BELOW_ONE"}
         if (

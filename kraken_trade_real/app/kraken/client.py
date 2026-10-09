@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.32",
+                "User-Agent": "Kraken-Trade-Real/0.1.33",
                 **(headers or {}),
             },
             method=method,
@@ -301,14 +301,25 @@ class KrakenGateway:
         post_only: bool = False,
         asset_class: str | None = None,
     ):
+        side_value = str(side).strip().lower()
+        kind = str(order_type).strip().lower()
+        if side_value not in {"buy", "sell"}:
+            raise KrakenError(f"INVALID_SPOT_ORDER_SIDE:{side_value}")
+        if kind not in {"market", "limit"}:
+            raise KrakenError(f"UNSUPPORTED_SPOT_ORDER_TYPE:{kind}")
+        if quantity <= Decimal("0"):
+            raise KrakenError("INVALID_SPOT_ORDER_QUANTITY")
+        if kind == "limit" and (price is None or price <= Decimal("0")):
+            raise KrakenError("SPOT_LIMIT_ORDER_REQUIRES_POSITIVE_PRICE")
         body = {
             "pair": instrument_id,
-            "type": side.lower(),
-            "ordertype": order_type,
+            "type": side_value,
+            "ordertype": kind,
             "volume": str(quantity),
             "cl_ord_id": client_order_id,
         }
-        if price is not None:
+        # Spot market orders don't accept/use a limit-price field.
+        if kind == "limit" and price is not None:
             body["price"] = str(price)
         if asset_class == "tokenized_asset":
             body["asset_class"] = "tokenized_asset"
@@ -329,7 +340,7 @@ class KrakenGateway:
                 )
             body["reduce_only"] = "true"
         if post_only:
-            if order_type != "limit":
+            if kind != "limit":
                 raise KrakenError(
                     "INVALID_POST_ONLY_ARGUMENT: Spot post-only requires ordertype=limit"
                 )
@@ -370,14 +381,23 @@ class KrakenGateway:
         reduce_only: bool = False,
         post_only: bool = False,
     ):
+        side_value = str(side).strip().lower()
+        if side_value not in {"buy", "sell"}:
+            raise KrakenError(f"INVALID_FUTURES_ORDER_SIDE:{side_value}")
+        if quantity <= Decimal("0"):
+            raise KrakenError("INVALID_FUTURES_ORDER_QUANTITY")
+        kind = self._normalize_futures_order_type(order_type, post_only)
+        if kind in {"lmt", "post", "ioc", "fok"} and (price is None or price <= Decimal("0")):
+            raise KrakenError(f"FUTURES_{kind.upper()}_ORDER_REQUIRES_POSITIVE_LIMIT_PRICE")
         body = {
-            "orderType": self._normalize_futures_order_type(order_type, post_only),
+            "orderType": kind,
             "symbol": instrument_id,
-            "side": side.lower(),
+            "side": side_value,
             "size": str(quantity),
             "cliOrdId": client_order_id,
         }
-        if price is not None:
+        # Kraken's mkt order is IOC with price protection; omit limitPrice.
+        if kind != "mkt" and price is not None:
             body["limitPrice"] = str(price)
         if reduce_only:
             body["reduceOnly"] = "true"

@@ -123,6 +123,7 @@ def test_futures_order_uses_kraken_v3_order_types():
     assert calls[0][1]["orderType"] == "post"
     assert "postOnly" not in calls[0][1]
     assert calls[1][1]["orderType"] == "mkt"
+    assert "limitPrice" not in calls[1][1]
 
 
 def test_futures_chart_request_uses_current_charts_api():
@@ -565,3 +566,129 @@ def test_reduce_only_cannot_flip_or_increase_a_position(config, instrument):
     result = risk.evaluate(decision, portfolio, object(), margin_account=None)
     assert result.allowed is False
     assert result.checks["reduce_only_semantics"] is False
+
+
+def test_spot_market_order_omits_price_even_if_a_quote_hint_was_passed():
+    gateway = KrakenGateway("", "")
+    captured = {}
+
+    def fake_private(method, params=None):
+        captured["method"] = method
+        captured["params"] = dict(params or {})
+        return {"txid": ["O-MARKET"]}
+
+    gateway.spot_private = fake_private
+    gateway.submit_spot_order(
+        instrument_id="XXBTZUSD", side="buy", order_type="market",
+        quantity=Decimal("0.00123456789"), price=Decimal("60000"),
+        client_order_id="11111111-2222-4333-8444-555555555564",
+    )
+    assert captured["method"] == "AddOrder"
+    assert captured["params"]["ordertype"] == "market"
+    assert "price" not in captured["params"]
+
+
+def test_gateway_rejects_limit_orders_without_required_price():
+    import pytest
+    from app.kraken.client import KrakenError
+
+    gateway = KrakenGateway("", "")
+    gateway.spot_private = lambda *args, **kwargs: {"txid": ["SHOULD-NOT-HAPPEN"]}
+    with pytest.raises(KrakenError, match="SPOT_LIMIT_ORDER_REQUIRES_POSITIVE_PRICE"):
+        gateway.submit_spot_order(
+            instrument_id="XXBTZUSD", side="buy", order_type="limit",
+            quantity=Decimal("0.001"), price=None,
+            client_order_id="11111111-2222-4333-8444-555555555565",
+        )
+
+
+def test_spot_discovery_preserves_zero_lot_and_price_decimals():
+    class Gateway:
+        def public_instruments(self):
+            return (
+                {
+                    "ZEROUSD": {
+                        "altname": "ZEROUSD", "wsname": "ZERO/USD",
+                        "base": "ZERO", "quote": "ZUSD", "status": "online",
+                        "ordermin": "1", "costmin": "1",
+                        "lot_decimals": 0, "pair_decimals": 0,
+                    }
+                },
+                {"instruments": []},
+            )
+
+    item = next(i for i in InstrumentDiscovery(Gateway()).discover() if i.symbol == "ZERO/USD")
+    assert item.lot_decimals == 0
+    assert item.price_decimals == 0
+    assert item.tick_size == Decimal("1")
+
+
+def test_futures_rejected_send_status_is_not_recorded_as_acknowledged(config, db, instrument):
+    from dataclasses import replace
+
+    derivative = Instrument(
+        venue="futures", product_type=ProductType.DERIVATIVE,
+        symbol="PF_XBTUSD", instrument_id="PF_XBTUSD", altname="PF_XBTUSD",
+        base="XBT", quote="USD", status="online",
+        margin_available=True, long_available=True, short_available=True,
+        leverage_levels=(Decimal("1"), Decimal("3")), min_order_qty=Decimal("1"),
+        min_cost=Decimal("1"), lot_decimals=8, price_decimals=1,
+        tick_size=Decimal("0.1"), margin_class="USD", metadata={},
+    )
+
+    class Gateway:
+        def submit_futures_order(self, **kwargs):
+            return {
+                "result": "success",
+                "sendStatus": {
+                    "status": "rejected", "order_id": "FUT-REJECTED",
+                    "rejectionReason": "invalidArgument",
+                },
+            }
+
+    live_config = replace(config, live_enabled=True, kill_switch=False)
+    authority = TradingAuthority(
+        live_config, Gateway(), db, AuditLogger(False),
+        ExecutionPolicy(live_config.execution_max_slippage_bps, live_config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    intent = OrderIntent(
+        "intent_future_rejected", "11111111-2222-4333-8444-555555555566",
+        "decision_future_rejected", derivative, Direction.LONG, "buy", "limit",
+        Decimal("10"), Decimal("60000"), Decimal("1"), False, False,
+        Decimal("500"), Decimal("40"), 45, state=OrderState.INTENT_CREATED,
+    )
+    market = MarketSnapshot(
+        derivative.symbol, Decimal("60000"), Decimal("59999.9"),
+        Decimal("60000.1"), Decimal("1000000"), 1.0,
+        tuple(Decimal("60000") for _ in range(40)),
+    )
+    result = authority.submit(intent, market)
+    row = db.one("SELECT state,last_error FROM orders WHERE client_order_id=?",
+                 (intent.client_order_id,))
+    assert result["state"] == OrderState.REJECTED.value
+    assert result["reason"] == "KRAKEN_ORDER_REJECTED"
+    assert row is not None
+    assert row["state"] == OrderState.REJECTED.value
+    assert "invalidArgument" in row["last_error"]
+
+
+def test_builder_normalizes_market_price_and_spot_lot_precision(config, instrument):
+    from app.domain.models import Decision, Signal
+    from app.trading.intent import OrderIntentBuilder
+
+    signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("100"), Decimal("20"),
+        Decimal("0.9"), "TEST", Decimal("0"), Decimal("0"), {},
+    )
+    decision = Decision(
+        "decision-market-normalization", instrument, signal, Decimal("10"),
+        Decimal("1"), {}, "test", "test", "test",
+        execution_direction=Direction.LONG,
+    )
+    intent = OrderIntentBuilder(40, 45).build(
+        decision, Decimal("1"), "market", Decimal("0.00123456"),
+        Decimal("60000"), reduce_only=False,
+    )
+    assert intent.quantity == Decimal("0.0012")
+    assert intent.limit_price is None

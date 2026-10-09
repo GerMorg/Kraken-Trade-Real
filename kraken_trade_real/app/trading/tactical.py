@@ -891,7 +891,10 @@ class TacticalTrader:
         )
         if result.get("state") not in {"ACKNOWLEDGED", "LIVE", "PARTIALLY_FILLED", "FILLED"}:
             return
-        fill = self._wait_for_fill(intent, instrument)
+        fill = self._wait_for_fill(
+            intent, instrument,
+            str(result.get("kraken_order_id") or "") or None,
+        )
         if fill is None:
             return
         fill_qty, fill_price = fill
