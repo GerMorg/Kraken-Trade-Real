@@ -128,6 +128,21 @@ class DecisionEngine:
             "balanced": trade_notional < min_cost_eur,
         }
 
+    def _held_position_needs_exit(self, signal: Signal, scale: D) -> bool:
+        """Exit held risk when its signal no longer clears entry-quality economics.
+
+        A merely positive edge is not enough to justify continuing to pay spread,
+        fees and (where applicable) financing. Use the same confidence and edge
+        floors as entry selection, plus a hard expected-return-versus-cost check.
+        """
+        calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
+        ok, _, _ = self._edge_policy(signal, calibrated)
+        return (
+            not ok
+            or signal.expected_return_bps < signal.expected_cost_bps
+            or signal.net_edge_bps <= D("0")
+        )
+
     def rejection_reason(
         self,
         instrument: Instrument,
@@ -146,7 +161,7 @@ class DecisionEngine:
         )
         if not candidates and current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if held_signal.net_edge_bps <= D("0"):
+            if self._held_position_needs_exit(held_signal, scale):
                 return "REBALANCE_EXIT"
             if held_signal.confidence * scale < D(str(self.config.strategy_min_confidence)):
                 return "MIN_CONFIDENCE"
@@ -230,7 +245,7 @@ class DecisionEngine:
             signal, edge_threshold, edge_tier = candidates[0]
         elif current != 0:
             signal = long_signal if current > 0 else short_signal
-            if signal.net_edge_bps > D("0"):
+            if not self._held_position_needs_exit(signal, scale):
                 return None
             force_flatten = True
         else:
@@ -268,9 +283,10 @@ class DecisionEngine:
             "trade_notional_eur": str(plan["trade_notional_eur"]),
             "reduce_only": plan["reduce_only"],
             "reversal_to_flat": plan["reversal_to_flat"],
-            "rebalance_action": "FLATTEN_NEGATIVE_EDGE" if force_flatten else "",
+            "rebalance_action": "FLATTEN_STALE_EDGE" if force_flatten else "",
             "rebalance_reason": (
-                "held_position_net_edge_non_positive" if force_flatten else ""
+                "held_position_failed_current_edge_or_confidence_or_cost_guard"
+                if force_flatten else ""
             ),
             "min_cost_eur": str(effective_min_cost),
             "edge_threshold_bps": str(edge_threshold),

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.31
+
+- Close a held position when its current-direction signal no longer clears the configured edge/confidence policy or expected return no longer covers estimated costs; do not keep risk open merely because its net edge remains slightly positive.
+- Keep the existing staged reversal behavior and validated reduce-only risk path.
+- Add regression coverage for a short whose positive net edge falls below the economic entry floor.
+- Bump Home Assistant app, package, and Kraken User-Agent versions to 0.1.31.
+
+
 ## 0.1.30
 
 - Resolve Kraken Spot Margin position aliases (for example `MINAUSD`) to canonical discovered symbols so held positions are included in every market-selection and reevaluation cycle.

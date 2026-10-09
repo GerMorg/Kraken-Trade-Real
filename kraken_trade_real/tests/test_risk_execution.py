@@ -124,3 +124,34 @@ def test_risk_engine_accepts_adaptive_core_edge_when_economics_clear(config, ins
         decision, portfolio, market, {}
     )
     assert result.allowed is True
+
+
+def test_decision_flattens_held_short_when_edge_is_positive_but_below_economic_floor(config, instrument):
+    from app.domain.models import PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.trading.decision import DecisionEngine
+
+    features = {"volatility": Decimal("2")}
+    weak_long = Signal(
+        instrument.symbol, Direction.LONG, Decimal("0"), Decimal("100"),
+        Decimal("0.2"), "TREND_UP", Decimal("0"), Decimal("0"), features,
+    )
+    weak_short = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("200"), Decimal("190"),
+        Decimal("0.9"), "TREND_DOWN", Decimal("0"), Decimal("0"), features,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("80"),
+        positions={instrument.symbol: Decimal("-20")},
+        gross_eur=Decimal("20"), net_eur=Decimal("-20"),
+    )
+    decision = DecisionEngine(config).choose(
+        instrument, weak_long, weak_short, portfolio, "test-model", "test-config",
+    )
+
+    assert decision is not None
+    assert decision.reduce_only is True
+    assert decision.current_position_eur == Decimal("-20")
+    assert decision.target_position_eur == Decimal("0")
+    assert decision.execution_direction == Direction.LONG
+    assert decision.rationale["rebalance_action"] == "FLATTEN_STALE_EDGE"
