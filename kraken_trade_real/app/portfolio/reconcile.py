@@ -175,73 +175,6 @@ class PortfolioReconciler:
         return instrument.min_cost * rate if rate is not None else None
 
 
-def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:
-    """Return the smallest Spot base quantity satisfying Kraken quantity/cost minimums."""
-    if instrument.venue != "spot" or price <= 0:
-        return None
-    minimum_qty = dec(instrument.min_order_qty)
-    minimum_cost = dec(instrument.min_cost)
-    cost_qty = minimum_cost / price if minimum_cost > 0 else D("0")
-    required = max(minimum_qty, cost_qty)
-    if required <= 0:
-        return None
-    quantity = quantize_order_quantity(instrument, required, rounding=ROUND_UP)
-    quantum = D("1").scaleb(-max(0, min(18, int(instrument.lot_decimals))))
-    for _ in range(2):
-        if quantity >= minimum_qty and (
-            minimum_cost <= 0 or quantity * price >= minimum_cost
-        ):
-            return quantity
-        quantity = quantize_order_quantity(
-            instrument, quantity + quantum, rounding=ROUND_UP
-        )
-    if quantity >= minimum_qty and (
-        minimum_cost <= 0 or quantity * price >= minimum_cost
-    ):
-        return quantity
-    return None
-
-
-def resolve_spot_cash_reduction_quantity(
-    instrument: Instrument,
-    price: D,
-    requested_quantity: D | None,
-    available_base_quantity: D,
-    *,
-    flattening: bool,
-) -> tuple[D | None, str]:
-    """Keep cash-Spot reductions inside holdings and distinguish small deltas from dust.
-
-    A partial rebalance smaller than Kraken's minimum is not a dust holding. A full
-    flatten uses the available base-wallet quantity, but only when orderable.
-    """
-    minimum = minimum_orderable_spot_quantity(instrument, price)
-    if minimum is None:
-        return requested_quantity, ""
-    available = quantize_order_quantity(
-        instrument, max(D("0"), dec(available_base_quantity))
-    )
-    requested = (
-        quantize_order_quantity(instrument, max(D("0"), requested_quantity))
-        if requested_quantity is not None
-        else None
-    )
-
-    if flattening and available >= minimum:
-        if requested is None or requested != available:
-            return available, "FULL_EXIT_BALANCE_RECOVERY"
-        return available, ""
-
-    status = ""
-    if requested is not None and requested > available:
-        requested = available
-        status = "BALANCE_CLAMPED"
-    if requested is None or requested <= 0 or requested < minimum:
-        if available >= minimum:
-            return requested, "REBALANCE_DELTA_BELOW_MINIMUM"
-        return requested, "DUST_POSITION"
-    return requested, status
-
     def quantity_for_eur(self, instrument: Instrument, notional_eur: D, price: D) -> D | None:
         if price <= 0 or notional_eur <= 0:
             return None
@@ -481,3 +414,71 @@ def resolve_spot_cash_reduction_quantity(
             0,
             time.time(),
         )
+
+def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:
+    """Return the smallest Spot base quantity satisfying Kraken quantity/cost minimums."""
+    if instrument.venue != "spot" or price <= 0:
+        return None
+    minimum_qty = dec(instrument.min_order_qty)
+    minimum_cost = dec(instrument.min_cost)
+    cost_qty = minimum_cost / price if minimum_cost > 0 else D("0")
+    required = max(minimum_qty, cost_qty)
+    if required <= 0:
+        return None
+    quantity = quantize_order_quantity(instrument, required, rounding=ROUND_UP)
+    quantum = D("1").scaleb(-max(0, min(18, int(instrument.lot_decimals))))
+    for _ in range(2):
+        if quantity >= minimum_qty and (
+            minimum_cost <= 0 or quantity * price >= minimum_cost
+        ):
+            return quantity
+        quantity = quantize_order_quantity(
+            instrument, quantity + quantum, rounding=ROUND_UP
+        )
+    if quantity >= minimum_qty and (
+        minimum_cost <= 0 or quantity * price >= minimum_cost
+    ):
+        return quantity
+    return None
+
+
+def resolve_spot_cash_reduction_quantity(
+    instrument: Instrument,
+    price: D,
+    requested_quantity: D | None,
+    available_base_quantity: D,
+    *,
+    flattening: bool,
+) -> tuple[D | None, str]:
+    """Keep cash-Spot reductions inside holdings and distinguish small deltas from dust.
+
+    A partial rebalance smaller than Kraken's minimum is not a dust holding. A full
+    flatten uses the available base-wallet quantity, but only when orderable.
+    """
+    minimum = minimum_orderable_spot_quantity(instrument, price)
+    if minimum is None:
+        return requested_quantity, ""
+    available = quantize_order_quantity(
+        instrument, max(D("0"), dec(available_base_quantity))
+    )
+    requested = (
+        quantize_order_quantity(instrument, max(D("0"), requested_quantity))
+        if requested_quantity is not None
+        else None
+    )
+
+    if flattening and available >= minimum:
+        if requested is None or requested != available:
+            return available, "FULL_EXIT_BALANCE_RECOVERY"
+        return available, ""
+
+    status = ""
+    if requested is not None and requested > available:
+        requested = available
+        status = "BALANCE_CLAMPED"
+    if requested is None or requested <= 0 or requested < minimum:
+        if available >= minimum:
+            return requested, "REBALANCE_DELTA_BELOW_MINIMUM"
+        return requested, "DUST_POSITION"
+    return requested, status
+
