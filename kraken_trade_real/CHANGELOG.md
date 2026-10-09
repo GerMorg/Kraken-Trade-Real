@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.34
+
+- Fix Spot Margin leverage selection to use Kraken's direction-specific leverage_buy/leverage_sell values; any new or increased Spot Margin short must select a sell-supported leverage even if the portfolio already has a short.
+- Keep cash Spot reductions in the base-wallet balance and force leverage 1 when selling an existing long token balance, rather than accidentally treating that sale as a new margin short.
+- Resolve full Spot cash exits from the available base quantity when EUR-notional sizing is rounded below an exchange minimum; classify tiny partial rebalance deltas separately from genuinely unorderable dust holdings.
+- Add regression tests for direction-specific margin leverage and W/EUR minimum-size/quantity handling.
+- Bump Home Assistant app, package, Docker build and Kraken User-Agent version to 0.1.34.
+
+
 ## 0.1.33
 
 - Match order-type payloads to Kraken's documented contracts: market orders omit limit-price fields; Spot limit orders require a valid price; Futures lmt/post/ioc/fok orders require limitPrice, and unrecognized/missing Futures sendStatus is kept in reconciliation rather than marked accepted.
