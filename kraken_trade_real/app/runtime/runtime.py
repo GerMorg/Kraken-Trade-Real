@@ -977,11 +977,18 @@ class TradingRuntime:
                     else None
                 )
                 execution_direction = decision.execution_direction or decision.signal.direction
-                require_margin = (
+                opening_short = (
                     instrument.product_type.value == "SPOT_MARGIN"
                     and execution_direction.value == "SHORT"
                     and decision.current_position_eur == 0
                 )
+                closing_existing_short = (
+                    instrument.product_type.value == "SPOT_MARGIN"
+                    and decision.reduce_only
+                    and decision.current_position_eur < 0
+                    and execution_direction.value == "LONG"
+                )
+                require_margin = opening_short or closing_existing_short
                 lev=self.leverage.choose(
                     instrument,
                     f,
