@@ -382,3 +382,82 @@ def test_spot_lookup_order_uses_kraken_order_id_not_client_order_id():
     assert captured["method"] == "QueryOrders"
     assert captured["params"] == {"txid": "O-HISTORICAL"}
     assert found[0]["txid"] == "O-HISTORICAL"
+
+
+def test_spot_intent_marks_leveraged_orders_as_margin_funded(config, instrument):
+    from app.domain.models import Decision, Signal
+    from app.trading.intent import OrderIntentBuilder
+
+    signal = Signal(
+        instrument.symbol,
+        Direction.SHORT,
+        Decimal("100"),
+        Decimal("20"),
+        Decimal("0.9"),
+        "TREND",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    decision = Decision(
+        "decision_margin_intent",
+        instrument,
+        signal,
+        Decimal("100"),
+        Decimal("2"),
+        {},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("0"),
+        target_position_eur=Decimal("-100"),
+        execution_direction=Direction.SHORT,
+    )
+    intent = OrderIntentBuilder(40, 45).build(
+        decision,
+        Decimal("2"),
+        "limit",
+        Decimal("1"),
+        Decimal("10"),
+    )
+    assert intent.margin is True
+    assert intent.leverage == Decimal("2")
+
+
+def test_spot_cash_intent_remains_non_margin(config, instrument):
+    from app.domain.models import Decision, Signal
+    from app.trading.intent import OrderIntentBuilder
+
+    signal = Signal(
+        instrument.symbol,
+        Direction.LONG,
+        Decimal("100"),
+        Decimal("20"),
+        Decimal("0.9"),
+        "TREND",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    decision = Decision(
+        "decision_spot_intent",
+        instrument,
+        signal,
+        Decimal("100"),
+        Decimal("1"),
+        {},
+        "test",
+        "test",
+        "test",
+        current_position_eur=Decimal("0"),
+        target_position_eur=Decimal("100"),
+        execution_direction=Direction.LONG,
+    )
+    intent = OrderIntentBuilder(40, 45).build(
+        decision,
+        Decimal("1"),
+        "limit",
+        Decimal("1"),
+        Decimal("10"),
+    )
+    assert intent.margin is False
