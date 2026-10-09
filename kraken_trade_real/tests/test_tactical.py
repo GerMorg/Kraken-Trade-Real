@@ -400,6 +400,10 @@ def test_tactical_candidate_selection_deduplicates_quote_pairs_and_keeps_rank_or
     assert event[2]["candidates"] == len(event[2]["symbols"]) == 3
     assert event[2]["entry_candidates"] == 3
     assert event[2]["duplicate_quote_pairs_removed"] == 2
+    assert event[2]["quote_pair_choices"]["STRK"]["selected"] == "STRK/USD"
+    assert event[2]["quote_pair_choices"]["STRK"]["alternatives"][0]["symbol"] == "STRK/EUR"
+    assert event[2]["quote_pair_choices"]["MINA"]["selected"] == "MINA/EUR"
+    assert event[2]["quote_pair_choices"]["MINA"]["alternatives"][0]["symbol"] == "MINA/USD"
 
 
 def test_tactical_keeps_open_position_stream_and_excludes_other_quote_for_held_base():
