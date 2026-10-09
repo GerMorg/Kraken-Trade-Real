@@ -504,3 +504,58 @@ def test_reduce_only_exits_bypass_daily_order_limit_and_direction_cooldown(
     check = authority._preflight(close_short, market)
     assert check["allowed"] is True
     assert check["reason"] == "PRECHECK_OK"
+
+
+def test_funding_fill_poll_uses_returned_kraken_order_id(config, db, instrument):
+    from dataclasses import replace
+    from app.domain.models import OrderIntent
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    calls = []
+
+    class Gateway:
+        def submit_spot_order(self, **kwargs):
+            return {"txid": ["O-FUNDING-123"]}
+
+        def lookup_order(self, **kwargs):
+            calls.append(kwargs)
+            return [{
+                "status": "closed",
+                "vol": "0.001",
+                "vol_exec": "0.001",
+                "price": "60000",
+                "txid": "O-FUNDING-123",
+            }]
+
+    live_config = replace(config, live_enabled=True, kill_switch=False)
+    authority = TradingAuthority(
+        live_config, Gateway(), db, AuditLogger(False),
+        ExecutionPolicy(live_config.execution_max_slippage_bps, live_config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    intent = OrderIntent(
+        "intent-funding-poll",
+        "11111111-2222-4333-8444-555555555567",
+        "decision-funding-poll",
+        instrument,
+        Direction.LONG,
+        "buy",
+        "market",
+        Decimal("0.001"),
+        None,
+        Decimal("1"),
+        False,
+        False,
+        Decimal("20"),
+        Decimal("40"),
+        45,
+        state=OrderState.INTENT_CREATED,
+    )
+
+    result = authority.submit_funding_order(intent, timeout_seconds=1)
+
+    assert result["state"] == OrderState.FILLED.value
+    assert calls
+    assert calls[0]["kraken_order_id"] == "O-FUNDING-123"

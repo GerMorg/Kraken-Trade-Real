@@ -492,7 +492,11 @@ class TradingAuthority:
             self.db.update_order_state(intent.client_order_id, OrderState.ACKNOWLEDGED.value, kraken_order_id=order_id)
             deadline = time.monotonic() + max(1.0, float(timeout_seconds))
             while time.monotonic() < deadline:
-                found = self.gateway.lookup_order(client_order_id=intent.client_order_id, instrument=intent.instrument)
+                found = self.gateway.lookup_order(
+                    client_order_id=intent.client_order_id,
+                    instrument=intent.instrument,
+                    kraken_order_id=order_id,
+                )
                 if found:
                     state, resolved_id = self.reconciler.reconcile(found)
                     if state != OrderState.UNKNOWN_RECONCILING:
