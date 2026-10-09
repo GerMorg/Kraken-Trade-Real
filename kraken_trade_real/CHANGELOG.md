@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.30
+
+- Resolve Kraken Spot Margin position aliases (for example `MINAUSD`) to canonical discovered symbols so held positions are included in every market-selection and reevaluation cycle.
+- Include conservative expected Spot Margin opening and four-hour rollover costs in Core strategy edge calculations; expose the assumed leverage, holding horizon, and cost in structured logs.
+- Reject Spot Margin reduce-only orders that claim margin funding but have leverage 1, instead of sending a Kraken-invalid request.
+- Mark Spot orders with leverage above 1 as margin-funded intents so the execution payload and intent agree.
+- Add regression tests for symbol alias resolution, time-based financing estimates, and reduce-only order arguments.
+
+# Changelog
+
 ## 0.1.29
 
 - make Core entries cost-aware with configurable Kraken fee assumptions and multi-horizon momentum (5m/15m/60m/240m)
