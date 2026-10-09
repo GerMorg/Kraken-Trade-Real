@@ -297,9 +297,12 @@ class TacticalTrader:
             return held
         for symbol, value in positions.items():
             try:
-                if D(str(value or "0")) == 0:
-                    continue
-            except Exception:
+                position_value = D(str(value or "0"))
+            except (ArithmeticError, TypeError, ValueError):
+                # Ignore malformed legacy position values without skipping
+                # subsequent positions or hiding candidate ranking failures.
+                position_value = D("0")
+            if position_value == 0:
                 continue
             instrument = resolve_instrument_symbol(str(symbol), instruments)
             if instrument is not None:
@@ -334,12 +337,16 @@ class TacticalTrader:
 
         active_instruments: dict[str, Instrument] = {}
         for symbol in sorted(active_positions):
-            instrument = known_instruments.get(symbol)
+            instrument: Instrument | None = known_instruments.get(symbol)
             if instrument is None:
-                instrument = resolve_instrument_symbol(symbol, list(known_instruments.values()))
+                resolved = resolve_instrument_symbol(
+                    symbol, list(known_instruments.values())
+                )
+                instrument = resolved if isinstance(resolved, Instrument) else None
             if instrument is None:
                 try:
-                    instrument = self._instrument_from_db(symbol)
+                    from_db = self._instrument_from_db(symbol)
+                    instrument = from_db if isinstance(from_db, Instrument) else None
                 except Exception:
                     instrument = None
             if instrument is not None and instrument.venue == "spot":
@@ -399,9 +406,9 @@ class TacticalTrader:
                     if converted_rate is not None and D(str(converted_rate)) > 0:
                         quote_rate = D(str(converted_rate))
                 except Exception:
-                    # Ranking should continue if FX valuation is temporarily
-                    # unavailable; final order/risk gates still validate funding.
-                    pass
+                    # Do not silently discard FX valuation failures: use the
+                    # explicit neutral rate only for ranking, not order funding.
+                    quote_rate = D("1")
             turnover_eur = (
                 max(D("0"), D(str(snapshot.volume_24h)))
                 * snapshot.price
