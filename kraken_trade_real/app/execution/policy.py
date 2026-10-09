@@ -45,6 +45,8 @@ class CostModel:
         funding_bps: D = D("0"),
         fx_bps: D = D("0"),
         holding_hours: D = D("4"),
+        margin_open_fee_bps: D | None = None,
+        margin_rollover_fee_bps: D | None = None,
     ) -> CostEstimate:
         spread = D(str(market.spread_bps))
         metadata = market.metadata if hasattr(market, "metadata") else {}
@@ -55,12 +57,18 @@ class CostModel:
             financing = D("0")
         else:
             borrowed_share = (leverage - D("1")) / leverage
-            opening_rate = D(str(metadata.get(
-                "margin_open_fee_bps", self.DEFAULT_MARGIN_OPEN_FEE_BPS
-            )))
-            rollover_rate = D(str(metadata.get(
-                "margin_rollover_fee_bps", self.DEFAULT_MARGIN_ROLLOVER_FEE_BPS
-            )))
+            opening_rate = D(str(
+                margin_open_fee_bps
+                if margin_open_fee_bps is not None
+                else metadata.get("margin_open_fee_bps", self.DEFAULT_MARGIN_OPEN_FEE_BPS)
+            ))
+            rollover_rate = D(str(
+                margin_rollover_fee_bps
+                if margin_rollover_fee_bps is not None
+                else metadata.get(
+                    "margin_rollover_fee_bps", self.DEFAULT_MARGIN_ROLLOVER_FEE_BPS
+                )
+            ))
             hours = max(D("0"), D(str(holding_hours)))
             # A rollover is charged at each completed four-hour boundary.
             rollover_periods = int(hours / self.MARGIN_ROLLOVER_INTERVAL_HOURS)
