@@ -457,8 +457,27 @@ def test_tactical_keeps_open_position_stream_and_excludes_other_quote_for_held_b
     assert event[2]["candidates"] == len(event[2]["symbols"]) == 2
 
 
-def test_canonical_asset_normalizes_kraken_aliases_for_duplicate_detection():
+def test_canonical_asset_normalizes_kraken_legacy_aliases():
     assert canonical_asset("XBT") == "BTC"
     assert canonical_asset("XXBT") == "BTC"
     assert canonical_asset("XETH") == "ETH"
+    assert canonical_asset("XXETH") == "ETH"
+    assert canonical_asset("XETC") == "ETC"
+    assert canonical_asset("XLTC") == "LTC"
+    assert canonical_asset("XMLN") == "MLN"
+    assert canonical_asset("XREP") == "REP"
+    assert canonical_asset("XXDG") == "DOGE"
+    assert canonical_asset("XDG") == "DOGE"
+    assert canonical_asset("XXLM") == "XLM"
+    assert canonical_asset("XXMR") == "XMR"
+    assert canonical_asset("XXRP") == "XRP"
+    assert canonical_asset("XZEC") == "ZEC"
     assert canonical_asset("ZEUR") == "EUR"
+    assert canonical_asset("ZUSD") == "USD"
+
+
+def test_canonical_asset_does_not_strip_real_x_or_z_prefixed_tickers():
+    assert canonical_asset("ZBCN") == "ZBCN"
+    assert canonical_asset("ZETA") == "ZETA"
+    assert canonical_asset("XCN") == "XCN"
+    assert canonical_asset("ZRX") == "ZRX"
