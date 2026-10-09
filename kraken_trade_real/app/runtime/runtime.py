@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable
 
 from app.domain.models import digest_config, new_id
+from app.domain.symbols import resolve_instrument_symbol
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
@@ -432,25 +433,9 @@ class TradingRuntime:
             position_symbols=set(portfolio.positions)
             position_instrument_by_symbol={}
             for position_symbol in position_symbols:
-                position_key="".join(
-                    char for char in position_symbol.upper() if char.isalnum()
+                position_instrument_by_symbol[position_symbol]=resolve_instrument_symbol(
+                    position_symbol,self.instruments
                 )
-                matched=next(
-                    (
-                        instrument for instrument in self.instruments
-                        if position_symbol in {
-                            instrument.symbol,instrument.instrument_id,instrument.altname
-                        }
-                        or position_key in {
-                            "".join(char for char in alias.upper() if char.isalnum())
-                            for alias in (
-                                instrument.symbol,instrument.instrument_id,instrument.altname
-                            )
-                        }
-                    ),
-                    None,
-                )
-                position_instrument_by_symbol[position_symbol]=matched
             # De-duplicate aliases while ensuring every resolvable held position
             # is included even when Kraken reports its altname instead of the
             # app's canonical symbol (for example MINAUSD vs MINA/USD).
