@@ -34,6 +34,9 @@ class RiskEngine:
         market: Any,
         margin_account: dict[str, Any] | None = None,
     ) -> RiskResult:
+        # Decisions restored from legacy state/tests or external strategies may
+        # contain float leverage. Risk arithmetic is Decimal-only.
+        leverage = D(str(leverage))
         execution_direction = d.execution_direction or d.signal.direction
         direction = execution_direction.value
 
@@ -60,7 +63,7 @@ class RiskEngine:
                 False,
                 "NO_POSITIVE_EQUITY",
                 {"equity_positive": False},
-                d.leverage,
+                leverage,
             )
 
         pos_pct = desired_abs / eq * 100
@@ -121,7 +124,7 @@ class RiskEngine:
             ),
             "leverage_bound": (
                 valid_reduction
-                or d.leverage <= min(
+                or leverage <= min(
                     self.IMMUTABLE_MAX_LEVERAGE,
                     D(str(self.config.risk_max_leverage)),
                     d.instrument.max_leverage,
@@ -153,10 +156,10 @@ class RiskEngine:
         if min_cost_eur > 0:
             checks["minimum_cost"] = valid_reduction or desired_abs >= min_cost_eur
 
-        if d.leverage > 1 and not valid_reduction:
+        if leverage > 1 and not valid_reduction:
             checks["margin_available"] = margin_account is not None
             if margin_account is not None:
-                requested_margin = desired_abs / d.leverage
+                requested_margin = desired_abs / leverage
                 ok, _ = self.margin_engine.available(
                     margin_account,
                     requested_margin,
@@ -176,5 +179,5 @@ class RiskEngine:
             not failed,
             failed or "RISK_OK",
             checks,
-            d.leverage,
+            leverage,
         )
