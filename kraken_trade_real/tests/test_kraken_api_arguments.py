@@ -466,7 +466,6 @@ def test_spot_cash_intent_remains_non_margin(config, instrument):
 def test_valid_reduce_only_exit_bypasses_entry_only_margin_and_loss_gates(
     config, instrument
 ):
-    from dataclasses import replace
     from app.domain.models import Decision, PortfolioState, Signal
     from app.risk.engine import RiskEngine
     from app.risk.margin import MarginEngine
