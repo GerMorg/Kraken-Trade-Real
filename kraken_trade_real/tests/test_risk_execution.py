@@ -155,3 +155,45 @@ def test_decision_flattens_held_short_when_edge_is_positive_but_below_economic_f
     assert decision.target_position_eur == Decimal("0")
     assert decision.execution_direction == Direction.LONG
     assert decision.rationale["rebalance_action"] == "FLATTEN_STALE_EDGE"
+
+
+
+def test_cost_model_normalizes_float_leverage_and_cost_inputs():
+    market = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("1000"),
+        metadata={"volatility": Decimal("3")},
+    )
+    cost = CostModel().estimate(
+        market,
+        Decimal("10"),
+        leverage=2.0,
+        fee_bps=40.0,
+        funding_bps=0.0,
+        fx_bps=0.0,
+        holding_hours=8.0,
+        margin_open_fee_bps=4.0,
+        margin_rollover_fee_bps=4.0,
+    )
+    assert isinstance(cost.financing_bps, Decimal)
+    assert cost.financing_bps > 0
+    assert isinstance(cost.total_bps, Decimal)
+
+
+def test_leverage_engine_never_returns_float_for_float_configured_max(instrument):
+    engine = LeverageEngine()
+    chosen = engine.choose(
+        instrument,
+        {
+            "volatility": Decimal("2"),
+            "spread_bps": Decimal("10"),
+            "trend": Decimal("1"),
+        },
+        Decimal("0.9"),
+        Decimal("20"),
+        Decimal("500"),
+        2.0,
+        require_margin=True,
+    )
+    assert isinstance(chosen, Decimal)
+    assert chosen == Decimal("2")
