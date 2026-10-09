@@ -430,10 +430,38 @@ class TradingRuntime:
                 require_history=False,
             )
             position_symbols=set(portfolio.positions)
-            position_instruments=[
-                instrument for instrument in self.instruments
-                if instrument.symbol in position_symbols
-            ]
+            position_instrument_by_symbol={}
+            for position_symbol in position_symbols:
+                position_key="".join(
+                    char for char in position_symbol.upper() if char.isalnum()
+                )
+                matched=next(
+                    (
+                        instrument for instrument in self.instruments
+                        if position_symbol in {
+                            instrument.symbol,instrument.instrument_id,instrument.altname
+                        }
+                        or position_key in {
+                            "".join(char for char in alias.upper() if char.isalnum())
+                            for alias in (
+                                instrument.symbol,instrument.instrument_id,instrument.altname
+                            )
+                        }
+                    ),
+                    None,
+                )
+                position_instrument_by_symbol[position_symbol]=matched
+            # De-duplicate aliases while ensuring every resolvable held position
+            # is included even when Kraken reports its altname instead of the
+            # app's canonical symbol (for example MINAUSD vs MINA/USD).
+            position_instruments=list({
+                instrument.symbol: instrument
+                for instrument in position_instrument_by_symbol.values()
+                if instrument is not None
+            }.values())
+            position_candidate_symbols={
+                instrument.symbol for instrument in position_instruments
+            }
             history_candidates=self.scanner.build_history_candidates(
                 prefiltered,
                 core_limit=self.config.market_history_candidate_limit,
@@ -444,7 +472,7 @@ class TradingRuntime:
                     self.config,"market_exploration_slots_per_family",2
                 ),
                 cycle_key=cycle_id,
-                preserve_symbols=position_symbols,
+                preserve_symbols=position_symbols | position_candidate_symbols,
             )
             ticker_instruments=[
                 instrument for instrument in self.instruments
@@ -555,12 +583,13 @@ class TradingRuntime:
                     selected.append(instrument)
                     selected_symbols.add(instrument.symbol)
             position_evaluated=sum(
-                1 for instrument in position_instruments
-                if instrument.symbol in selected_symbols
+                1 for instrument in position_instrument_by_symbol.values()
+                if instrument is not None and instrument.symbol in selected_symbols
             )
             position_missing=sorted(
                 symbol for symbol in position_symbols
-                if symbol not in selected_symbols
+                if position_instrument_by_symbol.get(symbol) is None
+                or position_instrument_by_symbol[symbol].symbol not in selected_symbols
             )
             self.audit.emit(
                 "CYCLE_POSITION_REEVALUATION",
