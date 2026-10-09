@@ -1722,8 +1722,7 @@ class TradingRuntime:
                 tax_incomplete_events=0,
                 tax_year=datetime.now(timezone.utc).year,
                 tactical_status=(
-                    "SHADOW" if tactical_status.get("shadow_mode") else "LIVE"
-                    if tactical_status.get("enabled") else "DISABLED"
+                    "DISABLED" if not tactical_status.get("enabled") else "SHADOW" if tactical_status.get("shadow_mode") else "LIVE"
                 ),
                 tactical_ws_connected=bool(tactical_status.get("ws_connected", False)),
                 tactical_position_symbol=str(tactical_status.get("position_symbol", "")),
@@ -1830,8 +1829,7 @@ class TradingRuntime:
             tax_incomplete_events=int(tax_summary.get("incomplete_event_count",0)),
             tax_year=datetime.now(timezone.utc).year,
             tactical_status=(
-                "SHADOW" if tactical_status.get("shadow_mode") else "LIVE"
-                if tactical_status.get("enabled") else "DISABLED"
+                "DISABLED" if not tactical_status.get("enabled") else "SHADOW" if tactical_status.get("shadow_mode") else "LIVE"
             ),
             tactical_ws_connected=bool(tactical_status.get("ws_connected", False)),
             tactical_position_symbol=str(tactical_status.get("position_symbol", "")),
