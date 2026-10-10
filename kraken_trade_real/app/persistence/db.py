@@ -353,7 +353,7 @@ class Database:
         peak_profit_pct: Any,
         basis_eur: Any,
         quantity: Any,
-        position_eur: Any,
+        position_pnl_eur: Any,
         partial_taken: bool,
         pending_order_id: str,
         policy_snapshot: dict[str, Any],
@@ -365,7 +365,7 @@ class Database:
         self.execute(
             """INSERT INTO core_exit_path_points(
                  episode_id,cycle_id,observed_at,profit_pct,peak_profit_pct,basis_eur,
-                 quantity,position_eur,partial_taken,pending_order_id,
+                 quantity,position_pnl_eur,partial_taken,pending_order_id,
                  policy_snapshot_json,quality_json
                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(episode_id,cycle_id) DO UPDATE SET
@@ -374,14 +374,14 @@ class Database:
                  peak_profit_pct=excluded.peak_profit_pct,
                  basis_eur=excluded.basis_eur,
                  quantity=excluded.quantity,
-                 position_eur=excluded.position_eur,
+                 position_pnl_eur=excluded.position_pnl_eur,
                  partial_taken=excluded.partial_taken,
                  pending_order_id=excluded.pending_order_id,
                  policy_snapshot_json=excluded.policy_snapshot_json,
                  quality_json=excluded.quality_json""",
             (
                 episode_id, cycle_id, float(observed_at), str(profit_pct),
-                str(peak_profit_pct), str(basis_eur), str(quantity), str(position_eur),
+                str(peak_profit_pct), str(basis_eur), str(quantity), str(position_pnl_eur),
                 int(bool(partial_taken)), str(pending_order_id or ""),
                 json.dumps(policy_snapshot, sort_keys=True, default=str),
                 json.dumps(quality or {}, sort_keys=True, default=str),
