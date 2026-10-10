@@ -86,18 +86,26 @@ class RiskEngine:
         if risk_profile == "tactical":
             net_limit_pct = max(net_limit_pct, position_limit_pct)
 
-        risk_edge_threshold = D(str(self.config.strategy_min_edge_bps))
-        economic_cost_ratio = D("1")
+        risk_edge_threshold = D(str(
+            d.rationale.get("policy_min_edge_bps", self.config.strategy_min_edge_bps)
+        ))
+        economic_cost_ratio = D(str(
+            d.rationale.get(
+                "policy_cost_ratio",
+                getattr(self.config, "strategy_adaptive_cost_ratio", 1.10),
+            )
+        ))
         if risk_profile == "tactical":
             risk_edge_threshold = D(str(
                 getattr(self.config, "tactical_adaptive_min_net_edge_bps", 15.0)
             ))
+            economic_cost_ratio = D("1")
         elif str(d.rationale.get("edge_tier", "STANDARD")) == "ADAPTIVE":
             risk_edge_threshold = D(str(
-                getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)
-            ))
-            economic_cost_ratio = D(str(
-                getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)
+                d.rationale.get(
+                    "policy_adaptive_edge_floor_bps",
+                    getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0),
+                )
             ))
 
         checks = {
@@ -141,13 +149,17 @@ class RiskEngine:
                 or (
                     d.signal.net_edge_bps >= risk_edge_threshold
                     and d.signal.expected_return_bps >= (
-                        d.signal.expected_cost_bps * economic_cost_ratio
+                        max(D("0"), d.signal.expected_cost_bps) * max(D("1"), economic_cost_ratio)
                     )
                 )
             ),
             "confidence": (
                 valid_reduction
-                or d.signal.confidence >= D(str(self.config.strategy_min_confidence))
+                or d.signal.confidence >= D(str(
+                    d.rationale.get("policy_min_confidence", self.config.strategy_min_confidence)
+                    if risk_profile != "tactical"
+                    else self.config.strategy_min_confidence
+                ))
             ),
             "extreme_volatility": (
                 valid_reduction

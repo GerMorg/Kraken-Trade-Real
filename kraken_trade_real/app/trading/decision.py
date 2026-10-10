@@ -16,9 +16,46 @@ class DecisionEngine:
         self.config = config
 
     def _confidence_scale(self, model_parameters: dict[str, Any] | None) -> D:
+        """Legacy decision-model scale is deliberately ignored.
+
+        Probability calibration is a separate model family. A Brier-score improvement
+        must not silently loosen entry gates or resize live orders.
+        """
+        return D("1")
+
+    def _policy_values(self, model_parameters: dict[str, Any] | None) -> dict[str, D]:
         parameters = model_parameters or {}
-        scale = D(str(parameters.get("confidence_scale", "1")))
-        return max(D("0.5"), min(D("1.5"), scale))
+        base_edge = D(str(self.config.strategy_min_edge_bps))
+        adaptive_floor = min(
+            base_edge, D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0)))
+        )
+        maximum_edge = max(base_edge * D("1.5"), base_edge + D("1"))
+        try:
+            edge = D(str(parameters.get("strategy_min_edge_bps", base_edge)))
+        except Exception:
+            edge = base_edge
+        edge = max(adaptive_floor, min(maximum_edge, edge))
+        try:
+            confidence = D(str(parameters.get(
+                "strategy_min_confidence", self.config.strategy_min_confidence
+            )))
+        except Exception:
+            confidence = D(str(self.config.strategy_min_confidence))
+        confidence = max(D("0"), min(D("1"), confidence))
+        try:
+            cost_ratio = D(str(parameters.get(
+                "strategy_adaptive_cost_ratio",
+                getattr(self.config, "strategy_adaptive_cost_ratio", 1.10),
+            )))
+        except Exception:
+            cost_ratio = D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)))
+        cost_ratio = max(D("1"), min(D("3"), cost_ratio))
+        return {
+            "strategy_min_edge_bps": edge,
+            "strategy_min_confidence": confidence,
+            "strategy_adaptive_cost_ratio": cost_ratio,
+            "strategy_adaptive_edge_floor_bps": adaptive_floor,
+        }
 
     def _target_position(self, equity: D, confidence: D, signal_direction: Direction) -> D:
         if equity <= 0:
@@ -31,23 +68,22 @@ class DecisionEngine:
         self,
         signal: Signal,
         calibrated_confidence: D,
+        model_parameters: dict[str, Any] | None = None,
     ) -> tuple[bool, D, str]:
-        standard = D(str(self.config.strategy_min_edge_bps))
-        if signal.net_edge_bps >= standard:
+        policy = self._policy_values(model_parameters)
+        standard = policy["strategy_min_edge_bps"]
+        cost_ratio = policy["strategy_adaptive_cost_ratio"]
+        economically_supported = (
+            signal.expected_return_bps
+            >= max(D("0"), signal.expected_cost_bps) * cost_ratio
+        )
+        if signal.net_edge_bps >= standard and economically_supported:
             return True, standard, "STANDARD"
         adaptive_enabled = bool(
             getattr(self.config, "strategy_adaptive_edge_enabled", True)
         )
-        floor = min(
-            D(str(getattr(self.config, "strategy_adaptive_edge_floor_bps", 15.0))),
-            standard,
-        )
+        floor = policy["strategy_adaptive_edge_floor_bps"]
         min_conf = D(str(getattr(self.config, "strategy_adaptive_min_confidence", 0.75)))
-        cost_ratio = D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)))
-        economically_supported = (
-            signal.expected_cost_bps > 0
-            and signal.expected_return_bps >= signal.expected_cost_bps * cost_ratio
-        )
         if (
             adaptive_enabled
             and calibrated_confidence >= min_conf
@@ -73,17 +109,19 @@ class DecisionEngine:
         scale: D,
         *,
         current: D,
+        model_parameters: dict[str, Any] | None = None,
     ) -> list[tuple[Signal, D, str]]:
         result: list[tuple[Signal, D, str]] = []
+        minimum_confidence = self._policy_values(model_parameters)["strategy_min_confidence"]
         for signal in (long_signal, short_signal):
             calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
-            if calibrated < D(str(self.config.strategy_min_confidence)):
+            if calibrated < minimum_confidence:
                 continue
             # Opening a new position must respect the exchange-reported direction.
             # Reductions are handled separately and are allowed to remove risk.
             if current == 0 and not self._direction_available(instrument, signal.direction):
                 continue
-            ok, threshold, tier = self._edge_policy(signal, calibrated)
+            ok, threshold, tier = self._edge_policy(signal, calibrated, model_parameters)
             if ok:
                 result.append((signal, threshold, tier))
         return result
@@ -130,20 +168,19 @@ class DecisionEngine:
             "balanced": trade_notional < min_cost_eur and not reduce_only,
         }
 
-    def _held_position_needs_exit(self, signal: Signal, scale: D) -> bool:
-        """Exit held risk when its signal no longer clears entry-quality economics.
-
-        A merely positive edge is not enough to justify continuing to pay spread,
-        fees and (where applicable) financing. Use the same confidence and edge
-        floors as entry selection, plus a hard expected-return-versus-cost check.
-        """
+    def _held_position_needs_exit(
+        self,
+        signal: Signal,
+        scale: D,
+        model_parameters: dict[str, Any] | None = None,
+    ) -> bool:
+        """Exit held risk when it no longer clears the active cost-aware policy."""
         calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
-        ok, _, _ = self._edge_policy(signal, calibrated)
-        cost_ratio = max(
-            D("1"),
-            D(str(getattr(self.config, "strategy_adaptive_cost_ratio", 1.10))),
-        )
-        required_return = signal.expected_cost_bps * cost_ratio
+        policy = self._policy_values(model_parameters)
+        ok, _, _ = self._edge_policy(signal, calibrated, model_parameters)
+        required_return = max(D("0"), signal.expected_cost_bps) * policy[
+            "strategy_adaptive_cost_ratio"
+        ]
         return (
             not ok
             or signal.expected_return_bps < required_return
@@ -160,25 +197,27 @@ class DecisionEngine:
         min_cost_eur: D | None = None,
     ) -> str:
         scale = self._confidence_scale(model_parameters)
+        policy = self._policy_values(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
         if current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if self._held_position_needs_exit(held_signal, scale):
+            if self._held_position_needs_exit(held_signal, scale, model_parameters):
                 return "REBALANCE_EXIT"
 
         candidates = self._candidate_signals(
-            instrument, long_signal, short_signal, scale, current=current
+            instrument, long_signal, short_signal, scale, current=current,
+            model_parameters=model_parameters,
         )
         if not candidates and current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if held_signal.confidence * scale < D(str(self.config.strategy_min_confidence)):
+            if held_signal.confidence * scale < policy["strategy_min_confidence"]:
                 return "MIN_CONFIDENCE"
             return "TARGET_BALANCED"
 
         if not candidates:
-            standard_edge = D(str(self.config.strategy_min_edge_bps))
-            standard_conf = D(str(self.config.strategy_min_confidence))
+            standard_edge = policy["strategy_min_edge_bps"]
+            standard_conf = policy["strategy_min_confidence"]
             standard_signals = [
                 signal for signal in (long_signal, short_signal)
                 if signal.net_edge_bps >= standard_edge
@@ -241,11 +280,13 @@ class DecisionEngine:
         min_cost_eur: D | None = None,
     ) -> Decision | None:
         scale = self._confidence_scale(model_parameters)
+        policy = self._policy_values(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
 
         candidates = self._candidate_signals(
-            instrument, long_signal, short_signal, scale, current=current
+            instrument, long_signal, short_signal, scale, current=current,
+            model_parameters=model_parameters,
         )
         force_flatten = False
         edge_tier = "STANDARD"
@@ -328,6 +369,11 @@ class DecisionEngine:
             "min_cost_eur": str(effective_min_cost),
             "edge_threshold_bps": str(edge_threshold),
             "edge_tier": edge_tier,
+            "policy_min_edge_bps": str(policy["strategy_min_edge_bps"]),
+            "policy_min_confidence": str(policy["strategy_min_confidence"]),
+            "policy_cost_ratio": str(policy["strategy_adaptive_cost_ratio"]),
+            "policy_adaptive_edge_floor_bps": str(policy["strategy_adaptive_edge_floor_bps"]),
+            "strategy_policy_version": str((model_parameters or {}).get("_strategy_policy_version", "")),
         }
         return Decision(
             decision_id=new_id("decision"),
