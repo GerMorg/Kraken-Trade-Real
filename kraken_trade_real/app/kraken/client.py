@@ -309,14 +309,14 @@ class KrakenGateway:
             raise KrakenError(f"UNSUPPORTED_SPOT_ORDER_TYPE:{kind}")
         is_settlement = kind == "settle-position"
         if is_settlement:
-            # Kraken's native settle-position order closes the outstanding Spot
-            # Margin position for this pair. Volume must be zero; do not translate
-            # this into an estimated-size market/limit order.
+            # Settling is a dedicated Spot Margin operation. Kraken requires the
+            # amount of base asset being settled; the runtime supplies the sum of
+            # Kraken-reported open quantities, not a synthetic zero-volume order.
             if not margin or not reduce_only or leverage <= Decimal("1"):
                 raise KrakenError(
                     "INVALID_SETTLE_POSITION_REQUIRES_LEVERAGED_MARGIN_REDUCTION"
                 )
-            if quantity != Decimal("0") or price is not None or post_only:
+            if quantity <= Decimal("0") or price is not None or post_only:
                 raise KrakenError("INVALID_SETTLE_POSITION_PARAMETERS")
         elif quantity <= Decimal("0"):
             raise KrakenError("INVALID_SPOT_ORDER_QUANTITY")
@@ -326,7 +326,7 @@ class KrakenGateway:
             "pair": instrument_id,
             "type": side_value,
             "ordertype": kind,
-            "volume": "0" if is_settlement else str(quantity),
+            "volume": str(quantity),
             "cl_ord_id": client_order_id,
         }
         if kind == "limit" and price is not None:
