@@ -987,7 +987,7 @@ class TacticalTrader:
                 getattr(self.config, "tactical_trailing_stop_pct", 0.7)
             ))
             estimated_round_trip_cost_bps = (
-                max(D("0"), D(str(getattr(self.config, "tactical_entry_fee_bps", 80)))
+                max(D("0"), D(str(getattr(self.config, "tactical_entry_fee_bps", 80))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_exit_fee_bps", 80))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_max_spread_bps", 25))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_expected_slippage_bps", 25))))
