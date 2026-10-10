@@ -72,7 +72,7 @@ def build_runtime() -> TradingRuntime:
     recovery = RecoveryManager(db, audit, breaker)
     calibration = CalibrationEngine()
     research = ResearchEngine(db)
-    optimizer = AdaptiveParameterOptimizer(db, registry)
+    optimizer = AdaptiveParameterOptimizer(db, registry, config)
     learning = LearningEngine(
         db, calibration, registry, research,
         auto_promotion_enabled=config.learning_auto_promotion,
