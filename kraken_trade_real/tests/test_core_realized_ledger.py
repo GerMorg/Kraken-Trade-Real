@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from decimal import Decimal
 
 from app.learning.realized import CoreSpotRealizedOutcomeLedger
