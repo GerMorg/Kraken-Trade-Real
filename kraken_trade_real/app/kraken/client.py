@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.44",
+                "User-Agent": "Kraken-Trade-Real/0.1.45",
                 **(headers or {}),
             },
             method=method,
