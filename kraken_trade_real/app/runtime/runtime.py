@@ -441,6 +441,12 @@ class TradingRuntime:
                 refresh_adaptive_config=getattr(self.config,"refresh",None)
                 if callable(refresh_adaptive_config):
                     active_parameters=refresh_adaptive_config()
+                    config_snapshot = (
+                        self.config.as_dict()
+                        if callable(getattr(self.config, "as_dict", None))
+                        else self.config.__dict__
+                    )
+                    self.config_hash = digest_config(config_snapshot)
                     self.audit.emit(
                         "ADAPTIVE_CONFIG_REFRESHED","INFO",
                         cycle_id=cycle_id,
