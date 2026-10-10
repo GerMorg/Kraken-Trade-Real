@@ -113,8 +113,15 @@ class CoreSpotRealizedOutcomeLedger:
                     "price": str(price), "quote_asset": quote_asset,
                 })
                 continue
+            fill_decision_id = str(row.get("fill_decision_id") or "")
             if not opening_decision_id:
                 anomaly(row, "MISSING_LOCAL_DECISION_ID", {})
+                continue
+            if fill_decision_id != opening_decision_id:
+                anomaly(row, "FILL_DECISION_ORDER_DECISION_MISMATCH", {
+                    "fill_decision_id": fill_decision_id,
+                    "order_decision_id": opening_decision_id,
+                })
                 continue
 
             fill_key = _stable_id(order_id, trade_id)
@@ -149,10 +156,9 @@ class CoreSpotRealizedOutcomeLedger:
                 continue
 
             closing_direction = "LONG" if direction == "SHORT" else "SHORT"
-            open_lots = lots_by_key[(symbol, closing_direction)]
+            position_lots = lots_by_key[(symbol, closing_direction)]
             remaining_close_qty = quantity
-            exit_fee_remaining = fee_est
-            for lot in open_lots:
+            for lot in position_lots:
                 if remaining_close_qty <= 0:
                     break
                 lot_qty_before = lot["remaining_quantity"]
@@ -213,7 +219,6 @@ class CoreSpotRealizedOutcomeLedger:
                 lot["remaining_quantity"] = lot_qty_before - matched_qty
                 lot["remaining_entry_fee_est_quote"] -= allocated_entry_fee
                 remaining_close_qty -= matched_qty
-                exit_fee_remaining -= allocated_exit_fee
             if remaining_close_qty > 0:
                 anomaly(row, "REDUCE_ONLY_EXCEEDS_LOCAL_INVENTORY", {
                     "close_direction": closing_direction,
@@ -222,7 +227,7 @@ class CoreSpotRealizedOutcomeLedger:
                     "unmatched_quantity": str(remaining_close_qty),
                 })
             lots_by_key[(symbol, closing_direction)] = [
-                lot for lot in open_lots if lot["remaining_quantity"] > 0
+                lot for lot in position_lots if lot["remaining_quantity"] > 0
             ]
 
         outcomes_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
