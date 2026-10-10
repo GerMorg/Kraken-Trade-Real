@@ -42,6 +42,7 @@ def portfolio_for(instrument, position, pnl_pct, *, read_ok=True):
         position_basis_eur={instrument.symbol: D("20")},
         position_quantity={instrument.symbol: D("1")},
         spot_open_positions_read_ok=read_ok,
+        spot_margin_position_symbols=(instrument.symbol,) if read_ok else (),
     )
 
 
