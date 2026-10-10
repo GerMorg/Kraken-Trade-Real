@@ -1477,6 +1477,20 @@ class TacticalTrader:
                 "trailing_stop_pct": str(getattr(self.config, "tactical_trailing_stop_pct", 0.7)),
                 "max_hold_seconds": str(getattr(self.config, "tactical_max_hold_seconds", 1800)),
             },
+            "position_context": {
+                "venue": position.venue,
+                "leverage": str(position.leverage),
+            },
+            "cost_snapshot": {
+                "entry_fee_bps": str(getattr(self.config, "tactical_entry_fee_bps", 80)),
+                "exit_fee_bps": str(getattr(self.config, "tactical_exit_fee_bps", 80)),
+                "max_spread_bps": str(getattr(self.config, "tactical_max_spread_bps", 25)),
+                "expected_slippage_bps": str(getattr(self.config, "tactical_expected_slippage_bps", 25)),
+                "safety_buffer_bps": str(getattr(self.config, "tactical_safety_buffer_bps", 30)),
+                "margin_open_fee_bps": str(getattr(self.config, "tactical_margin_open_fee_bps", 5)),
+                "rollover_fee_bps": str(getattr(self.config, "execution_margin_rollover_fee_bps", 4)),
+            },
+            "path_schema_version": 1,
         }
 
     @staticmethod
