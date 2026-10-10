@@ -62,7 +62,7 @@ class Database:
             }.items():
                 if name not in pcols:
                     con.execute(f"ALTER TABLE predictions ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','6')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','7')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -417,6 +417,75 @@ class Database:
                 entry_client_order_id, str(setup_score), state,
             ),
         )
+
+    def record_tactical_price_point(
+        self,
+        symbol: str,
+        opened_at: float,
+        observed_at: float,
+        direction: str,
+        price: Any,
+        pnl_bps: Any,
+        peak_price: Any,
+        trough_price: Any,
+        state: str,
+    ) -> None:
+        """Persist a deduplicated market observation for later exit-policy replay."""
+        try:
+            numeric_price = Decimal(str(price))
+            timestamp = float(observed_at)
+            opened = float(opened_at)
+            if not numeric_price.is_finite() or numeric_price <= 0 or timestamp < opened:
+                return
+        except (ArithmeticError, TypeError, ValueError):
+            return
+        with self.connect() as con:
+            con.execute(
+                """INSERT OR IGNORE INTO tactical_price_path(
+                    symbol,opened_at,observed_at,direction,price,pnl_bps,
+                    peak_price,trough_price,state
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    symbol, opened, timestamp, direction, str(numeric_price),
+                    str(pnl_bps), str(peak_price), str(trough_price), state,
+                ),
+            )
+            # Bound per-position history without truncating normal Tactical trades.
+            # Pruning every 128 points keeps the hot path cheap while capping long
+            # running positions at 2,048 retained observations.
+            count = con.execute(
+                "SELECT COUNT(*) FROM tactical_price_path WHERE symbol=? AND opened_at=?",
+                (symbol, opened),
+            ).fetchone()[0]
+            if int(count or 0) > 2048 and int(count or 0) % 128 == 0:
+                con.execute(
+                    """DELETE FROM tactical_price_path
+                       WHERE point_id IN (
+                         SELECT point_id FROM tactical_price_path
+                         WHERE symbol=? AND opened_at=?
+                         ORDER BY observed_at DESC LIMIT -1 OFFSET 2048
+                       )""",
+                    (symbol, opened),
+                )
+
+    def tactical_price_path(
+        self,
+        symbol: str,
+        opened_at: float,
+        closed_at: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a position's observed path, optionally truncated at a close time."""
+        sql = (
+            "SELECT symbol,opened_at,observed_at,direction,price,pnl_bps,"
+            "peak_price,trough_price,state FROM tactical_price_path "
+            "WHERE symbol=? AND opened_at=?"
+        )
+        params: tuple[Any, ...] = (symbol, float(opened_at))
+        if closed_at is not None:
+            sql += " AND observed_at<=?"
+            params += (float(closed_at),)
+        sql += " ORDER BY observed_at ASC"
+        return self.query(sql, params)
 
     def tactical_positions(self) -> list[dict[str, Any]]:
         return self.query(
