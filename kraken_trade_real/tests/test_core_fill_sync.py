@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+
+from app.persistence import Database
 
 
 def _insert_order(db, *, order_id: str, client_id: str, decision_id: str, symbol: str, at: float):
@@ -120,3 +123,31 @@ def test_attributed_fill_insert_is_idempotent(db):
     assert db.save_attributed_fill(**fields) is True
     assert db.save_attributed_fill(**fields) is False
     assert db.one("SELECT COUNT(*) AS n FROM fills")["n"] == 1
+
+
+def test_legacy_fill_table_migrates_before_attribution_indexes_are_created(tmp_path):
+    database_path = tmp_path / "legacy.db"
+    with sqlite3.connect(database_path) as con:
+        con.execute(
+            """CREATE TABLE fills(
+                 order_id TEXT NOT NULL, trade_id TEXT NOT NULL, created_at REAL NOT NULL,
+                 symbol TEXT NOT NULL, side TEXT NOT NULL, quantity TEXT NOT NULL,
+                 price TEXT NOT NULL, fee TEXT NOT NULL, fee_currency TEXT NOT NULL,
+                 PRIMARY KEY(order_id, trade_id)
+               )"""
+        )
+        con.execute(
+            "INSERT INTO fills VALUES(?,?,?,?,?,?,?,?,?)",
+            ("OOLD", "TOLD", 1_800_000_000.0, "XBT/EUR", "buy", "0.01",
+             "100", "0.01", "ZEUR"),
+        )
+
+    migrated = Database(str(database_path))
+    columns = {row["name"] for row in migrated.query("PRAGMA table_info(fills)")}
+    assert {"client_order_id", "decision_id", "venue", "quote_asset", "raw_json"} <= columns
+    assert migrated.one(
+        "SELECT decision_id,raw_json FROM fills WHERE order_id='OOLD' AND trade_id='TOLD'"
+    ) == {"decision_id": "", "raw_json": "{}"}
+    assert migrated.one(
+        "SELECT value FROM metadata WHERE key='schema_version'"
+    )["value"] == "8"
