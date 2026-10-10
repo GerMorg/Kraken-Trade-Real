@@ -983,15 +983,38 @@ class TacticalTrader:
             price = D(str(state.get("price", "0")))
             if price <= 0:
                 continue
+            trailing_stop_pct = D(str(
+                getattr(self.config, "tactical_trailing_stop_pct", 0.7)
+            ))
+            estimated_round_trip_cost_bps = (
+                max(D("0"), D(str(getattr(self.config, "tactical_entry_fee_bps", 80))))
+                + max(D("0"), D(str(getattr(self.config, "tactical_exit_fee_bps", 80))))
+                + max(D("0"), D(str(getattr(self.config, "tactical_max_spread_bps", 25))))
+                + max(D("0"), D(str(getattr(self.config, "tactical_expected_slippage_bps", 25))))
+                + max(D("0"), D(str(getattr(self.config, "tactical_safety_buffer_bps", 30))))
+                + max(D("0"), D(str(getattr(self.config, "tactical_margin_open_fee_bps", 5))))
+            )
+            profit_floor_bps = estimated_round_trip_cost_bps + D("25")
+            trailing_activation_bps = max(
+                D(str(getattr(self.config, "tactical_trailing_trigger_bps", 100))),
+                profit_floor_bps + trailing_stop_pct * D("100"),
+            )
+
             if position.direction == Direction.LONG:
                 position.peak_price = max(position.peak_price, price)
                 position.trough_price = min(position.trough_price, price)
                 pnl_bps = (price / position.entry_price - D("1")) * D("10000")
                 peak_gain = (position.peak_price / position.entry_price - D("1")) * D("10000")
                 trailing_triggered = (
-                    peak_gain >= D(str(getattr(self.config, "tactical_trailing_trigger_bps", 100)))
-                    and price <= position.peak_price
-                    * (D("1") - D(str(getattr(self.config, "tactical_trailing_stop_pct", 0.7))) / D("100"))
+                    peak_gain >= profit_floor_bps
+                    and (
+                        (
+                            peak_gain >= trailing_activation_bps
+                            and price <= position.peak_price
+                            * (D("1") - trailing_stop_pct / D("100"))
+                        )
+                        or pnl_bps < profit_floor_bps
+                    )
                 )
             else:
                 position.trough_price = min(position.trough_price, price)
@@ -999,9 +1022,15 @@ class TacticalTrader:
                 pnl_bps = (position.entry_price / price - D("1")) * D("10000")
                 peak_gain = (position.entry_price / position.trough_price - D("1")) * D("10000")
                 trailing_triggered = (
-                    peak_gain >= D(str(getattr(self.config, "tactical_trailing_trigger_bps", 100)))
-                    and price >= position.trough_price
-                    * (D("1") + D(str(getattr(self.config, "tactical_trailing_stop_pct", 0.7))) / D("100"))
+                    peak_gain >= profit_floor_bps
+                    and (
+                        (
+                            peak_gain >= trailing_activation_bps
+                            and price >= position.trough_price
+                            * (D("1") + trailing_stop_pct / D("100"))
+                        )
+                        or pnl_bps < profit_floor_bps
+                    )
                 )
 
             # Profit target arms trend-following instead of forcing a full close.
@@ -1019,9 +1048,10 @@ class TacticalTrader:
                     peak_gain_bps=str(peak_gain),
                     current_pnl_bps=str(pnl_bps),
                     take_profit_trigger_bps=str(target_gain_bps),
-                    trailing_stop_pct=str(
-                        getattr(self.config, "tactical_trailing_stop_pct", 0.7)
-                    ),
+                    estimated_round_trip_cost_bps=str(estimated_round_trip_cost_bps),
+                    profit_floor_bps=str(profit_floor_bps),
+                    trailing_activation_bps=str(trailing_activation_bps),
+                    trailing_stop_pct=str(trailing_stop_pct),
                 )
 
             reason = ""
@@ -1029,7 +1059,7 @@ class TacticalTrader:
                 reason = "STOP_LOSS"
             elif trailing_triggered:
                 reason = "TRAILING_STOP"
-            elif now - position.opened_at >= float(
+            elif position.state != "TRAILING" and now - position.opened_at >= float(
                 getattr(self.config, "tactical_max_hold_seconds", 1800)
             ):
                 reason = "TIME_STOP"

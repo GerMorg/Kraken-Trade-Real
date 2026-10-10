@@ -1,4 +1,4 @@
-# Impulse entries and trend-following exits (v0.1.40)
+# Impulse entries and trend-following exits (v0.1.41)
 
 ## Which trading model owns what?
 
@@ -12,7 +12,7 @@ For Spot Margin, Tactical selects leverage from Kraken's side-specific market me
 
 ## Losses and exits
 
-Tactical's adverse-price stop remains 1% by default. Once price gain reaches the configured 2.2% threshold it now **arms trend-following** instead of immediately closing the entire position. The position stays open until a trailing-stop pullback, a qualifying opposite signal, the time stop or the adverse-price stop fires. The trailing exit is based on the observed peak/trough and does not guarantee the exact fill price; a fast move, spread, latency or slippage can increase realized loss or giveback.
+Tactical's adverse-price stop remains 1% by default. Once price gain reaches the configured 2.2% threshold it **arms trend-following** instead of forcing a close. The trailing profit floor is cost-aware: it estimates round-trip fees, max spread, slippage and safety buffer, then adds a 25 bps target cushion. A peak-to-price pullback stop is armed only after the peak covers that floor plus the configured trailing distance; if price fades through the cost floor sooner, it exits at that floor rather than accepting a planned negative net return. Once a position is in the trailing state, the 30-minute time limit no longer closes it by itself; the cost-aware trailing exit, a qualifying opposite signal or the 1% adverse-price stop can still close it. The target does not guarantee the exact fill price; fast moves, spread, latency or slippage can increase realized loss or giveback.
 
 For core Spot Margin positions, a new 2% loss-versus-cost-basis stop takes priority over profit management and creates a full reduce-only exit. Existing core profit protection remains: realize a configurable 50% partial reduction at 10% position profit, retain a persistent profit high-water mark, and flatten on the configured 35% peak-profit giveback after 10% activation subject to the 5% profit floor. The normal core policy otherwise remains conservative and signal/cost-aware; core leverage does not scale with Tactical impulse score.
 
