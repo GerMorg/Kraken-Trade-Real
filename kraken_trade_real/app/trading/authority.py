@@ -609,12 +609,14 @@ class TradingAuthority:
             return {"allowed": False, "reason": "LEVERAGE_INSTRUMENT_LIMIT"}
 
         open_orders = self.db.query(
-            "SELECT client_order_id,state,submitted_at,created_at,kraken_order_id FROM orders WHERE symbol=? "
+            "SELECT client_order_id,state,submitted_at,created_at,kraken_order_id,"
+            "reduce_only,quantity,limit_price,side FROM orders WHERE symbol=? "
             "AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",
             (intent.instrument.symbol,),
         )
+        stale_reduce_order_resolved = False
         if open_orders:
-            open_orders = self._reconcile_symbol_open_orders(
+            open_orders, stale_reduce_order_resolved = self._reconcile_symbol_open_orders(
                 intent.instrument,
                 open_orders,
             )
@@ -631,6 +633,16 @@ class TradingAuthority:
                         }
                         for row in open_orders
                     ],
+                },
+            }
+
+        if stale_reduce_order_resolved:
+            return {
+                "allowed": False,
+                "reason": "STALE_REDUCE_ORDER_RESOLVED_REFRESH_REQUIRED",
+                "detail": {
+                    "symbol": intent.instrument.symbol,
+                    "instruction": "Reconcile portfolio on the next cycle before retrying the reduction",
                 },
             }
 
@@ -695,8 +707,61 @@ class TradingAuthority:
         self,
         instrument: Instrument,
         open_orders: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Reconcile open orders and cancel stale reduce-only limits safely.
+
+        A reduce-only limit is allowed a bounded chance to fill. Once older than
+        execution_order_timeout_seconds, request exchange-side cancellation and
+        require an exchange-confirmed terminal state. Never clear an ambiguous
+        order merely because its timeout elapsed.
+        """
         remaining: list[dict[str, Any]] = []
+        refresh_required = False
+        reduce_timeout = max(
+            5.0,
+            float(getattr(self.config, "execution_order_timeout_seconds", 45)),
+        )
+
+        def raw_status(payload: dict[str, Any]) -> str:
+            return str(payload.get("status") or payload.get("state") or "").strip().lower()
+
+        def is_terminal_status(payload: dict[str, Any], resolved_state: OrderState) -> bool:
+            status = raw_status(payload)
+            return (
+                status in {"closed", "canceled", "cancelled", "expired", "rejected"}
+                or resolved_state in {
+                    OrderState.FILLED, OrderState.CANCELED,
+                    OrderState.EXPIRED, OrderState.REJECTED,
+                }
+            )
+
+        def persisted_terminal_state(
+            payload: dict[str, Any], resolved_state: OrderState
+        ) -> tuple[OrderState, str]:
+            status = raw_status(payload)
+            executed = D(str(
+                payload.get("vol_exec") or payload.get("executed_volume") or "0"
+            ))
+            requested = D(str(payload.get("vol") or payload.get("volume") or "0"))
+            if resolved_state == OrderState.FILLED:
+                return OrderState.FILLED, ""
+            if status in {"canceled", "cancelled", "expired", "rejected"} or (
+                status == "closed" and executed < requested
+            ):
+                detail = ""
+                if executed > 0:
+                    detail = (
+                        "EXCHANGE_TERMINAL_AFTER_PARTIAL_FILL:"
+                        f"executed={executed};requested={requested};exchange_status={status}"
+                    )
+                return (
+                    OrderState.EXPIRED if status == "expired" else
+                    OrderState.REJECTED if status == "rejected" else
+                    OrderState.CANCELED,
+                    detail,
+                )
+            return resolved_state, ""
+
         for row in open_orders:
             state = str(row.get("state", ""))
             if state not in self.OPEN_STATES:
@@ -711,6 +776,7 @@ class TradingAuthority:
                 or row.get("created_at")
                 or time.time()
             )
+            is_reduce_only = bool(int(row.get("reduce_only") or 0))
             if not is_valid_kraken_client_order_id(client_order_id):
                 self.db.update_order_state(
                     client_order_id,
@@ -727,58 +793,226 @@ class TradingAuthority:
                     age_seconds=round(age_seconds, 2),
                 )
                 continue
+            order_id = str(row.get("kraken_order_id") or "") or None
             try:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,
                     instrument=instrument,
-                    kraken_order_id=str(row.get("kraken_order_id") or "") or None,
+                    kraken_order_id=order_id,
                 )
-                if found:
-                    resolved_state, order_id = self.reconciler.reconcile(found)
-                    if resolved_state != OrderState.UNKNOWN_RECONCILING:
-                        self.db.update_order_state(
-                            client_order_id,
-                            resolved_state.value,
-                            kraken_order_id=order_id,
-                        )
+                if not found:
+                    self.db.update_order_state(
+                        client_order_id,
+                        OrderState.REJECTED.value,
+                        last_error="EXCHANGE_CONFIRMED_NO_ORDER",
+                    )
+                    self.audit.emit(
+                        "PREFLIGHT_ORDER_CLEARED",
+                        "WARNING",
+                        symbol=instrument.symbol,
+                        client_order_id=client_order_id,
+                        previous_state=state,
+                        outcome="EXCHANGE_CONFIRMED_NO_ORDER",
+                        age_seconds=round(age_seconds, 2),
+                    )
+                    continue
+
+                payload = found[0] if isinstance(found[0], dict) else {}
+                resolved_state, resolved_id = self.reconciler.reconcile(found)
+                exchange_status = raw_status(payload)
+                if is_terminal_status(payload, resolved_state):
+                    terminal_state, terminal_detail = persisted_terminal_state(
+                        payload, resolved_state
+                    )
+                    self.db.update_order_state(
+                        client_order_id,
+                        terminal_state.value,
+                        kraken_order_id=resolved_id or order_id,
+                        **({"last_error": terminal_detail} if terminal_detail else {}),
+                    )
+                    self.audit.emit(
+                        "PREFLIGHT_ORDER_RECONCILED",
+                        "INFO",
+                        symbol=instrument.symbol,
+                        client_order_id=client_order_id,
+                        previous_state=state,
+                        new_state=terminal_state.value,
+                        exchange_status=exchange_status,
+                        kraken_order_id=resolved_id or order_id or "",
+                        executed_volume=str(
+                            payload.get("vol_exec") or payload.get("executed_volume") or "0"
+                        ),
+                        requested_volume=str(payload.get("vol") or payload.get("volume") or "0"),
+                        age_seconds=round(age_seconds, 2),
+                    )
+                    if is_reduce_only and age_seconds >= reduce_timeout:
+                        refresh_required = True
+                    continue
+
+                if resolved_state != OrderState.UNKNOWN_RECONCILING:
+                    self.db.update_order_state(
+                        client_order_id,
+                        resolved_state.value,
+                        kraken_order_id=resolved_id or order_id,
+                    )
+                    self.audit.emit(
+                        "PREFLIGHT_ORDER_RECONCILED",
+                        "INFO",
+                        symbol=instrument.symbol,
+                        client_order_id=client_order_id,
+                        previous_state=state,
+                        new_state=resolved_state.value,
+                        kraken_order_id=resolved_id or order_id or "",
+                        age_seconds=round(age_seconds, 2),
+                    )
+
+                # A live reduce-only order is the one order class for which an
+                # aged, non-filling limit must not prevent future risk-reduction
+                # attempts. Only cancel when Kraken gave us its exact order id.
+                if is_reduce_only and age_seconds >= reduce_timeout:
+                    if not order_id:
                         self.audit.emit(
-                            "PREFLIGHT_ORDER_RECONCILED",
-                            "INFO",
+                            "ORDER_STALE_REDUCE_CANCEL_FAILED",
+                            "WARNING",
                             symbol=instrument.symbol,
                             client_order_id=client_order_id,
-                            previous_state=state,
-                            new_state=resolved_state.value,
-                            kraken_order_id=order_id or "",
+                            reason="KRAKEN_ORDER_ID_MISSING",
+                            state=resolved_state.value,
                             age_seconds=round(age_seconds, 2),
                         )
-                        if resolved_state in {
-                            OrderState.SUBMITTING,
-                            OrderState.ACKNOWLEDGED,
-                            OrderState.LIVE,
-                            OrderState.PARTIALLY_FILLED,
-                            OrderState.UNKNOWN_RECONCILING,
-                        }:
-                            remaining.append(
-                                {
-                                    "client_order_id": client_order_id,
-                                    "state": resolved_state.value,
-                                }
+                    elif exchange_status not in {"open", "pending", "new", "partially_filled", "partiallyfilled"}:
+                        self.audit.emit(
+                            "ORDER_STALE_REDUCE_CANCEL_FAILED",
+                            "WARNING",
+                            symbol=instrument.symbol,
+                            client_order_id=client_order_id,
+                            reason="NONTERMINAL_STATUS_UNRECOGNIZED",
+                            exchange_status=exchange_status,
+                            state=resolved_state.value,
+                            age_seconds=round(age_seconds, 2),
+                        )
+                    else:
+                        self.audit.emit(
+                            "ORDER_STALE_REDUCE_CANCEL_REQUESTED",
+                            "WARNING",
+                            symbol=instrument.symbol,
+                            client_order_id=client_order_id,
+                            kraken_order_id=order_id,
+                            state=resolved_state.value,
+                            age_seconds=round(age_seconds, 2),
+                            timeout_seconds=reduce_timeout,
+                            quantity=str(row.get("quantity") or ""),
+                            limit_price=str(row.get("limit_price") or ""),
+                        )
+                        cancel_error = ""
+                        try:
+                            self.gateway.cancel_order(
+                                instrument=instrument,
+                                kraken_order_id=order_id,
+                                client_order_id=client_order_id,
                             )
-                        continue
-                self.db.update_order_state(
-                    client_order_id,
-                    OrderState.REJECTED.value,
-                    last_error="EXCHANGE_CONFIRMED_NO_ORDER",
-                )
-                self.audit.emit(
-                    "PREFLIGHT_ORDER_CLEARED",
-                    "WARNING",
-                    symbol=instrument.symbol,
-                    client_order_id=client_order_id,
-                    previous_state=state,
-                    outcome="EXCHANGE_CONFIRMED_NO_ORDER",
-                    age_seconds=round(age_seconds, 2),
-                )
+                        except Exception as exc:
+                            cancel_error = f"{type(exc).__name__}:{str(exc)[:400]}"
+                        # Verify the exact exchange order after the cancel request.
+                        # A timeout or cancel API response alone is not proof.
+                        try:
+                            after_cancel = self.gateway.lookup_order(
+                                client_order_id=client_order_id,
+                                instrument=instrument,
+                                kraken_order_id=order_id,
+                            )
+                            if after_cancel and isinstance(after_cancel[0], dict):
+                                after_payload = after_cancel[0]
+                                after_state, after_id = self.reconciler.reconcile(after_cancel)
+                                after_status = raw_status(after_payload)
+                                if is_terminal_status(after_payload, after_state):
+                                    terminal_state, terminal_detail = persisted_terminal_state(
+                                        after_payload, after_state
+                                    )
+                                    detail = terminal_detail or (
+                                        f"STALE_REDUCE_ORDER_TERMINAL:{after_status}"
+                                    )
+                                    self.db.update_order_state(
+                                        client_order_id,
+                                        terminal_state.value,
+                                        kraken_order_id=after_id or order_id,
+                                        last_error=detail,
+                                    )
+                                    executed = str(
+                                        after_payload.get("vol_exec")
+                                        or after_payload.get("executed_volume")
+                                        or "0"
+                                    )
+                                    self.audit.emit(
+                                        "ORDER_STALE_REDUCE_CANCEL_CONFIRMED",
+                                        "WARNING",
+                                        symbol=instrument.symbol,
+                                        client_order_id=client_order_id,
+                                        kraken_order_id=after_id or order_id,
+                                        previous_state=state,
+                                        new_state=terminal_state.value,
+                                        exchange_status=after_status,
+                                        executed_volume=executed,
+                                        requested_volume=str(
+                                            after_payload.get("vol")
+                                            or after_payload.get("volume") or "0"
+                                        ),
+                                        cancel_error=cancel_error,
+                                        age_seconds=round(age_seconds, 2),
+                                        action="REFRESH_PORTFOLIO_BEFORE_RETRY",
+                                    )
+                                    refresh_required = True
+                                    continue
+                                if after_state != OrderState.UNKNOWN_RECONCILING:
+                                    self.db.update_order_state(
+                                        client_order_id,
+                                        after_state.value,
+                                        kraken_order_id=after_id or order_id,
+                                    )
+                                self.audit.emit(
+                                    "ORDER_STALE_REDUCE_CANCEL_FAILED",
+                                    "WARNING",
+                                    symbol=instrument.symbol,
+                                    client_order_id=client_order_id,
+                                    kraken_order_id=after_id or order_id,
+                                    reason="ORDER_STILL_NONTERMINAL_AFTER_CANCEL",
+                                    exchange_status=after_status,
+                                    cancel_error=cancel_error,
+                                    age_seconds=round(age_seconds, 2),
+                                )
+                                remaining.append({
+                                    "client_order_id": client_order_id,
+                                    "state": after_state.value,
+                                })
+                                continue
+                            self.audit.emit(
+                                "ORDER_STALE_REDUCE_CANCEL_FAILED",
+                                "WARNING",
+                                symbol=instrument.symbol,
+                                client_order_id=client_order_id,
+                                kraken_order_id=order_id,
+                                reason="POST_CANCEL_LOOKUP_EMPTY",
+                                cancel_error=cancel_error,
+                                age_seconds=round(age_seconds, 2),
+                            )
+                        except Exception as exc:
+                            self.audit.emit(
+                                "ORDER_STALE_REDUCE_CANCEL_FAILED",
+                                "WARNING",
+                                symbol=instrument.symbol,
+                                client_order_id=client_order_id,
+                                kraken_order_id=order_id,
+                                reason="POST_CANCEL_RECONCILIATION_FAILED",
+                                error_type=type(exc).__name__,
+                                error=str(exc)[:400],
+                                cancel_error=cancel_error,
+                                age_seconds=round(age_seconds, 2),
+                            )
+
+                remaining.append({
+                    "client_order_id": client_order_id,
+                    "state": resolved_state.value,
+                })
             except Exception as exc:
                 self.audit.emit(
                     "PREFLIGHT_ORDER_RECONCILIATION_FAILED",
@@ -791,7 +1025,7 @@ class TradingAuthority:
                     age_seconds=round(age_seconds, 2),
                 )
                 remaining.append(row)
-        return remaining
+        return remaining, refresh_required
 
     @staticmethod
     def _volatility(market: Any) -> D:
