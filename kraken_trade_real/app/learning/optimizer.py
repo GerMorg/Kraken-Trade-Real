@@ -353,10 +353,25 @@ class AdaptiveParameterOptimizer:
         except (KeyError, TypeError, ValueError):
             return None
 
+        path = trade.get("path", [])
         peak = entry
         trough = entry
         state = "OPEN"
-        for point in trade.get("path", []):
+        # When a position survives an app restart, the first persisted observation
+        # carries its durable peak/trough and state. Use it as the replay baseline
+        # rather than pretending the path was observed from the entry price.
+        if path:
+            first = path[0]
+            try:
+                peak = max(entry, float(first.get("peak_price", entry)))
+                trough = min(entry, float(first.get("trough_price", entry)))
+                first_state = str(first.get("state") or "OPEN").upper()
+                state = "TRAILING" if first_state == "TRAILING" else "OPEN"
+            except (TypeError, ValueError):
+                peak = entry
+                trough = entry
+                state = "OPEN"
+        for point in path:
             try:
                 timestamp = float(point["observed_at"])
                 price = float(point["price"])
