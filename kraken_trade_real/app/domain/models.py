@@ -59,6 +59,12 @@ class PortfolioState:
     gross_eur:Decimal=Decimal("0"); net_eur:Decimal=Decimal("0"); margin_used_eur:Decimal=Decimal("0")
     unrealized_pnl_eur:Decimal=Decimal("0"); realized_pnl_eur:Decimal=Decimal("0"); daily_pnl_eur:Decimal=Decimal("0")
     drawdown_pct:Decimal=Decimal("0"); open_orders:int=0; source_timestamp:float=field(default_factory=time.time)
+    # Kraken Spot Margin PnL is maintained separately from wallet inventory values.
+    position_pnl_eur:dict[str,Decimal]=field(default_factory=dict)
+    position_pnl_pct:dict[str,Decimal]=field(default_factory=dict)
+    position_basis_eur:dict[str,Decimal]=field(default_factory=dict)
+    position_quantity:dict[str,Decimal]=field(default_factory=dict)
+    spot_open_positions_read_ok:bool=False
 
 @dataclass(frozen=True)
 class Fill:
