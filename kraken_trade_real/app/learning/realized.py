@@ -331,11 +331,10 @@ class CoreSpotRealizedOutcomeLedger:
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             try:
-                for table in (
-                    "core_realized_legs", "core_realized_outcomes",
-                    "core_inventory_lots", "core_fill_anomalies",
-                ):
-                    con.execute(f"DELETE FROM {table}")
+                con.execute("DELETE FROM core_realized_legs")
+                con.execute("DELETE FROM core_realized_outcomes")
+                con.execute("DELETE FROM core_inventory_lots")
+                con.execute("DELETE FROM core_fill_anomalies")
                 if legs:
                     con.executemany(
                         f"INSERT INTO core_realized_legs({leg_columns}) VALUES({','.join('?' for _ in leg_columns.split(','))})",
