@@ -147,16 +147,17 @@ class PositionProfitProtection:
             cycle_started_at = None
 
         local_rows: list[dict[str, Any]] = []
-        if order_ids:
-            marks = ",".join("?" for _ in order_ids)
-            local_rows = self.db.query(
-                f"""SELECT o.kraken_order_id,o.decision_id,o.direction,o.reduce_only,
-                           o.state,o.created_at,o.submitted_at,d.strategy_version
-                    FROM orders AS o
-                    JOIN decisions AS d ON d.decision_id=o.decision_id
-                    WHERE o.symbol=? AND o.kraken_order_id IN ({marks})
-                    ORDER BY o.created_at DESC""",
-                tuple([symbol, *order_ids]),
+        for order_id in order_ids:
+            local_rows.extend(
+                self.db.query(
+                    """SELECT o.kraken_order_id,o.decision_id,o.direction,o.reduce_only,
+                              o.state,o.created_at,o.submitted_at,d.strategy_version
+                       FROM orders AS o
+                       JOIN decisions AS d ON d.decision_id=o.decision_id
+                       WHERE o.symbol=? AND o.kraken_order_id=?
+                       ORDER BY o.created_at DESC""",
+                    (symbol, order_id),
+                )
             )
         opening_rows = [
             row for row in local_rows
@@ -181,13 +182,15 @@ class PositionProfitProtection:
         data_complete = has_pnl and basis > 0 and quantity > 0
         order_created_at = None
         if matching_open_order is not None:
-            try:
-                order_created_at = float(
-                    matching_open_order.get("submitted_at")
-                    or matching_open_order.get("created_at")
-                )
-            except (TypeError, ValueError):
-                order_created_at = None
+            raw_order_created_at = (
+                matching_open_order.get("submitted_at")
+                or matching_open_order.get("created_at")
+            )
+            if raw_order_created_at is not None:
+                try:
+                    order_created_at = float(raw_order_created_at)
+                except (TypeError, ValueError):
+                    order_created_at = None
         current_cycle_open = (
             matching_open_order is not None
             and order_created_at is not None
