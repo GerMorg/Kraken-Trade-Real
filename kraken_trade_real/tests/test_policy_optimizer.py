@@ -134,7 +134,6 @@ def test_optimizer_requires_independent_time_buckets_even_with_many_symbols():
 
 
 def test_sizing_confidence_power_is_bounded_and_changes_position_notional(config, instrument):
-    from app.domain.models import PortfolioState
     from app.trading.decision import DecisionEngine
     from app.domain.states import Direction
     from decimal import Decimal
@@ -158,3 +157,27 @@ def test_sizing_confidence_power_is_bounded_and_changes_position_notional(config
         Decimal("100"), Decimal("0.5"), Direction.LONG,
         {"strategy_sizing_confidence_power": 99},
     ) == conservative
+
+
+def test_optimizer_waits_for_minimum_data_before_a_promotion_decision():
+    optimizer = StrategyPolicyOptimizer()
+    params = {
+        **DEFAULT_WEIGHTS,
+        **DEFAULT_SHAPE,
+        "strategy_sizing_confidence_power": 1.0,
+        "strategy_min_edge_bps": 25.0,
+        "strategy_min_confidence": 0.58,
+        "strategy_adaptive_edge_floor_bps": 15.0,
+        "strategy_adaptive_min_confidence": 0.75,
+        "strategy_adaptive_cost_ratio": 1.1,
+    }
+    rows = [
+        _row(bucket, "LONG", net_return=100 if bucket % 2 else -50, trend=1.0)
+        for bucket in range(90)
+    ]
+    result = optimizer.fit(rows, params, params)
+
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["minimum_groups"] == 300
+    assert result["minimum_time_buckets"] == 80
+    assert result["promoted"] is False
