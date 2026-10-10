@@ -65,6 +65,7 @@ class PortfolioState:
     position_basis_eur:dict[str,Decimal]=field(default_factory=dict)
     position_quantity:dict[str,Decimal]=field(default_factory=dict)
     spot_open_positions_read_ok:bool=False
+    spot_margin_position_symbols:tuple[str,...]=()
 
 @dataclass(frozen=True)
 class Fill:
