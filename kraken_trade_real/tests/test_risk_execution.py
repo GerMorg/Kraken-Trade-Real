@@ -20,10 +20,14 @@ def test_margin_and_leverage_bounds():
 
 
 def test_decision_rejection_reason_distinguishes_edge_and_confidence(config, instrument):
+    from dataclasses import replace
     from app.domain.models import PortfolioState, Signal
     from app.domain.states import Direction
     from app.trading.decision import DecisionEngine
 
+    # Learned Core entry thresholds are no longer HA options; inject the model
+    # values that this decision-engine reason test intends to exercise.
+    config = replace(config, strategy_min_edge_bps=5.0, strategy_min_confidence=0.5)
     features = {"volatility": Decimal("2")}
     weak = Signal(
         instrument.symbol, Direction.LONG, Decimal("4"), Decimal("1"), Decimal("0.9"),
