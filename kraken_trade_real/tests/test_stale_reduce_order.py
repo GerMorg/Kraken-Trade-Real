@@ -2,7 +2,7 @@ from decimal import Decimal
 import time
 from types import SimpleNamespace
 
-from app.domain.models import Decision, OrderIntent, Signal
+from app.domain.models import Decision, Signal
 from app.domain.states import Direction, OrderState
 from app.execution.policy import ExecutionPolicy
 from app.trading.authority import TradingAuthority
