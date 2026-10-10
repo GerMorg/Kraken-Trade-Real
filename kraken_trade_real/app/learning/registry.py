@@ -16,6 +16,16 @@ class ModelRegistry:
     def ensure(self) -> None:
         # A crash during an older promotion/rollback must not leave the trader
         # without an active decision model or with multiple active versions.
+        if (
+            "tactical_stop_loss_pct" in params
+            and "tactical_take_profit_pct" in params
+            and float(params["tactical_stop_loss_pct"]) >= float(params["tactical_take_profit_pct"])
+        ):
+            self.db.learning_event(
+                "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                {"reason": "EXIT_STOP_MUST_BE_BELOW_TARGET"},
+            )
+            return False
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
@@ -140,7 +150,10 @@ class ModelRegistry:
             return False
         if (
             row["family"] != "strategy_tactical"
-            or metrics.get("kind") != "bounded_online_controller"
+            or metrics.get("kind") not in {
+                "bounded_online_controller",
+                "path_replay_exit_policy",
+            }
             or int(metrics.get("samples", 0)) < minimum_samples
             or not isinstance(params, dict)
         ):
@@ -149,6 +162,30 @@ class ModelRegistry:
                 {"reason": "POLICY_QUALITY_GATE_FAILED", "minimum_samples": minimum_samples},
             )
             return False
+        # Path-based exit candidates need their own holdout quality gate. Entry-policy
+        # candidates keep their existing bounded-controller contract.
+        if metrics.get("kind") == "path_replay_exit_policy":
+            try:
+                valid_metrics = (
+                    int(metrics.get("training_samples", 0)) >= 42
+                    and int(metrics.get("validation_samples", 0)) >= 18
+                    and float(metrics.get("training_coverage", 0.0)) >= 0.85
+                    and float(metrics.get("validation_coverage", 0.0)) >= 0.85
+                    and float(metrics.get("training_improvement_bps", 0.0)) >= 10.0
+                    and float(metrics.get("validation_improvement_bps", 0.0)) >= 5.0
+                    and float(metrics.get("candidate_validation_mean_net_bps", 0.0)) > 0.0
+                    and float(metrics.get("candidate_validation_max_drawdown", 1.0))
+                    <= float(metrics.get("baseline_validation_max_drawdown", 0.0)) + 0.01
+                )
+            except (TypeError, ValueError):
+                valid_metrics = False
+            if not valid_metrics:
+                self.db.learning_event(
+                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                    {"reason": "EXIT_POLICY_VALIDATION_QUALITY_GATE_FAILED"},
+                )
+                return False
+
         # Hard bounds are enforced again at promotion, independently of the optimizer.
         bounds = {
             "tactical_min_expected_move_bps": (80.0, 1200.0),
@@ -159,6 +196,11 @@ class ModelRegistry:
             "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
             "tactical_portfolio_pct": (1.0, 25.0),
             "tactical_position_limit_pct": (1.0, 80.0),
+            "tactical_stop_loss_pct": (0.35, 2.0),
+            "tactical_take_profit_pct": (1.0, 5.0),
+            "tactical_trailing_trigger_bps": (50.0, 500.0),
+            "tactical_trailing_stop_pct": (0.2, 1.5),
+            "tactical_max_hold_seconds": (300.0, 7200.0),
         }
         try:
             for key, (lo, hi) in bounds.items():
