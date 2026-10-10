@@ -291,6 +291,9 @@ class PortfolioReconciler:
             open_positions = self.gateway.spot_open_positions()
             spot_open_positions_read_ok = isinstance(open_positions, dict)
             known_spot_instruments = self._spot_instruments()
+            # Freeze wallet-origin symbols before adding margin rows: a later
+            # OpenPositions lot must not be mistaken for an already-counted wallet asset.
+            wallet_position_symbols = set(positions)
             for item in open_positions.values():
                 if not isinstance(item, dict):
                     continue
@@ -302,86 +305,90 @@ class PortfolioReconciler:
                 spot_margin_position_symbols.add(position_symbol)
                 position_leverage = dec(item.get("leverage"))
                 if position_leverage > 0:
-                    self.position_leverages[position_symbol] = position_leverage
+                    self.position_leverages[position_symbol] = max(
+                        self.position_leverages.get(position_symbol, D("0")),
+                        position_leverage,
+                    )
 
-                # Kraken OpenPositions(docalcs=true) supplies net PnL and cost in
-                # the pair's quote currency. Preserve that independently of the
-                # signed gross exposure used by position sizing.
+                # Kraken can expose multiple independent margin lots for one pair.
+                # Aggregate their quantity, cost basis and PnL instead of allowing
+                # the last lot to overwrite the earlier ones.
                 quote_rate = (
                     self.quote_to_eur_rate(instrument.quote)
                     if instrument is not None else None
                 )
                 reported_net = dec(item.get("net"))
                 reported_cost = abs(dec(item.get("cost")))
-                if reported_cost > 0:
-                    position_pnl_pct[position_symbol] = (
-                        reported_net / reported_cost * D("100")
-                    )
                 if quote_rate is not None and quote_rate > 0:
                     basis_eur = reported_cost * quote_rate
                     pnl_eur = reported_net * quote_rate
                     if basis_eur > 0:
-                        position_basis_eur[position_symbol] = basis_eur
-                    position_pnl_eur[position_symbol] = pnl_eur
+                        position_basis_eur[position_symbol] = (
+                            position_basis_eur.get(position_symbol, D("0")) + basis_eur
+                        )
+                    position_pnl_eur[position_symbol] = (
+                        position_pnl_eur.get(position_symbol, D("0")) + pnl_eur
+                    )
                     unreal += pnl_eur
+                    total_basis = position_basis_eur.get(position_symbol, D("0"))
+                    if total_basis > 0:
+                        position_pnl_pct[position_symbol] = (
+                            position_pnl_eur[position_symbol] / total_basis * D("100")
+                        )
+
                 quantity = max(
                     D("0"),
                     dec(item.get("vol")) - dec(item.get("vol_closed")),
                 )
                 if quantity > 0:
-                    position_quantity[position_symbol] = quantity
+                    position_quantity[position_symbol] = (
+                        position_quantity.get(position_symbol, D("0")) + quantity
+                    )
 
-                if position_symbol in positions:
-                    # The base-wallet balance and the financed leg are separate
-                    # valuation views; don't add the same symbol twice to gross,
-                    # but retain the exchange-reported margin PnL above.
+                # Preserve the existing wallet valuation policy, but don't let
+                # that wallet-key check suppress accounting of a second margin lot.
+                if position_symbol in wallet_position_symbols:
                     self.db.event(
                         "PORTFOLIO_MARGIN_POSITION_PNL",
                         "INFO",
-                        {"symbol": position_symbol,
-                         "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
-                         "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
-                         "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
-                         "quantity": str(position_quantity.get(position_symbol, D("0"))),
-                         "source": "KRAKEN_OPENPOSITIONS_DOCALCS"},
+                        {
+                            "symbol": position_symbol,
+                            "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
+                            "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
+                            "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
+                            "quantity": str(position_quantity.get(position_symbol, D("0"))),
+                            "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
+                            "wallet_inventory_present": True,
+                        },
                     )
                     continue
+
                 value = dec(item.get("value") or item.get("cost"))
                 if quote_rate is not None and quote_rate > 0:
                     value *= quote_rate
-                if value == 0:
-                    # Still retain PnL/basis maps if Kraken reports zero market
-                    # value during a close/settlement edge case.
-                    if position_symbol in position_pnl_pct:
-                        self.db.event(
-                            "PORTFOLIO_MARGIN_POSITION_PNL",
-                            "INFO",
-                            {"symbol": position_symbol,
-                             "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
-                             "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
-                             "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
-                             "quantity": str(position_quantity.get(position_symbol, D("0"))),
-                             "source": "KRAKEN_OPENPOSITIONS_DOCALCS"},
-                        )
-                    continue
-                if str(item.get("type") or "").lower() == "sell":
+                side = str(item.get("type") or "").lower()
+                if side == "sell":
                     value = -abs(value)
-                # Keep exchange margin positions under the canonical discovered
-                # instrument symbol. Kraken's OpenPositions pair can be an
-                # altname (e.g. MINAUSD) rather than the app's MINA/USD symbol;
-                # otherwise the position is silently omitted from reevaluation.
-                positions[position_symbol] = value
-                gross += abs(value)
-                net += value
+                elif side == "buy":
+                    value = abs(value)
+                if value != 0:
+                    positions[position_symbol] = (
+                        positions.get(position_symbol, D("0")) + value
+                    )
+                    gross += abs(value)
+                    net += value
                 self.db.event(
                     "PORTFOLIO_MARGIN_POSITION_PNL",
                     "INFO",
-                    {"symbol": position_symbol,
-                     "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
-                     "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
-                     "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
-                     "quantity": str(position_quantity.get(position_symbol, D("0"))),
-                     "source": "KRAKEN_OPENPOSITIONS_DOCALCS"},
+                    {
+                        "symbol": position_symbol,
+                        "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
+                        "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
+                        "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
+                        "quantity": str(position_quantity.get(position_symbol, D("0"))),
+                        "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
+                        "margin_lot_value_eur": str(value),
+                    },
                 )
         except Exception as exc:
             spot_open_positions_read_ok = False

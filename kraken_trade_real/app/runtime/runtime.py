@@ -1239,12 +1239,27 @@ class TradingRuntime:
                     continue
                 decision=__import__("dataclasses").replace(decision,leverage=lev)
 
-                # If the quote wallet is short, the dependent trade has an
-                # additional EUR/USD conversion cost. Include that cost in the
-                # edge before risk evaluates the entry threshold.
+                # A zero target for an exchange-confirmed Spot Margin holding
+                # should close all open lots through Kraken's native settlement
+                # order rather than repeatedly estimating one lot's base volume.
+                full_margin_settlement = (
+                    instrument.venue == "spot"
+                    and instrument.product_type.value == "SPOT_MARGIN"
+                    and decision.reduce_only
+                    and decision.target_position_eur == 0
+                    and portfolio.spot_open_positions_read_ok
+                    and instrument.symbol in portfolio.spot_margin_position_symbols
+                    and self.portfolio.position_leverages.get(instrument.symbol, D("1")) > D("1")
+                )
+
+                # FX funding is an entry concern; a reduce-only close must never
+                # trigger an FX purchase merely because zero is greater than a
+                # negative signed short exposure.
                 fx_needed = False
                 if (
-                    instrument.venue == "spot"
+                    not decision.reduce_only
+                    and lev <= D("1")
+                    and instrument.venue == "spot"
                     and execution_direction.value == "LONG"
                     and decision.target_position_eur > decision.current_position_eur
                 ):
@@ -1340,10 +1355,14 @@ class TradingRuntime:
                     )
                     continue
 
-                quantity = self.portfolio.quantity_for_eur(
-                    instrument,
-                    decision.target_notional_eur,
-                    snap.price,
+                quantity = (
+                    D("0")
+                    if full_margin_settlement
+                    else self.portfolio.quantity_for_eur(
+                        instrument,
+                        decision.target_notional_eur,
+                        snap.price,
+                    )
                 )
                 execution_direction = decision.execution_direction or decision.signal.direction
                 spot_cash_reduction = _is_spot_cash_long_reduction(
@@ -1426,7 +1445,7 @@ class TradingRuntime:
                         checks={"quote_to_eur":False},
                     )
                     continue
-                if decision.reduce_only:
+                if decision.reduce_only and not full_margin_settlement:
                     minimum_qty = D(str(instrument.min_order_qty or "0"))
                     minimum_cost = D(str(instrument.min_cost or "0"))
                     estimated_notional = quantity * snap.price
@@ -1514,22 +1533,42 @@ class TradingRuntime:
                                 },
                             )
                             continue
-                method=self.authority.policy.choose(
-                    snap.spread_bps,
-                    decision.signal.net_edge_bps,
-                    f.get("volatility",D("999")),
-                    reduce_only=decision.reduce_only,
-                )
-                execution_direction=decision.execution_direction or decision.signal.direction
-                price=snap.ask if execution_direction.value=="LONG" else snap.bid
+                if full_margin_settlement:
+                    order_type = "settle-position"
+                    price = None
+                    quantity = D("0")
+                    post_only = False
+                    self.audit.emit(
+                        "MARGIN_POSITION_SETTLE_ORDER_SELECTED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        direction=execution_direction.value,
+                        current_position_eur=str(decision.current_position_eur),
+                        target_position_eur=str(decision.target_position_eur),
+                        open_quantity=str(portfolio.position_quantity.get(instrument.symbol, D("0"))),
+                        leverage=str(lev),
+                        reason=str(decision.rationale.get("rebalance_action", "FULL_EXIT")),
+                    )
+                else:
+                    method=self.authority.policy.choose(
+                        snap.spread_bps,
+                        decision.signal.net_edge_bps,
+                        f.get("volatility",D("999")),
+                        reduce_only=decision.reduce_only,
+                    )
+                    order_type = method["order_type"]
+                    execution_direction=decision.execution_direction or decision.signal.direction
+                    price=snap.ask if execution_direction.value=="LONG" else snap.bid
+                    post_only = bool(method.get("post_only", False))
                 intent=self.intents.build(
                     decision,
                     lev,
-                    method["order_type"],
+                    order_type,
                     quantity,
                     price,
                     reduce_only=decision.reduce_only,
-                    post_only=bool(method.get("post_only", False)),
+                    post_only=post_only,
                 )
                 result=self.authority.submit(intent,snap)
                 self._watchdog_heartbeat(cycle_id, stage)
