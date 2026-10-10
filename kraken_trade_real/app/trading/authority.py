@@ -42,6 +42,8 @@ class TradingAuthority:
         self.policy = policy
         self.reconciler = reconciler
         self._submission_lock = threading.RLock()
+        self._spot_fill_sync_lock = threading.RLock()
+        self._last_spot_fill_sync_monotonic = 0.0
 
     def reconcile_pending(
         self,
@@ -181,6 +183,200 @@ class TradingAuthority:
                     error=type(exc).__name__,
                 )
         return stats
+
+    def sync_spot_fills(
+        self,
+        instruments: Iterable[Instrument],
+        *,
+        max_pages: int = 2,
+        page_size: int = 50,
+        minimum_interval_seconds: float = 60.0,
+        lookback_days: int = 180,
+    ) -> dict[str, Any]:
+        """Backfill known Spot/Margin order fills without blocking trading on failure.
+
+        Kraken TradesHistory is reverse-chronological and pages by offset. Each
+        sync session pins a start/end window and persists its offset, so new
+        fills cannot shift pagination between Home Assistant cycles. The DB's
+        (order_id, trade_id) key makes retries idempotent.
+        """
+        if not callable(getattr(self.gateway, "spot_trades_history", None)):
+            return {"status": "UNSUPPORTED", "pages": 0, "inserted": 0, "matched": 0}
+        with self._spot_fill_sync_lock:
+            now = time.time()
+            session = {
+                key: self.db.one("SELECT value FROM metadata WHERE key=?", (key,))
+                for key in (
+                    "core_spot_fill_sync_start",
+                    "core_spot_fill_sync_end",
+                    "core_spot_fill_sync_offset",
+                )
+            }
+            active_session = all(session[key] is not None for key in session)
+            monotonic_now = time.monotonic()
+            if (
+                not active_session
+                and monotonic_now - self._last_spot_fill_sync_monotonic
+                < max(1.0, float(minimum_interval_seconds))
+            ):
+                return {"status": "THROTTLED", "pages": 0, "inserted": 0, "matched": 0}
+            self._last_spot_fill_sync_monotonic = monotonic_now
+
+            instrument_map = {
+                instrument.symbol: instrument
+                for instrument in instruments
+                if str(getattr(instrument, "venue", "")).lower() == "spot"
+            }
+            if not instrument_map:
+                return {"status": "NO_SPOT_INSTRUMENTS", "pages": 0, "inserted": 0, "matched": 0}
+            order_rows = self.db.query(
+                """SELECT client_order_id,decision_id,symbol,created_at,submitted_at,
+                          kraken_order_id,state,reduce_only,direction
+                   FROM orders
+                   WHERE kraken_order_id IS NOT NULL AND kraken_order_id!=''
+                     AND state!='REJECTED'
+                   ORDER BY COALESCE(submitted_at,created_at)"""
+            )
+            tracked_orders: dict[str, dict[str, Any]] = {}
+            for row in order_rows:
+                symbol = str(row.get("symbol") or "")
+                if symbol not in instrument_map:
+                    continue
+                order_id = str(row.get("kraken_order_id") or "")
+                if order_id:
+                    tracked_orders[order_id] = row
+            if not tracked_orders:
+                return {"status": "NO_TRACKED_SPOT_ORDERS", "pages": 0, "inserted": 0, "matched": 0}
+
+            def metadata_value(key: str, default: str = "") -> str:
+                row = self.db.one("SELECT value FROM metadata WHERE key=?", (key,))
+                return str(row.get("value") or default) if row else default
+
+            def set_metadata(key: str, value: Any) -> None:
+                self.db.execute(
+                    "INSERT INTO metadata(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, str(value)),
+                )
+
+            if active_session:
+                start_at = int(float(session["core_spot_fill_sync_start"]["value"]))
+                end_at = int(float(session["core_spot_fill_sync_end"]["value"]))
+                offset = max(0, int(float(session["core_spot_fill_sync_offset"]["value"])))
+            else:
+                watermark = metadata_value("core_spot_fill_sync_watermark")
+                cutoff = int(now - max(1, int(lookback_days)) * 86400)
+                if watermark:
+                    try:
+                        start_at = max(cutoff, int(float(watermark)) - 60)
+                    except (TypeError, ValueError):
+                        start_at = cutoff
+                else:
+                    first_order = min(
+                        float(row.get("submitted_at") or row.get("created_at") or now)
+                        for row in tracked_orders.values()
+                    )
+                    start_at = max(cutoff, int(first_order) - 2)
+                end_at = int(now)
+                offset = 0
+                if end_at <= start_at:
+                    return {"status": "UP_TO_DATE", "pages": 0, "inserted": 0, "matched": 0}
+                set_metadata("core_spot_fill_sync_start", start_at)
+                set_metadata("core_spot_fill_sync_end", end_at)
+                set_metadata("core_spot_fill_sync_offset", 0)
+
+            stats: dict[str, Any] = {
+                "status": "IN_PROGRESS",
+                "pages": 0,
+                "inserted": 0,
+                "matched": 0,
+                "unmatched": 0,
+                "offset_start": offset,
+                "window_start": start_at,
+                "window_end": end_at,
+            }
+            max_pages = max(1, min(5, int(max_pages)))
+            page_size = max(1, min(50, int(page_size)))
+            for _ in range(max_pages):
+                response = self.gateway.spot_trades_history({
+                    "start": start_at,
+                    "end": end_at,
+                    "ofs": offset,
+                })
+                if not isinstance(response, dict):
+                    raise KrakenError("SPOT_TRADES_HISTORY_INVALID_RESPONSE")
+                trades = response.get("trades")
+                if not isinstance(trades, dict):
+                    raise KrakenError("SPOT_TRADES_HISTORY_MISSING_TRADES")
+                try:
+                    total_count = max(0, int(response.get("count") or 0))
+                except (TypeError, ValueError):
+                    total_count = 0
+                stats["pages"] += 1
+                for trade_id, payload in trades.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    exchange_order_id = str(payload.get("ordertxid") or "")
+                    order = tracked_orders.get(exchange_order_id)
+                    if order is None:
+                        stats["unmatched"] += 1
+                        continue
+                    instrument = instrument_map[str(order.get("symbol") or "")]
+                    try:
+                        trade_time = float(payload.get("time"))
+                        price = D(str(payload.get("price")))
+                        quantity = D(str(payload.get("vol")))
+                        fee = D(str(payload.get("fee") or "0"))
+                    except Exception:
+                        stats["unmatched"] += 1
+                        continue
+                    side = str(payload.get("type") or "").strip().lower()
+                    if side not in {"buy", "sell"} or trade_time <= 0 or price <= 0 or quantity <= 0:
+                        stats["unmatched"] += 1
+                        continue
+                    inserted = self.db.save_attributed_fill(
+                        order_id=exchange_order_id,
+                        trade_id=str(trade_id),
+                        created_at=trade_time,
+                        symbol=str(order.get("symbol") or ""),
+                        side=side,
+                        quantity=quantity,
+                        price=price,
+                        fee=fee,
+                        # Kraken TradesHistory exposes a fee amount but no fee
+                        # currency field. Do not invent a currency before PnL
+                        # conversion logic is verified.
+                        fee_currency="UNVERIFIED",
+                        client_order_id=str(order.get("client_order_id") or ""),
+                        decision_id=str(order.get("decision_id") or ""),
+                        venue="spot",
+                        quote_asset=str(instrument.quote or ""),
+                        raw_payload=payload,
+                    )
+                    stats["matched"] += 1
+                    if inserted:
+                        stats["inserted"] += 1
+
+                next_offset = offset + len(trades)
+                # Empty/short page means the pinned time window was exhausted.
+                done = not trades or len(trades) < page_size or (
+                    total_count > 0 and next_offset >= total_count
+                )
+                if done:
+                    stats["status"] = "COMPLETE"
+                    set_metadata("core_spot_fill_sync_watermark", end_at)
+                    self.db.execute(
+                        """DELETE FROM metadata WHERE key IN (
+                           'core_spot_fill_sync_start','core_spot_fill_sync_end',
+                           'core_spot_fill_sync_offset'
+                        )"""
+                    )
+                    stats["offset_end"] = next_offset
+                    break
+                offset = next_offset
+                set_metadata("core_spot_fill_sync_offset", offset)
+                stats["status"] = "IN_PROGRESS"
+            return stats
 
     def submit(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         with self._submission_lock:
