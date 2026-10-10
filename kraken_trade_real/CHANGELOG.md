@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.38
+
+- Add exchange-reported Kraken Spot Margin PnL, quote-currency-converted PnL in EUR, cost-basis profit percentage and open quantity to portfolio reconciliation, with explicit audit events and a successful-read flag.
+- Add persistent partial take-profit and profit-lock state: reduce 50% of a margin position after 3.5% profit on exchange cost basis, then trail the peak after 5% activation with a 35% giveback and 2% profit floor. These are configurable Home Assistant options.
+- Prevent the core sizing strategy from immediately rebuilding an asset's exposure after a partial profit has been taken; preserve ordinary signal-driven reductions and full exits.
+- Cancel an aged reduce-only resting order after execution_order_timeout_seconds, only for exchange-identified orders, and require an exchange-confirmed terminal state. Block re-submission in the same cycle to ensure a fresh portfolio snapshot is used; record partial fills instead of retaining them as live blockers.
+- Add regression tests for profit high-water marks, partial-profit state/re-entry prevention and stale reduce-only order cancellation.
+- Bump Home Assistant app, Python package, Docker build and Kraken User-Agent to 0.1.38.
+
 ## 0.1.37
 
 - Deduplicate Tactical entry candidates by canonical base asset across EUR/USD markets, rank quote pairs by spread, volatility and EUR-normalized 24-hour turnover, and log the selected market plus discarded alternatives for each duplicated base.

@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS orders(
   max_slippage_bps TEXT NOT NULL, expires_seconds INTEGER NOT NULL, last_error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_symbol_created ON orders(symbol,created_at);
+
+CREATE TABLE IF NOT EXISTS position_profit_state(
+  symbol TEXT PRIMARY KEY,
+  peak_profit_pct TEXT NOT NULL DEFAULT '0',
+  partial_taken INTEGER NOT NULL DEFAULT 0,
+  pending_order_id TEXT NOT NULL DEFAULT '',
+  pending_start_position_eur TEXT NOT NULL DEFAULT '0',
+  updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS order_events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, client_order_id TEXT NOT NULL,
   state TEXT NOT NULL, detail_json TEXT NOT NULL

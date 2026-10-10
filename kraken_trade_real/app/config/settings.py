@@ -39,6 +39,11 @@ class Config:
     strategy_entry_fee_bps: float
     strategy_exit_fee_bps: float
     strategy_execution_overhead_bps: float
+    strategy_partial_profit_trigger_pct: float
+    strategy_partial_profit_fraction_pct: float
+    strategy_profit_lock_trigger_pct: float
+    strategy_profit_giveback_pct: float
+    strategy_profit_lock_floor_pct: float
     risk_max_position_pct: float
     risk_max_gross_pct: float
     risk_max_net_pct: float
@@ -188,6 +193,11 @@ class Config:
             strategy_entry_fee_bps=f("strategy_entry_fee_bps", 40.0, 0.0, 1000.0),
             strategy_exit_fee_bps=f("strategy_exit_fee_bps", 80.0, 0.0, 1000.0),
             strategy_execution_overhead_bps=f("strategy_execution_overhead_bps", 8.0, 0.0, 1000.0),
+            strategy_partial_profit_trigger_pct=f("strategy_partial_profit_trigger_pct", 3.5, 0.1, 100.0),
+            strategy_partial_profit_fraction_pct=f("strategy_partial_profit_fraction_pct", 50.0, 10.0, 90.0),
+            strategy_profit_lock_trigger_pct=f("strategy_profit_lock_trigger_pct", 5.0, 0.1, 100.0),
+            strategy_profit_giveback_pct=f("strategy_profit_giveback_pct", 35.0, 5.0, 90.0),
+            strategy_profit_lock_floor_pct=f("strategy_profit_lock_floor_pct", 2.0, 0.1, 100.0),
             risk_max_position_pct=f("risk_max_position_pct", 15.0, 0.1, 100.0),
             risk_max_gross_pct=f("risk_max_gross_pct", 80.0, 0.1, 100.0),
             risk_max_net_pct=f("risk_max_net_pct", 50.0, 0.1, 100.0),
@@ -288,6 +298,10 @@ class Config:
             raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")
         if cfg.strategy_adaptive_cost_ratio < 1:
             raise ValueError("strategy_adaptive_cost_ratio must be at least 1")
+        if cfg.strategy_partial_profit_trigger_pct >= cfg.strategy_profit_lock_trigger_pct:
+            raise ValueError("partial-profit trigger must be below the trailing-profit activation")
+        if cfg.strategy_profit_lock_floor_pct >= cfg.strategy_profit_lock_trigger_pct:
+            raise ValueError("profit-lock floor must be below trailing-profit activation")
         if cfg.tactical_adaptive_min_expected_move_bps <= (
             cfg.tactical_entry_fee_bps + cfg.tactical_exit_fee_bps
             + cfg.tactical_expected_slippage_bps + cfg.tactical_safety_buffer_bps
