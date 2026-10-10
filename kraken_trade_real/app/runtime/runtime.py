@@ -437,6 +437,16 @@ class TradingRuntime:
             try:
                 feedback=self.learning.process_feedback()
                 self._learning_summary=feedback
+                refresh_adaptive_config=getattr(self.config,"refresh",None)
+                if callable(refresh_adaptive_config):
+                    active_parameters=refresh_adaptive_config()
+                    self.audit.emit(
+                        "ADAPTIVE_CONFIG_REFRESHED","INFO",
+                        cycle_id=cycle_id,
+                        active_core_version=self.registry.active("strategy_core"),
+                        active_tactical_version=self.registry.active("strategy_tactical"),
+                        parameter_count=len(active_parameters),
+                    )
                 self.audit.emit("LEARNING_FEEDBACK","INFO",cycle_id=cycle_id,**feedback)
             except Exception as exc:
                 self.audit.emit("LEARNING_FEEDBACK_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")
