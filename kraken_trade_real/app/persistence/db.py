@@ -280,29 +280,57 @@ class Database:
 
     def settle_predictions(self, now: float | None = None) -> int:
         now = time.time() if now is None else now
+        # Never score against stale prices: bound both sampling windows.
+        max_snapshot_gap = 600.0
         rows = self.query("SELECT * FROM predictions WHERE outcome_status='OPEN'")
         settled = 0
         for row in rows:
+            created_at = float(row["created_at"])
             horizon_seconds = 900 if row["horizon"] == "15m" else 3600
-            if now < float(row["created_at"]) + horizon_seconds:
+            target_at = created_at + horizon_seconds
+            if now < target_at:
                 continue
             start = self.one(
-                """SELECT price FROM market_snapshots
-                   WHERE symbol=? AND captured_at<=?
+                """SELECT price, captured_at FROM market_snapshots
+                   WHERE symbol=? AND captured_at BETWEEN ? AND ?
                    ORDER BY captured_at DESC LIMIT 1""",
-                (row["symbol"], float(row["created_at"])),
+                (row["symbol"], created_at - max_snapshot_gap, created_at),
             )
             end = self.one(
-                """SELECT price FROM market_snapshots
-                   WHERE symbol=? AND captured_at>=?
-                   ORDER BY captured_at ASC LIMIT 1""",
-                (row["symbol"], float(row["created_at"]) + horizon_seconds),
+                """SELECT price, captured_at FROM market_snapshots
+                   WHERE symbol=? AND captured_at BETWEEN ? AND ?
+                   ORDER BY ABS(captured_at - ?) ASC, captured_at ASC LIMIT 1""",
+                (
+                    row["symbol"], target_at - max_snapshot_gap,
+                    target_at + max_snapshot_gap, target_at,
+                ),
             )
             if not start or not end:
+                if now >= target_at + max_snapshot_gap:
+                    reason = (
+                        "MISSING_OR_STALE_START_SNAPSHOT" if not start
+                        else "MISSING_OR_STALE_HORIZON_SNAPSHOT"
+                    )
+                    self.execute(
+                        "UPDATE predictions SET outcome_status='UNSCORABLE' WHERE prediction_id=?",
+                        (row["prediction_id"],),
+                    )
+                    self.learning_event(
+                        "PREDICTION_UNSCORABLE", str(row["prediction_id"]),
+                        {"reason": reason, "horizon_seconds": horizon_seconds},
+                    )
                 continue
             start_price = Decimal(str(start["price"]))
             end_price = Decimal(str(end["price"]))
-            if start_price <= 0:
+            if start_price <= 0 or end_price <= 0:
+                self.execute(
+                    "UPDATE predictions SET outcome_status='UNSCORABLE' WHERE prediction_id=?",
+                    (row["prediction_id"],),
+                )
+                self.learning_event(
+                    "PREDICTION_UNSCORABLE", str(row["prediction_id"]),
+                    {"reason": "NON_POSITIVE_SNAPSHOT_PRICE"},
+                )
                 continue
             direction = str(row.get("predicted_direction") or "UNKNOWN").upper()
             if direction not in {"LONG", "SHORT"}:
