@@ -85,3 +85,59 @@ def test_legacy_prediction_without_direction_is_never_mislabelled_long(db, instr
         "SELECT COUNT(*) AS n FROM prediction_outcomes WHERE prediction_id=?",
         (prediction_id,),
     )["n"] == 0
+
+
+
+def test_prediction_with_missing_snapshots_becomes_unscorable_after_grace(
+    db, instrument
+):
+    decision = Decision(
+        "decision-no-snapshots", instrument,
+        Signal(
+            instrument.symbol, Direction.LONG, D("100"), D("10"), D("0.9"),
+            "TREND_TEST", D("0"), D("0"), {"volatility": D("10")},
+        ),
+        D("10"), D("2"), {}, "test", "test-model", "",
+    )
+    prediction_id = "prediction-no-snapshots"
+    db.save_prediction(prediction_id, decision, 0.9)
+    created_at = float(db.one(
+        "SELECT created_at FROM predictions WHERE prediction_id=?", (prediction_id,)
+    )["created_at"])
+    assert db.settle_predictions(now=created_at + 900 + 601) == 0
+    row = db.one(
+        "SELECT outcome_status FROM predictions WHERE prediction_id=?", (prediction_id,)
+    )
+    assert row["outcome_status"] == "UNSCORABLE"
+
+
+def test_prediction_does_not_use_stale_start_price(db, instrument):
+    decision = Decision(
+        "decision-stale-start", instrument,
+        Signal(
+            instrument.symbol, Direction.LONG, D("100"), D("10"), D("0.9"),
+            "TREND_TEST", D("0"), D("0"), {"volatility": D("10")},
+        ),
+        D("10"), D("2"), {}, "test", "test-model", "",
+    )
+    prediction_id = "prediction-stale-start"
+    db.save_prediction(prediction_id, decision, 0.9)
+    created_at = float(db.one(
+        "SELECT created_at FROM predictions WHERE prediction_id=?", (prediction_id,)
+    )["created_at"]) + 2000
+    db.execute(
+        "UPDATE predictions SET created_at=? WHERE prediction_id=?",
+        (created_at, prediction_id),
+    )
+    db.save_market(_snapshot(instrument.symbol, "100", created_at - 1200), {})
+    db.save_market(_snapshot(instrument.symbol, "102", created_at + 901), {})
+    db.settle_predictions(now=created_at + 902)
+    row = db.one(
+        "SELECT outcome_status FROM predictions WHERE prediction_id=?", (prediction_id,)
+    )
+    assert row["outcome_status"] == "OPEN"
+    db.settle_predictions(now=created_at + 900 + 601)
+    row = db.one(
+        "SELECT outcome_status FROM predictions WHERE prediction_id=?", (prediction_id,)
+    )
+    assert row["outcome_status"] == "UNSCORABLE"
