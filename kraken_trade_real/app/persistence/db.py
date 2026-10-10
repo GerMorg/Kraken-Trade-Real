@@ -59,10 +59,13 @@ class Database:
                 "regime":"TEXT NOT NULL DEFAULT ''",
                 "expected_cost_bps":"TEXT NOT NULL DEFAULT '0'",
                 "raw_confidence":"REAL NOT NULL DEFAULT 0.5",
+                # Legacy rows receive 0 and are excluded from calibration because
+                # their original raw score cannot be reconstructed reliably.
+                "calibration_eligible":"INTEGER NOT NULL DEFAULT 0",
             }.items():
                 if name not in pcols:
                     con.execute(f"ALTER TABLE predictions ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','6')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','7')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -240,32 +243,37 @@ class Database:
             state.open_orders))
 
     @staticmethod
-    def prediction_probability_from_confidence(confidence: float) -> float:
-        """Cap a rule-derived confidence away from false 0%/100% certainty.
-
-        Keep this score on the same scale that DecisionEngine multiplies by the
-        learned confidence_scale. It is a calibration input, not a proven event
-        probability; only observed, cost-adjusted outcomes can validate it.
-        """
+    def prediction_probability_from_confidence(
+        confidence: float, probability_scale: float = 1.0
+    ) -> float:
+        """Apply probability-only calibration, independent of trade sizing."""
         raw = max(0.0, min(1.0, float(confidence)))
-        return max(0.01, min(0.99, raw))
+        scale = max(0.5, min(1.5, float(probability_scale)))
+        return max(0.01, min(0.99, raw * scale))
 
     def save_prediction(
-        self, prediction_id: str, decision: Any, probability: float, horizon: str = "15m"
+        self,
+        prediction_id: str,
+        decision: Any,
+        probability: float,
+        horizon: str = "15m",
+        probability_scale: float = 1.0,
     ) -> float:
         import hashlib
         feature_hash = hashlib.sha256(
             json.dumps(decision.rationale, sort_keys=True, default=str).encode()
         ).hexdigest()
         raw_confidence = max(0.0, min(1.0, float(probability)))
-        stored_probability = self.prediction_probability_from_confidence(raw_confidence)
+        stored_probability = self.prediction_probability_from_confidence(
+            raw_confidence, probability_scale
+        )
         signal = decision.signal
         self.execute(
             """INSERT OR IGNORE INTO predictions(
               prediction_id,created_at,decision_id,symbol,horizon,probability,
               expected_return_bps,model_version,feature_hash,outcome_status,
-              predicted_direction,regime,expected_cost_bps,raw_confidence
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              predicted_direction,regime,expected_cost_bps,raw_confidence,calibration_eligible
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
             (
                 prediction_id, time.time(), decision.decision_id, decision.instrument.symbol,
                 horizon, stored_probability, str(signal.expected_return_bps),
@@ -277,6 +285,142 @@ class Database:
             ),
         )
         return stored_probability
+
+    def save_signal_observation(
+        self,
+        instrument: Instrument,
+        signal: Any,
+        price: Decimal,
+        *,
+        policy_version: str = "",
+        captured_at: float | None = None,
+        horizon_seconds: int = 900,
+    ) -> bool:
+        """Persist both direction candidates, including signals later rejected.
+
+        Only one row per symbol/direction/horizon bucket is kept, avoiding excessive
+        weighting of overlapping 5-minute forecasts for the same 15-minute outcome.
+        """
+        import hashlib
+        timestamp = time.time() if captured_at is None else float(captured_at)
+        horizon = max(60, int(horizon_seconds))
+        value = Decimal(str(price))
+        if value <= 0:
+            return False
+        direction = str(getattr(signal.direction, "value", signal.direction)).upper()
+        if direction not in {"LONG", "SHORT"}:
+            return False
+        bucket = int(timestamp // horizon)
+        identity = f"{instrument.venue}|{instrument.symbol}|{direction}|{bucket}|{horizon}"
+        observation_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        self.execute(
+            """INSERT OR IGNORE INTO signal_observations(
+               observation_id,created_at,bucket,venue,symbol,product_type,direction,regime,
+               price,confidence,expected_return_bps,expected_cost_bps,features_json,
+               policy_version,horizon_seconds,outcome_status
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')""",
+            (
+                observation_id, timestamp, bucket, instrument.venue,
+                instrument.symbol, instrument.product_type.value, direction,
+                str(signal.regime or ""), str(value),
+                max(0.0, min(1.0, float(signal.confidence))),
+                str(signal.expected_return_bps),
+                str(max(Decimal("0"), Decimal(str(signal.expected_cost_bps)))),
+                json.dumps(signal.features or {}, sort_keys=True, default=str),
+                str(policy_version or ""), horizon,
+            ),
+        )
+        return bool(self.one(
+            "SELECT 1 AS present FROM signal_observations WHERE observation_id=?",
+            (observation_id,),
+        ))
+
+    def settle_signal_observations(self, now: float | None = None) -> dict[str, int]:
+        """Label signal forecasts only with market prices captured after their horizon."""
+        now = time.time() if now is None else float(now)
+        rows = self.query(
+            """SELECT * FROM signal_observations
+               WHERE outcome_status='OPEN'
+                 AND created_at + horizon_seconds <= ?
+               ORDER BY created_at ASC LIMIT 5000""",
+            (now,),
+        )
+        settled = 0
+        unscorable = 0
+        for row in rows:
+            created_at = float(row["created_at"])
+            horizon = max(60, int(row.get("horizon_seconds") or 900))
+            target_at = created_at + horizon
+            start_price = Decimal(str(row["price"]))
+            if start_price <= 0:
+                self.execute(
+                    """UPDATE signal_observations SET outcome_status='UNSCORABLE',measured_at=?
+                       WHERE observation_id=?""",
+                    (now, row["observation_id"]),
+                )
+                unscorable += 1
+                continue
+            end = self.one(
+                """SELECT price,captured_at FROM market_snapshots
+                   WHERE symbol=? AND captured_at>=? AND captured_at<=?
+                   ORDER BY captured_at ASC LIMIT 1""",
+                (row["symbol"], target_at, target_at + horizon),
+            )
+            if not end:
+                # Never label an old forecast with a market snapshot hours later.
+                if now >= target_at + horizon:
+                    self.execute(
+                        """UPDATE signal_observations
+                           SET outcome_status='UNSCORABLE',measured_at=?
+                           WHERE observation_id=? AND outcome_status='OPEN'""",
+                        (now, row["observation_id"]),
+                    )
+                    unscorable += 1
+                continue
+            end_price = Decimal(str(end["price"]))
+            if end_price <= 0:
+                self.execute(
+                    """UPDATE signal_observations SET outcome_status='UNSCORABLE',measured_at=?
+                       WHERE observation_id=?""",
+                    (now, row["observation_id"]),
+                )
+                unscorable += 1
+                continue
+            raw_return = (end_price / start_price - Decimal("1")) * Decimal("10000")
+            direction = str(row["direction"]).upper()
+            directional_return = raw_return if direction == "LONG" else -raw_return
+            expected_cost = max(
+                Decimal("0"), Decimal(str(row.get("expected_cost_bps") or "0"))
+            )
+            net_return = directional_return - expected_cost
+            details = {
+                "start_price": str(start_price), "end_price": str(end_price),
+                "direction": direction, "raw_market_return_bps": str(raw_return),
+                "directional_return_bps": str(directional_return),
+                "expected_cost_bps": str(expected_cost), "net_return_bps": str(net_return),
+                "label": "directional_return_after_expected_costs_gt_zero",
+            }
+            self.execute(
+                """UPDATE signal_observations
+                   SET outcome_status='SETTLED',measured_at=?,realized_return_bps=?,
+                       net_return_bps=?,success=?,detail_json=?
+                   WHERE observation_id=? AND outcome_status='OPEN'""",
+                (
+                    float(end["captured_at"]), str(directional_return), str(net_return),
+                    int(net_return > 0), json.dumps(details, sort_keys=True),
+                    row["observation_id"],
+                ),
+            )
+            settled += 1
+        return {"settled": settled, "unscorable": unscorable}
+
+    def prune_signal_observations(self, cutoff_timestamp: float) -> int:
+        with self.connect() as con:
+            cursor = con.execute(
+                "DELETE FROM signal_observations WHERE created_at < ?",
+                (float(cutoff_timestamp),),
+            )
+            return int(cursor.rowcount or 0)
 
     def settle_predictions(self, now: float | None = None) -> int:
         now = time.time() if now is None else now

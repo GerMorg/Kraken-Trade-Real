@@ -67,12 +67,27 @@ CREATE TABLE IF NOT EXISTS predictions(
   expected_return_bps TEXT NOT NULL, model_version TEXT NOT NULL, feature_hash TEXT NOT NULL,
   outcome_status TEXT NOT NULL, predicted_direction TEXT NOT NULL DEFAULT 'UNKNOWN',
   regime TEXT NOT NULL DEFAULT '', expected_cost_bps TEXT NOT NULL DEFAULT '0',
-  raw_confidence REAL NOT NULL DEFAULT 0.5
+  raw_confidence REAL NOT NULL DEFAULT 0.5,
+  calibration_eligible INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS prediction_outcomes(
   prediction_id TEXT PRIMARY KEY, measured_at REAL NOT NULL, realized_return_bps TEXT,
   success INTEGER, error_bps TEXT, detail_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS signal_observations(
+  observation_id TEXT PRIMARY KEY, created_at REAL NOT NULL, bucket INTEGER NOT NULL,
+  venue TEXT NOT NULL, symbol TEXT NOT NULL, product_type TEXT NOT NULL, direction TEXT NOT NULL,
+  regime TEXT NOT NULL, price TEXT NOT NULL, confidence REAL NOT NULL,
+  expected_return_bps TEXT NOT NULL, expected_cost_bps TEXT NOT NULL, features_json TEXT NOT NULL,
+  policy_version TEXT NOT NULL DEFAULT '', horizon_seconds INTEGER NOT NULL DEFAULT 900,
+  outcome_status TEXT NOT NULL DEFAULT 'OPEN', measured_at REAL, realized_return_bps TEXT,
+  net_return_bps TEXT, success INTEGER, detail_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(venue,symbol,direction,bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_observations_status_created
+  ON signal_observations(outcome_status,created_at);
+CREATE INDEX IF NOT EXISTS idx_signal_observations_bucket
+  ON signal_observations(bucket,symbol);
 
 CREATE TABLE IF NOT EXISTS orders(
   intent_id TEXT PRIMARY KEY, client_order_id TEXT NOT NULL UNIQUE, created_at REAL NOT NULL,
