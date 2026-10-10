@@ -16,16 +16,6 @@ class ModelRegistry:
     def ensure(self) -> None:
         # A crash during an older promotion/rollback must not leave the trader
         # without an active decision model or with multiple active versions.
-        if (
-            "tactical_stop_loss_pct" in params
-            and "tactical_take_profit_pct" in params
-            and float(params["tactical_stop_loss_pct"]) >= float(params["tactical_take_profit_pct"])
-        ):
-            self.db.learning_event(
-                "ADAPTIVE_POLICY_NOT_PROMOTED", version,
-                {"reason": "EXIT_STOP_MUST_BE_BELOW_TARGET"},
-            )
-            return False
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
@@ -210,6 +200,19 @@ class ModelRegistry:
             self.db.learning_event(
                 "ADAPTIVE_POLICY_NOT_PROMOTED", version,
                 {"reason": "PARAMETER_OUT_OF_BOUNDS"},
+            )
+            return False
+        try:
+            if (
+                "tactical_stop_loss_pct" in params
+                and "tactical_take_profit_pct" in params
+                and float(params["tactical_stop_loss_pct"]) >= float(params["tactical_take_profit_pct"])
+            ):
+                raise ValueError("EXIT_STOP_MUST_BE_BELOW_TARGET")
+        except (TypeError, ValueError):
+            self.db.learning_event(
+                "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                {"reason": "EXIT_STOP_MUST_BE_BELOW_TARGET"},
             )
             return False
         with self.db.connect() as con:
