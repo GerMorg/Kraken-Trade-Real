@@ -26,7 +26,7 @@ Regression tests cover confidence-tiered leverage, side-specific support, exposu
 ## v0.1.42 operational correctness
 
 - Multiple `OpenPositions` rows for one pair are aggregated for quantity, cost basis, PnL, and signed exposure. Wallet inventory remains distinguished from margin lots to avoid unintended double counting.
-- A full Spot Margin flatten uses Kraken `ordertype=settle-position` with `volume=0`, but only after a successful fresh OpenPositions read confirms an exchange margin position and its leverage. Partial reductions continue to use quantity orders.
+- A full Spot Margin flatten uses Kraken `ordertype=settle-position` with the aggregate Kraken-reported open base quantity, but only after a successful fresh OpenPositions read confirms an exchange margin position and its leverage. Kraken's documented settlement side is sell for a short and buy for a long; this differs from the ordinary opposite-side trade used to reduce exposure. Partial reductions continue to use quantity orders.
 - Forecast success is directional and measured after expected costs; legacy pending rows with unknown direction become `UNSCORABLE`. Rule-derived confidence is stored as a conservative input shrunk toward 0.5, not asserted as a calibrated probability.
 - Confidence-scale promotion requires 100 observations, selects on an earlier chronological segment, validates on the newest 30%, and requires hold-out Brier improvement of at least 0.005.
 - Tactical's trailing break-even floor includes estimated Spot Margin opening fees and completed four-hour rollover fees in proportion to the borrowed share. Rates remain estimates if exchange/instrument-specific values are unavailable.
