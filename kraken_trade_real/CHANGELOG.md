@@ -3,6 +3,7 @@
 ## 0.1.47
 
 - Persist timestamped Tactical price-path observations per position (including direction, PnL, peak/trough and state) for future path-aware exit-policy evaluation.
+- Seed each path with the known entry price, including after process restart or position recovery.
 - Deduplicate repeated WebSocket ticks, bound each position's retained path, and make telemetry failures non-blocking for live exit management.
 - Add an idempotent SQLite schema migration and path retrieval that can be truncated to an actual close timestamp.
 - Keep exit-policy parameters visible until a validated, path-based optimizer is implemented in a subsequent release.
