@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+import json
+import os
+
 # These options are now internal, versioned learning parameters. Ignore legacy HA
 # values even when an existing installation still has them in options.json.
 LEARNED_OPTION_KEYS = {
@@ -13,10 +18,6 @@ LEARNED_OPTION_KEYS = {
 }
 
 
-from dataclasses import dataclass
-from pathlib import Path
-import json
-import os
 
 
 @dataclass(frozen=True)
