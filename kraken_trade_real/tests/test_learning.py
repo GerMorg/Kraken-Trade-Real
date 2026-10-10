@@ -101,12 +101,12 @@ def test_learning_promotes_validated_regime_specific_scales(db):
     outcome_rows = []
     for index in range(150):
         created_at = now - (300 - index) * 60
-        for regime, probability, success_rate in (
-            ("LOW_QUALITY", 0.65, 3),
-            ("HIGH_QUALITY", 0.85, 9),
+        for regime, probability, success_rate, success_period in (
+            ("LOW_QUALITY", 0.65, 3, 10),
+            ("HIGH_QUALITY", 0.85, 19, 20),
         ):
             prediction_id = f"{regime}-{index}"
-            success = int(index % 10 < success_rate)
+            success = int(index % success_period < success_rate)
             prediction_rows.append((
                 prediction_id, created_at, prediction_id, "BTC/EUR", "1h",
                 probability, "50", "baseline-v1", "features", "SETTLED",
