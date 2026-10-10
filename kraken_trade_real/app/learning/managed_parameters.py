@@ -129,7 +129,6 @@ class ManagedStrategyParameters:
                     {"status": "BASELINE_INITIALIZED", "optimizer": "bounded_walk_forward"},
                     0, "SAFE_DEFAULTS",
                 )
-                row = self.db.managed_strategy_parameters(family)
                 version = int(saved.get("version", 1))
                 source = "SAFE_DEFAULTS"
                 metrics = {"status": "BASELINE_INITIALIZED"}
@@ -498,7 +497,7 @@ class ManagedStrategyParameters:
             "tactical_max_spread_bps": (2.0, 4.0),
         }
         for key, steps in min_steps.items():
-            low, high = TACTICAL_BOUNDS[key]
+            high = TACTICAL_BOUNDS[key][1]
             specs[key] = (
                 float(current[key]),
                 sorted(set([
@@ -508,7 +507,7 @@ class ManagedStrategyParameters:
                 ])),
             )
         for key, steps in max_steps.items():
-            low, high = TACTICAL_BOUNDS[key]
+            low = TACTICAL_BOUNDS[key][0]
             specs[key] = (
                 float(current[key]),
                 sorted(set([
