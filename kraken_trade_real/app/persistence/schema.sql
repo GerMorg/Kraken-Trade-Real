@@ -65,7 +65,9 @@ CREATE TABLE IF NOT EXISTS predictions(
   prediction_id TEXT PRIMARY KEY, created_at REAL NOT NULL, decision_id TEXT NOT NULL,
   symbol TEXT NOT NULL, horizon TEXT NOT NULL, probability REAL NOT NULL,
   expected_return_bps TEXT NOT NULL, model_version TEXT NOT NULL, feature_hash TEXT NOT NULL,
-  outcome_status TEXT NOT NULL
+  outcome_status TEXT NOT NULL, predicted_direction TEXT NOT NULL DEFAULT 'UNKNOWN',
+  regime TEXT NOT NULL DEFAULT '', expected_cost_bps TEXT NOT NULL DEFAULT '0',
+  raw_confidence REAL NOT NULL DEFAULT 0.5
 );
 CREATE TABLE IF NOT EXISTS prediction_outcomes(
   prediction_id TEXT PRIMARY KEY, measured_at REAL NOT NULL, realized_return_bps TEXT,

@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.39",
+                "User-Agent": "Kraken-Trade-Real/0.1.42",
                 **(headers or {}),
             },
             method=method,
@@ -302,12 +302,22 @@ class KrakenGateway:
         asset_class: str | None = None,
     ):
         side_value = str(side).strip().lower()
-        kind = str(order_type).strip().lower()
+        kind = str(order_type).strip().lower().replace("_", "-")
         if side_value not in {"buy", "sell"}:
             raise KrakenError(f"INVALID_SPOT_ORDER_SIDE:{side_value}")
-        if kind not in {"market", "limit"}:
+        if kind not in {"market", "limit", "settle-position"}:
             raise KrakenError(f"UNSUPPORTED_SPOT_ORDER_TYPE:{kind}")
-        if quantity <= Decimal("0"):
+        is_settlement = kind == "settle-position"
+        if is_settlement:
+            # Kraken explicitly documents volume=0 as the settle-all sentinel
+            # so the exchange closes margin lots without an estimated amount.
+            if not margin or not reduce_only or leverage <= Decimal("1"):
+                raise KrakenError(
+                    "INVALID_SETTLE_POSITION_REQUIRES_LEVERAGED_MARGIN_REDUCTION"
+                )
+            if quantity < Decimal("0") or price is not None or post_only:
+                raise KrakenError("INVALID_SETTLE_POSITION_PARAMETERS")
+        elif quantity <= Decimal("0"):
             raise KrakenError("INVALID_SPOT_ORDER_QUANTITY")
         if kind == "limit" and (price is None or price <= Decimal("0")):
             raise KrakenError("SPOT_LIMIT_ORDER_REQUIRES_POSITIVE_PRICE")
@@ -315,10 +325,9 @@ class KrakenGateway:
             "pair": instrument_id,
             "type": side_value,
             "ordertype": kind,
-            "volume": str(quantity),
+            "volume": "0" if is_settlement else str(quantity),
             "cl_ord_id": client_order_id,
         }
-        # Spot market orders don't accept/use a limit-price field.
         if kind == "limit" and price is not None:
             body["price"] = str(price)
         if asset_class == "tokenized_asset":
@@ -329,11 +338,7 @@ class KrakenGateway:
             raise KrakenError(
                 "INVALID_MARGIN_ARGUMENT: leverage requires a margin order"
             )
-        if reduce_only and margin:
-            # Kraken Spot reduce_only is valid only for a genuinely leveraged
-            # order. Passing margin=True with leverage=1 omits the leverage
-            # field above and Kraken rejects reduce_only as an invalid argument.
-            # Do not silently downgrade such a close to a risk-increasing order.
+        if reduce_only and margin and not is_settlement:
             if leverage <= Decimal("1"):
                 raise KrakenError(
                     "INVALID_REDUCE_ONLY_REQUIRES_LEVERAGED_MARGIN_ORDER"

@@ -1,4 +1,4 @@
-# Impulse entries and trend-following exits (v0.1.41)
+# Impulse entries and trend-following exits (v0.1.42)
 
 ## Which trading model owns what?
 
@@ -21,3 +21,13 @@ For core Spot Margin positions, a new 2% loss-versus-cost-basis stop takes prior
 The strategy cannot promise a correct forecast or maximize the exact peak. Stops are decision rules, not guaranteed stop-market execution prices. High leverage amplifies adverse moves and can lead to rapid loss or liquidation, so live orders remain subject to Kraken capability, available collateral, risk limits, order preflight, the global live-enabled flag and kill switch. Fresh-install configuration still defaults to `live_enabled: false` and `kill_switch: true`.
 
 Regression tests cover confidence-tiered leverage, side-specific support, exposure/margin sizing, Tactical trend continuation after the target threshold, core full exit on adverse PnL, legacy option migration and global risk gates. CI success validates code and packaging; it is not evidence of trading profitability.
+
+
+## v0.1.42 operational correctness
+
+- Multiple `OpenPositions` rows for one pair are aggregated for quantity, cost basis, PnL, and signed exposure. Wallet inventory remains distinguished from margin lots to avoid unintended double counting.
+- A full Spot Margin flatten uses Kraken `ordertype=settle-position` with the documented `volume=0` sentinel to settle all matching margin positions in one exchange order, but only after a successful fresh OpenPositions read confirms an exchange margin position and its leverage. Aggregated open quantity remains available for audit, profit/loss and partial-reduction logic. Kraken's documented settlement side is sell for a short and buy for a long; this differs from the ordinary opposite-side trade used to reduce exposure. Partial reductions continue to use quantity orders.
+- Forecast success is directional and measured after expected costs; legacy pending rows with unknown direction become `UNSCORABLE`. Rule-derived confidence is stored on the same scale used by the decision engine, capped to [0.01, 0.99] to avoid false certainty, and is not asserted as a calibrated probability.
+- Confidence-scale promotion requires 100 observations, selects on an earlier chronological segment, validates on the newest 30%, and requires hold-out Brier improvement of at least 0.005.
+- Tactical's trailing break-even floor includes estimated Spot Margin opening fees and completed four-hour rollover fees in proportion to the borrowed share. Rates remain estimates if exchange/instrument-specific values are unavailable.
+- App-managed stops cannot guarantee a maximum fill loss across app/network outages. Live trading still requires explicit enablement and the kill switch to be disabled; CI is not evidence of trading profitability.

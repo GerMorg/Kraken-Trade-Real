@@ -30,9 +30,19 @@ class OrderIntentBuilder:
         reduce_only: bool = False,
         post_only: bool = False,
     ) -> OrderIntent:
+        kind = str(order_type).strip().lower().replace("_", "-")
         direction = decision.execution_direction or decision.signal.direction
         side = "buy" if direction == Direction.LONG else "sell"
-        kind = str(order_type).strip().lower()
+        if kind == "settle-position":
+            # Kraken settlement uses the settlement side: short -> sell/settle,
+            # long -> buy/settle. This is intentionally not the normal close side.
+            current = D(str(decision.current_position_eur))
+            if current < 0:
+                direction, side = Direction.SHORT, "sell"
+            elif current > 0:
+                direction, side = Direction.LONG, "buy"
+            else:
+                raise ValueError("SETTLE_POSITION_REQUIRES_NONZERO_POSITION")
         normalized_quantity = quantize_order_quantity(
             decision.instrument, D(str(quantity))
         )

@@ -19,3 +19,13 @@ def test_model_registry_rejects_poor_absolute_quality(db):
     )
     assert r.promote("candidate-poor-quality",min_improvement=.05,min_samples=1000) is False
     assert r.active()=="baseline-v1"
+
+
+def test_learning_promotion_respects_configuration_flag(db):
+    from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
+
+    engine = LearningEngine(
+        db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db),
+        auto_promotion_enabled=False,
+    )
+    assert engine.auto_promotion_enabled is False

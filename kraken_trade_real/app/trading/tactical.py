@@ -986,13 +986,27 @@ class TacticalTrader:
             trailing_stop_pct = D(str(
                 getattr(self.config, "tactical_trailing_stop_pct", 0.7)
             ))
+            holding_hours = D(str(max(0.0, now - position.opened_at))) / D("3600")
+            financing_bps = D("0")
+            if position.venue == "spot" and position.leverage > D("1"):
+                borrowed_share = (position.leverage - D("1")) / position.leverage
+                open_fee_bps = max(
+                    D("0"), D(str(getattr(self.config, "tactical_margin_open_fee_bps", 5)))
+                )
+                rollover_fee_bps = max(
+                    D("0"), D(str(getattr(self.config, "execution_margin_rollover_fee_bps", 4)))
+                )
+                rollover_periods = int(holding_hours / D("4"))
+                financing_bps = borrowed_share * (
+                    open_fee_bps + rollover_fee_bps * D(rollover_periods)
+                )
             estimated_round_trip_cost_bps = (
                 max(D("0"), D(str(getattr(self.config, "tactical_entry_fee_bps", 80))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_exit_fee_bps", 80))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_max_spread_bps", 25))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_expected_slippage_bps", 25))))
                 + max(D("0"), D(str(getattr(self.config, "tactical_safety_buffer_bps", 30))))
-                + max(D("0"), D(str(getattr(self.config, "tactical_margin_open_fee_bps", 5))))
+                + financing_bps
             )
             profit_floor_bps = estimated_round_trip_cost_bps + D("25")
             trailing_activation_bps = max(
@@ -1049,6 +1063,8 @@ class TacticalTrader:
                     current_pnl_bps=str(pnl_bps),
                     take_profit_trigger_bps=str(target_gain_bps),
                     estimated_round_trip_cost_bps=str(estimated_round_trip_cost_bps),
+                    margin_financing_cost_bps=str(financing_bps),
+                    estimated_holding_hours=str(holding_hours),
                     profit_floor_bps=str(profit_floor_bps),
                     trailing_activation_bps=str(trailing_activation_bps),
                     trailing_stop_pct=str(trailing_stop_pct),

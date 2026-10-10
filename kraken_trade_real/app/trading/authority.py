@@ -560,9 +560,26 @@ class TradingAuthority:
             and not intent.reduce_only
         ):
             return {"allowed": False, "reason": "SHORT_NOT_AVAILABLE"}
-        if intent.quantity < intent.instrument.min_order_qty:
+        is_settle_position = (
+            str(intent.order_type).strip().lower().replace("_", "-") == "settle-position"
+        )
+        if is_settle_position and not (
+            intent.reduce_only
+            and intent.instrument.venue == "spot"
+            and intent.instrument.product_type.value == "SPOT_MARGIN"
+            and intent.quantity == D("0")
+            and intent.limit_price is None
+            and intent.leverage > D("1")
+            and not intent.post_only
+        ):
+            return {"allowed": False, "reason": "INVALID_SETTLE_POSITION_INTENT"}
+        if not is_settle_position and intent.quantity < intent.instrument.min_order_qty:
             return {"allowed": False, "reason": "MIN_ORDER_QTY"}
-        if intent.instrument.venue != "futures" and intent.instrument.min_cost > 0:
+        if (
+            not is_settle_position
+            and intent.instrument.venue != "futures"
+            and intent.instrument.min_cost > 0
+        ):
             order_reference_price = intent.limit_price
             if order_reference_price is None:
                 side_price = (
