@@ -5,6 +5,8 @@ import hashlib
 import json
 import time
 
+from app.learning.managed_parameters import ManagedStrategyParameters
+
 
 class LearningEngine:
     def __init__(
@@ -22,6 +24,18 @@ class LearningEngine:
         self.auto_calibration_enabled = bool(auto_calibration_enabled)
         self.lookback_days = max(1, int(lookback_days))
         self.validation_interval_hours = max(1, int(validation_interval_hours))
+        self.parameter_optimizer = ManagedStrategyParameters(
+            db, enabled=self.enabled, lookback_days=self.lookback_days,
+            validation_interval_hours=self.validation_interval_hours,
+        )
+
+    def apply_managed_parameters(self, config: Any) -> dict[str, Any]:
+        return self.parameter_optimizer.apply(config)
+
+    def recalibrate_strategy_parameters(
+        self, config: Any, now: float | None = None
+    ) -> dict[str, Any]:
+        return self.parameter_optimizer.recalibrate(config, now)
 
     def record_cycle(self, cycle_id: str, decisions: int, orders: int, blockers: list[str]) -> None:
         self.db.learning_event(

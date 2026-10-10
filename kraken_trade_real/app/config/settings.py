@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,18 @@ class Config:
     profit_protection_legacy_defaults_overridden: bool = False
     tactical_position_limit_legacy_default_overridden: bool = False
 
+    def __getattribute__(self, name: str) -> Any:
+        # Learner-managed values are published by swapping one complete mapping.
+        # The Tactical thread therefore never observes a mixture of two versions.
+        if not name.startswith("_"):
+            try:
+                managed = object.__getattribute__(self, "_managed_parameters")
+            except AttributeError:
+                managed = {}
+            if isinstance(managed, dict) and name in managed:
+                return managed[name]
+        return object.__getattribute__(self, name)
+
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
         try:
@@ -217,12 +230,12 @@ class Config:
             market_history_cache_seconds=i("market_history_cache_seconds", 900, 60),
             market_exploration_candidate_limit=i("market_exploration_candidate_limit", 80, 1),
             market_exploration_slots_per_family=i("market_exploration_slots_per_family", 2, 1),
-            strategy_min_edge_bps=f("strategy_min_edge_bps", 25.0, 0.0, 5000.0),
-            strategy_min_confidence=f("strategy_min_confidence", 0.58, 0.0, 1.0),
+            strategy_min_edge_bps=25.0,
+            strategy_min_confidence=0.58,
             strategy_adaptive_edge_enabled=b("strategy_adaptive_edge_enabled", True),
-            strategy_adaptive_edge_floor_bps=f("strategy_adaptive_edge_floor_bps", 15.0, 1.0, 200.0),
-            strategy_adaptive_min_confidence=f("strategy_adaptive_min_confidence", 0.75, 0.5, 1.0),
-            strategy_adaptive_cost_ratio=f("strategy_adaptive_cost_ratio", 1.10, 1.0, 3.0),
+            strategy_adaptive_edge_floor_bps=15.0,
+            strategy_adaptive_min_confidence=0.75,
+            strategy_adaptive_cost_ratio=1.10,
             strategy_entry_fee_bps=f("strategy_entry_fee_bps", 40.0, 0.0, 1000.0),
             strategy_exit_fee_bps=f("strategy_exit_fee_bps", 80.0, 0.0, 1000.0),
             strategy_execution_overhead_bps=f("strategy_execution_overhead_bps", 8.0, 0.0, 1000.0),
@@ -281,24 +294,24 @@ class Config:
             tactical_candidate_limit=i("tactical_candidate_limit", 12, 4),
             tactical_poll_seconds=i("tactical_poll_seconds", 10, 2),
             tactical_market_max_age_seconds=i("tactical_market_max_age_seconds", 5, 1),
-            tactical_min_volatility_bps=f("tactical_min_volatility_bps", 12.0, 0.1, 1000.0),
-            tactical_max_volatility_bps=f("tactical_max_volatility_bps", 55.0, 1.0, 1000.0),
-            tactical_min_volume_ratio=f("tactical_min_volume_ratio", 2.0, 1.0, 100.0),
-            tactical_min_momentum_bps=f("tactical_min_momentum_bps", 40.0, 1.0, 5000.0),
-            tactical_min_breakout_bps=f("tactical_min_breakout_bps", 25.0, 1.0, 5000.0),
-            tactical_min_imbalance=f("tactical_min_imbalance", 0.10, 0.0, 1.0),
-            tactical_max_spread_bps=f("tactical_max_spread_bps", 25.0, 0.1, 1000.0),
-            tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 280.0, 1.0, 10000.0),
+            tactical_min_volatility_bps=12.0,
+            tactical_max_volatility_bps=55.0,
+            tactical_min_volume_ratio=2.0,
+            tactical_min_momentum_bps=40.0,
+            tactical_min_breakout_bps=25.0,
+            tactical_min_imbalance=0.10,
+            tactical_max_spread_bps=25.0,
+            tactical_min_expected_move_bps=280.0,
             tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 1000.0),
             tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 1000.0),
             tactical_margin_open_fee_bps=f("tactical_margin_open_fee_bps", 5.0, 0.0, 1000.0),
             tactical_expected_slippage_bps=f("tactical_expected_slippage_bps", 25.0, 0.0, 1000.0),
             tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 1000.0),
             tactical_context_block_bps=f("tactical_context_block_bps", 80.0, 0.0, 5000.0),
-            tactical_stop_loss_pct=f("tactical_stop_loss_pct", 1.0, 0.1, 20.0),
-            tactical_take_profit_pct=f("tactical_take_profit_pct", 2.2, 0.2, 30.0),
+            tactical_stop_loss_pct=1.0,
+            tactical_take_profit_pct=2.2,
             tactical_trailing_trigger_bps=f("tactical_trailing_trigger_bps", 100.0, 1.0, 5000.0),
-            tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 20.0),
+            tactical_trailing_stop_pct=0.7,
             tactical_max_hold_seconds=i("tactical_max_hold_seconds", 1800, 30),
             tactical_reversal_exit_bps=f("tactical_reversal_exit_bps", 120.0, 1.0, 5000.0),
             tactical_cooldown_seconds=i("tactical_cooldown_seconds", 120, 1),
@@ -309,9 +322,9 @@ class Config:
             tactical_short_leverage=f("tactical_short_leverage", 2.0, 1.0, 5.0),
             tactical_order_confirm_seconds=i("tactical_order_confirm_seconds", 5, 1),
             tactical_adaptive_entry_enabled=b("tactical_adaptive_entry_enabled", True),
-            tactical_adaptive_min_expected_move_bps=f("tactical_adaptive_min_expected_move_bps", 230.0, 1.0, 10000.0),
-            tactical_adaptive_min_confidence=f("tactical_adaptive_min_confidence", 0.75, 0.5, 1.0),
-            tactical_adaptive_min_net_edge_bps=f("tactical_adaptive_min_net_edge_bps", 15.0, 1.0, 1000.0),
+            tactical_adaptive_min_expected_move_bps=230.0,
+            tactical_adaptive_min_confidence=0.75,
+            tactical_adaptive_min_net_edge_bps=15.0,
             tactical_seed_history=b("tactical_seed_history", True),
             tactical_diagnostics_interval_seconds=i("tactical_diagnostics_interval_seconds", 60, 10),
             profit_protection_legacy_defaults_overridden=legacy_profit_defaults,

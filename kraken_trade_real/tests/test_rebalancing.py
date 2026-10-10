@@ -154,3 +154,24 @@ def test_core_new_short_requires_exchange_direction_availability(config, instrum
     assert DecisionEngine(config).rejection_reason(
         blocked, long_signal, short_signal, portfolio, {}, Decimal("0.5")
     ) == "INSTRUMENT_DIRECTION"
+
+
+
+def test_held_position_with_insufficient_confidence_is_flattened(config, instrument):
+    portfolio = PortfolioState(
+        equity_eur=Decimal("50"),
+        cash_eur=Decimal("42"),
+        positions={instrument.symbol: Decimal("8")},
+        gross_eur=Decimal("8"),
+        net_eur=Decimal("8"),
+    )
+    long_signal = _signal(instrument.symbol, Direction.LONG, 100, 40, "0.30")
+    short_signal = _signal(instrument.symbol, Direction.SHORT, 0, 50, "0.10")
+    decision = DecisionEngine(config).choose(
+        instrument, long_signal, short_signal, portfolio,
+        "model-test", "config-test", {}, Decimal("0.5"),
+    )
+    assert decision is not None
+    assert decision.reduce_only is True
+    assert decision.target_position_eur == Decimal("0")
+    assert decision.rationale["rebalance_action"] == "FLATTEN_STALE_EDGE"

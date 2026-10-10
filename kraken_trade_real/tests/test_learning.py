@@ -90,3 +90,39 @@ def test_learning_validation_interval_is_persisted(db):
     )
     result = engine.process_feedback(now=1_000_100)
     assert result["status"] == "VALIDATION_INTERVAL_NOT_ELAPSED"
+
+
+
+def test_managed_strategy_parameters_persist_and_override_legacy_values(db, tmp_path):
+    from app.config import Config
+    from app.learning import LearningEngine, CalibrationEngine, ModelRegistry, ResearchEngine
+
+    engine = LearningEngine(db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db))
+    cfg = Config.load(str(tmp_path / "missing-options.json"))
+    initial = engine.apply_managed_parameters(cfg)
+    assert initial["core"]["version"] == 1
+    core_row = db.managed_strategy_parameters("core")
+    assert core_row is not None
+    parameters = __import__("json").loads(core_row["parameters_json"])
+    parameters["strategy_min_edge_bps"] = 31.0
+    saved = db.save_managed_strategy_parameters(
+        "core", parameters, {"status": "TEST_PROMOTION"}, 450, "TEST",
+    )
+    assert saved["changed"] is True
+    next_cfg = Config.load(str(tmp_path / "still-missing.json"))
+    engine.apply_managed_parameters(next_cfg)
+    assert next_cfg.strategy_min_edge_bps == 31.0
+    assert db.managed_strategy_parameters("core")["version"] == 2
+
+
+def test_managed_parameter_optimizer_requires_outcome_evidence(db, tmp_path):
+    from app.config import Config
+    from app.learning import LearningEngine, CalibrationEngine, ModelRegistry, ResearchEngine
+
+    engine = LearningEngine(db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db))
+    cfg = Config.load(str(tmp_path / "missing-options.json"))
+    engine.apply_managed_parameters(cfg)
+    result = engine.recalibrate_strategy_parameters(cfg, now=1_800_000_000)
+    assert result["status"] == "OK"
+    assert result["core"]["status"] == "INSUFFICIENT_DATA"
+    assert result["tactical"]["status"] == "INSUFFICIENT_TRADE_CONTEXT"

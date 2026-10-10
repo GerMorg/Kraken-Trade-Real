@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import Counter
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 import threading
@@ -14,6 +15,14 @@ from app.domain.symbols import canonical_asset, resolve_instrument_symbol
 
 
 D = Decimal
+
+
+def _as_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}") if isinstance(value, str) else value
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,8 @@ class TacticalPosition:
     entry_client_order_id: str
     setup_score: D
     state: str = "OPEN"
+    entry_context: dict[str, Any] = field(default_factory=dict)
+    entry_parameters: dict[str, Any] = field(default_factory=dict)
 
 
 class TacticalTrader:
@@ -742,6 +753,37 @@ class TacticalTrader:
             reason,
         )
 
+    @staticmethod
+    def _signal_context(signal: TacticalSignal) -> dict[str, str]:
+        return {
+            "score": str(signal.score),
+            "confidence": str(signal.confidence),
+            "expected_move_bps": str(signal.expected_move_bps),
+            "expected_cost_bps": str(signal.expected_cost_bps),
+            "net_edge_bps": str(signal.net_edge_bps),
+            "spread_bps": str(signal.spread_bps),
+            "momentum_60_bps": str(signal.momentum_60_bps),
+            "momentum_180_bps": str(signal.momentum_180_bps),
+            "volatility_bps": str(signal.volatility_bps),
+            "volume_ratio": str(signal.volume_ratio),
+            "breakout_bps": str(signal.breakout_bps),
+            "imbalance": str(signal.imbalance),
+        }
+
+    def _parameter_snapshot(self) -> dict[str, str]:
+        names = (
+            "tactical_min_volatility_bps", "tactical_max_volatility_bps",
+            "tactical_min_volume_ratio", "tactical_min_momentum_bps",
+            "tactical_min_breakout_bps", "tactical_min_imbalance",
+            "tactical_max_spread_bps", "tactical_min_expected_move_bps",
+            "tactical_stop_loss_pct", "tactical_take_profit_pct",
+            "tactical_trailing_trigger_bps", "tactical_trailing_stop_pct",
+            "tactical_max_hold_seconds", "tactical_reversal_exit_bps",
+            "tactical_adaptive_min_expected_move_bps",
+            "tactical_adaptive_min_confidence", "tactical_adaptive_min_net_edge_bps",
+        )
+        return {key: str(getattr(self.config, key)) for key in names}
+
     def _enter(self, signal: TacticalSignal, now: float) -> None:
         with self._lock:
             instrument = self._candidates.get(signal.symbol)
@@ -849,6 +891,8 @@ class TacticalTrader:
                 "tactical_setup_score": signal.score,
                 "tactical_exit_reason": "",
                 "tactical_direction": signal.direction.value,
+                "tactical_entry_context": self._signal_context(signal),
+                "tactical_entry_parameters": self._parameter_snapshot(),
             },
             strategy_version=self.STRATEGY_VERSION,
             model_version="tactical-v1",
@@ -1241,9 +1285,10 @@ class TacticalTrader:
         fill_qty, fill_price, fill_state = fill
         if fill_qty <= 0:
             return
-        self._close_live(position, fill_qty, fill_price, reason, now, intent.client_order_id)
-        self.db.save_tactical_order_progress(
-            intent.client_order_id, fill_qty, fill_price,
+        self._close_live(
+            position, fill_qty, fill_price, reason, now, intent.client_order_id,
+            cumulative_filled_quantity=fill_qty,
+            cumulative_average_price=fill_price,
             terminal=fill_state in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"},
         )
 
@@ -1373,6 +1418,10 @@ class TacticalTrader:
             now,
             client_order_id,
             signal.score,
+            entry_context=_as_object(decision.rationale.get("tactical_entry_context"))
+                or self._signal_context(signal),
+            entry_parameters=_as_object(decision.rationale.get("tactical_entry_parameters"))
+                or self._parameter_snapshot(),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -1390,7 +1439,45 @@ class TacticalTrader:
             position.entry_client_order_id,
             position.setup_score,
             position.state,
+            entry_context=position.entry_context,
+            entry_parameters=position.entry_parameters,
         )
+
+    def _trade_learning_detail(
+        self, position: TacticalPosition, notional: D, gross: D, fees: D, net: D,
+        mode: str,
+    ) -> dict[str, Any]:
+        entry = position.entry_price
+        if entry > 0 and position.direction == Direction.LONG:
+            peak_gain_pct = (position.peak_price / entry - D("1")) * D("100")
+            max_adverse_pct = (position.trough_price / entry - D("1")) * D("100")
+        elif entry > 0:
+            peak_gain_pct = (
+                (entry / position.trough_price - D("1")) * D("100")
+                if position.trough_price > 0 else D("0")
+            )
+            max_adverse_pct = (
+                (entry / position.peak_price - D("1")) * D("100")
+                if position.peak_price > 0 else D("0")
+            )
+        else:
+            peak_gain_pct = max_adverse_pct = D("0")
+        exposure = abs(notional)
+        gross_return_pct = gross / exposure * D("100") if exposure > 0 else D("0")
+        net_return_pct = net / exposure * D("100") if exposure > 0 else D("0")
+        fees_pct = fees / exposure * D("100") if exposure > 0 else D("0")
+        return {
+            "mode": mode,
+            "entry_client_order_id": position.entry_client_order_id,
+            "entry_context": position.entry_context,
+            "entry_parameters": position.entry_parameters,
+            "closed_notional_eur": str(exposure),
+            "gross_return_pct": str(gross_return_pct),
+            "net_return_pct": str(net_return_pct),
+            "fees_pct": str(fees_pct),
+            "peak_gain_pct": str(peak_gain_pct),
+            "max_adverse_pct": str(max_adverse_pct),
+        }
 
     @staticmethod
     def _trade_gross_pnl(
@@ -1439,7 +1526,9 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            {"mode": "SHADOW"},
+            self._trade_learning_detail(
+                position, position.notional_eur, gross, fees, net, "SHADOW"
+            ),
         )
         self.db.delete_tactical_position(position.symbol)
         with self._lock:
@@ -1467,8 +1556,35 @@ class TacticalTrader:
         reason: str,
         now: float,
         client_order_id: str,
-    ) -> None:
-        ratio = min(D("1"), fill_qty / position.quantity) if position.quantity > 0 else D("1")
+        *,
+        cumulative_filled_quantity: D | None = None,
+        cumulative_average_price: D | None = None,
+        terminal: bool = True,
+    ) -> bool:
+        # Kraken reports cumulative vol_exec. Convert it to a new increment using
+        # the durable watermark; never treat the same cumulative quantity as new.
+        progress = self.db.tactical_order_progress(client_order_id)
+        previous_qty = D(str(progress.get("last_filled_quantity") or "0")) if progress else D("0")
+        cumulative_qty = D(str(
+            cumulative_filled_quantity if cumulative_filled_quantity is not None else fill_qty
+        ))
+        if cumulative_qty <= previous_qty:
+            return False
+        incremental_qty = cumulative_qty - previous_qty
+        if position.quantity <= 0 or fill_price <= 0:
+            return False
+        accounted_qty = min(incremental_qty, position.quantity)
+        if accounted_qty <= 0:
+            return False
+        if incremental_qty > position.quantity:
+            self.audit.emit(
+                "TACTICAL_EXIT_FILL_EXCEEDS_TRACKED_POSITION", "ERROR",
+                symbol=position.symbol, client_order_id=client_order_id,
+                incremental_quantity=str(incremental_qty),
+                tracked_quantity=str(position.quantity),
+                action="CAP_POSITION_ACCOUNTING_AND_RECONCILE",
+            )
+        ratio = min(D("1"), accounted_qty / position.quantity)
         closed_notional = abs(position.notional_eur) * ratio
         gross = self._trade_gross_pnl(
             position.direction, closed_notional, position.entry_price, fill_price
@@ -1476,60 +1592,90 @@ class TacticalTrader:
         fees = self._trade_fees(closed_notional)
         net = gross - fees
         trade_id = new_id("tactical_trade")
-        self.db.save_tactical_trade(
-            trade_id,
-            position.symbol,
-            position.direction.value,
-            position.entry_price,
-            fill_price,
-            fill_qty,
-            gross,
-            fees,
-            net,
-            position.opened_at,
-            now,
-            now - position.opened_at,
-            reason,
-            position.setup_score,
-            {"mode": "LIVE", "client_order_id": client_order_id},
-        )
+        detail = {
+            **self._trade_learning_detail(
+                position, closed_notional, gross, fees, net, "LIVE"
+            ),
+            "client_order_id": client_order_id,
+            "incremental_exit_quantity": str(accounted_qty),
+            "cumulative_filled_quantity": str(cumulative_qty),
+        }
+        remaining_position: dict[str, Any] | None
         if ratio >= D("0.999999"):
-            self.db.delete_tactical_position(position.symbol)
+            remaining_position = None
+        else:
+            remaining_position = {
+                "symbol": position.symbol,
+                "venue": position.venue,
+                "direction": position.direction.value,
+                "quantity": position.quantity - accounted_qty,
+                "entry_price": position.entry_price,
+                "peak_price": position.peak_price,
+                "trough_price": position.trough_price,
+                "notional_eur": abs(position.notional_eur) * (D("1") - ratio),
+                "leverage": position.leverage,
+                "opened_at": position.opened_at,
+                "entry_client_order_id": position.entry_client_order_id,
+                "setup_score": position.setup_score,
+                "state": position.state,
+                "entry_context": position.entry_context,
+                "entry_parameters": position.entry_parameters,
+            }
+        committed = self.db.commit_tactical_exit_fill(
+            client_order_id=client_order_id,
+            previous_filled_quantity=previous_qty,
+            cumulative_filled_quantity=cumulative_qty,
+            cumulative_average_price=(
+                cumulative_average_price if cumulative_average_price is not None else fill_price
+            ),
+            terminal=terminal,
+            trade={
+                "trade_id": trade_id,
+                "symbol": position.symbol,
+                "direction": position.direction.value,
+                "entry_price": position.entry_price,
+                "exit_price": fill_price,
+                "quantity": accounted_qty,
+                "gross_pnl_eur": gross,
+                "fees_eur": fees,
+                "net_pnl_eur": net,
+                "opened_at": position.opened_at,
+                "closed_at": now,
+                "hold_seconds": now - position.opened_at,
+                "exit_reason": reason,
+                "setup_score": position.setup_score,
+                "detail": detail,
+            },
+            remaining_position=remaining_position,
+        )
+        if not committed:
+            self.audit.emit(
+                "TACTICAL_EXIT_FILL_NOT_COMMITTED", "WARNING",
+                symbol=position.symbol, client_order_id=client_order_id,
+                previous_filled_quantity=str(previous_qty),
+                cumulative_filled_quantity=str(cumulative_qty),
+                action="RETRY_ON_NEXT_RECONCILIATION",
+            )
+            return False
+        if remaining_position is None:
             with self._lock:
                 self._positions.pop(position.symbol, None)
         else:
-            position.quantity -= fill_qty
-            position.notional_eur *= (D("1") - ratio)
-            self.db.save_tactical_position(
-                position.symbol,
-                position.venue,
-                position.direction.value,
-                position.quantity,
-                position.entry_price,
-                position.peak_price,
-                position.trough_price,
-                position.notional_eur,
-                position.leverage,
-                position.opened_at,
-                position.entry_client_order_id,
-                position.setup_score,
-                position.state,
-            )
+            position.quantity = D(str(remaining_position["quantity"]))
+            position.notional_eur = D(str(remaining_position["notional_eur"]))
         with self._lock:
             self._cooldown_until = now + float(
                 getattr(self.config, "tactical_cooldown_seconds", 120)
             )
         self.audit.emit(
-            "TACTICAL_LIVE_EXIT",
-            "INFO",
-            symbol=position.symbol,
-            direction=position.direction.value,
-            exit_reason=reason,
-            gross_pnl_eur=str(gross),
-            fees_eur=str(fees),
-            net_pnl_eur=str(net),
-            hold_seconds=round(now - position.opened_at, 2),
+            "TACTICAL_LIVE_EXIT", "INFO",
+            symbol=position.symbol, direction=position.direction.value,
+            exit_reason=reason, gross_pnl_eur=str(gross), fees_eur=str(fees),
+            net_pnl_eur=str(net), hold_seconds=round(now - position.opened_at, 2),
+            incremental_quantity=str(accounted_qty),
+            cumulative_filled_quantity=str(cumulative_qty),
         )
+        return True
 
     def _fresh_position_state(
         self, position: TacticalPosition, now: float
@@ -1702,6 +1848,8 @@ class TacticalTrader:
                     str(row["entry_client_order_id"]),
                     D(str(row["setup_score"])),
                     str(row.get("state") or "OPEN"),
+                    entry_context=_as_object(row.get("entry_context_json")),
+                    entry_parameters=_as_object(row.get("entry_parameters_json")),
                 )
                 self._positions[position.symbol] = position
                 self.db.save_tactical_position(
@@ -1800,6 +1948,12 @@ class TacticalTrader:
                             self._close_live(
                                 position, delta_qty, delta_price, exit_reason,
                                 time.time(), client_order_id,
+                                cumulative_filled_quantity=cumulative_qty,
+                                cumulative_average_price=avg_price,
+                                terminal=(
+                                    state.value in terminal_states
+                                    or (requested_qty > 0 and cumulative_qty >= requested_qty)
+                                ),
                             )
                         else:
                             self.audit.emit(
@@ -1825,6 +1979,8 @@ class TacticalTrader:
                                 opened_at=float(row.get("created_at") or time.time()),
                                 client_order_id=client_order_id,
                                 setup_score=D(str(rationale.get("tactical_setup_score") or "0")),
+                                entry_context=_as_object(rationale.get("tactical_entry_context")),
+                                entry_parameters=_as_object(rationale.get("tactical_entry_parameters")),
                             )
                         elif existing.entry_client_order_id == client_order_id:
                             existing.quantity = max(existing.quantity, cumulative_qty)
@@ -1837,6 +1993,8 @@ class TacticalTrader:
                                 existing.trough_price, existing.notional_eur, existing.leverage,
                                 existing.opened_at, existing.entry_client_order_id,
                                 existing.setup_score, existing.state,
+                                entry_context=existing.entry_context,
+                                entry_parameters=existing.entry_parameters,
                             )
                         self.audit.emit(
                             "TACTICAL_ORDER_FILL_RECONCILED", "INFO",
@@ -1849,11 +2007,12 @@ class TacticalTrader:
                     state.value in terminal_states
                     or (requested_qty > 0 and cumulative_qty >= requested_qty)
                 )
-                self.db.save_tactical_order_progress(
-                    client_order_id, max(last_qty, cumulative_qty),
-                    avg_price if avg_price > 0 else last_avg,
-                    terminal=is_terminal,
-                )
+                if not (is_exit and delta_qty > 0):
+                    self.db.save_tactical_order_progress(
+                        client_order_id, max(last_qty, cumulative_qty),
+                        avg_price if avg_price > 0 else last_avg,
+                        terminal=is_terminal,
+                    )
             except Exception as exc:
                 self.audit.emit(
                     "TACTICAL_ORDER_RECONCILIATION_FAILED", "WARNING",
@@ -1869,12 +2028,15 @@ class TacticalTrader:
     def _restore_position(
         self, *, instrument: Instrument, direction: Direction, quantity: D, price: D,
         notional_eur: D, leverage: D, opened_at: float, client_order_id: str, setup_score: D,
+        entry_context: dict[str, Any] | None = None,
+        entry_parameters: dict[str, Any] | None = None,
     ) -> None:
         if quantity <= 0 or price <= 0:
             return
         position = TacticalPosition(
             instrument.symbol, instrument.venue, direction, quantity, price, price, price,
             abs(notional_eur), leverage, opened_at, client_order_id, setup_score,
+            entry_context=entry_context or {}, entry_parameters=entry_parameters or {},
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -1883,6 +2045,7 @@ class TacticalTrader:
             position.entry_price, position.peak_price, position.trough_price,
             position.notional_eur, position.leverage, position.opened_at,
             position.entry_client_order_id, position.setup_score, position.state,
+            entry_context=position.entry_context, entry_parameters=position.entry_parameters,
         )
 
     def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:

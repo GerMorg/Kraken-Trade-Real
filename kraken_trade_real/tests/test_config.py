@@ -66,3 +66,25 @@ def test_legacy_tactical_position_limit_migrates_only_untouched_default(tmp_path
     cfg = Config.load(str(path))
     assert cfg.tactical_position_limit_pct == 15.0
     assert cfg.tactical_position_limit_legacy_default_overridden is False
+
+
+def test_learner_managed_strategy_values_ignore_legacy_ha_options(tmp_path):
+    path = tmp_path / "options.json"
+    path.write_text(
+        '{"strategy_min_edge_bps":1,"strategy_min_confidence":0.1,'
+        '"strategy_stop_loss_pct":3.0,"strategy_partial_profit_trigger_pct":4.0,'
+        '"strategy_profit_lock_trigger_pct":8.0,"strategy_profit_lock_floor_pct":2.0,'
+        '"tactical_min_momentum_bps":1,"tactical_stop_loss_pct":10,'
+        '"tactical_min_expected_move_bps":10}',
+        encoding="utf-8",
+    )
+    cfg = Config.load(str(path))
+    assert cfg.strategy_min_edge_bps == 25.0
+    assert cfg.strategy_min_confidence == 0.58
+    # Core exit settings are not yet learner-optimized and remain user-configurable.
+    assert cfg.strategy_stop_loss_pct == 3.0
+    assert cfg.strategy_partial_profit_trigger_pct == 4.0
+    # Values actually optimized from outcomes are ignored in legacy HA options.
+    assert cfg.tactical_min_momentum_bps == 40.0
+    assert cfg.tactical_stop_loss_pct == 1.0
+    assert cfg.tactical_min_expected_move_bps == 280.0
