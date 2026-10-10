@@ -266,6 +266,7 @@ def test_high_conviction_tactical_exposure_respects_global_risk_gates():
         gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
         unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
         drawdown_pct=D("0"), open_orders=0, source_timestamp=1.0,
+        spot_open_positions_read_ok=True,
     )
     result = engine.evaluate(
         decision, portfolio, make_snapshot(),
