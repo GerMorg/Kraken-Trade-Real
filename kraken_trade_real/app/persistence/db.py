@@ -533,3 +533,29 @@ class Database:
                 json.dumps(report.get("summary", {}), sort_keys=True),
             ),
         )
+
+
+    def tactical_order_progress(self, client_order_id: str) -> dict[str, Any] | None:
+        return self.one(
+            "SELECT client_order_id,last_filled_quantity,last_average_price,terminal "
+            "FROM tactical_order_progress WHERE client_order_id=?",
+            (client_order_id,),
+        )
+
+    def save_tactical_order_progress(
+        self, client_order_id: str, last_filled_quantity: Any,
+        last_average_price: Any, *, terminal: bool,
+    ) -> None:
+        self.execute(
+            """INSERT INTO tactical_order_progress(
+                 client_order_id,last_filled_quantity,last_average_price,terminal,updated_at
+               ) VALUES(?,?,?,?,?)
+               ON CONFLICT(client_order_id) DO UPDATE SET
+                 last_filled_quantity=excluded.last_filled_quantity,
+                 last_average_price=excluded.last_average_price,
+                 terminal=excluded.terminal,updated_at=excluded.updated_at""",
+            (
+                client_order_id, str(last_filled_quantity), str(last_average_price),
+                int(terminal), time.time(),
+            ),
+        )

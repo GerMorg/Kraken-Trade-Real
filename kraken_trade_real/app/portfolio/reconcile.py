@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_UP
+import datetime
 import time
 from typing import Any
 
@@ -272,6 +273,7 @@ class PortfolioReconciler:
                     if used_margin > 0
                     else D("9999")
                 )
+            margin += used_margin
             self.spot_margin_account = {
                 "source": "spot",
                 "free_margin": str(max(D("0"), free_margin)),
@@ -445,6 +447,26 @@ class PortfolioReconciler:
                 )
 
         equity = equity if equity > 0 else cash + max(D(0), unreal)
+        # Daily P/L is derived from persisted UTC-day equity snapshots. Kraken's
+        # TradeBalance "n" field is not daily realized P/L, and adding it to the
+        # aggregated open-position P/L can double-count the same exposure.
+        now = time.time()
+        day_start = datetime.datetime.fromtimestamp(
+            now, datetime.timezone.utc
+        ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        baseline = self.db.one(
+            "SELECT equity_eur,captured_at FROM portfolio_snapshots "
+            "WHERE captured_at < ? AND captured_at >= ? ORDER BY captured_at DESC LIMIT 1",
+            (day_start, day_start - 36 * 3600),
+        )
+        if baseline is None:
+            baseline = self.db.one(
+                "SELECT equity_eur,captured_at FROM portfolio_snapshots "
+                "WHERE captured_at >= ? AND captured_at < ? ORDER BY captured_at ASC LIMIT 1",
+                (day_start, now),
+            )
+        baseline_equity = dec(baseline.get("equity_eur")) if baseline else D(0)
+        daily_pnl = equity - baseline_equity if baseline_equity > 0 else D(0)
         peak_row = self.db.one(
             "SELECT MAX(CAST(equity_eur AS REAL)) AS peak FROM portfolio_snapshots"
         )
@@ -463,10 +485,10 @@ class PortfolioReconciler:
             margin,
             unreal,
             realized,
-            unreal + realized,
+            daily_pnl,
             drawdown,
             0,
-            time.time(),
+            now,
             position_pnl_eur=position_pnl_eur,
             position_pnl_pct=position_pnl_pct,
             position_basis_eur=position_basis_eur,

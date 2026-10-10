@@ -956,14 +956,18 @@ class TacticalTrader:
         if fill is None:
             self._last_action = "ENTRY_PENDING_RECONCILIATION"
             return
-        fill_qty, fill_price = fill
+        fill_qty, fill_price, fill_state = fill
+        actual_notional = (
+            notional * min(D("1"), fill_qty / intent.quantity)
+            if intent.quantity > 0 else D("0")
+        )
         self._open_position(
-            decision,
-            signal,
-            fill_qty,
-            fill_price,
-            intent.client_order_id,
-            now,
+            decision, signal, fill_qty, fill_price, intent.client_order_id, now,
+            requested_quantity=intent.quantity, notional_eur=actual_notional,
+        )
+        self.db.save_tactical_order_progress(
+            intent.client_order_id, fill_qty, fill_price,
+            terminal=fill_state in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"},
         )
         self._last_action = "LIVE_ENTRY"
 
@@ -971,6 +975,22 @@ class TacticalTrader:
         with self._lock:
             positions = list(self._positions.values())
         for position in positions:
+            pending = None
+            query_one = getattr(self.db, "one", None)
+            if callable(query_one):
+                pending = query_one(
+                    """SELECT o.client_order_id,o.state FROM orders o
+                       JOIN decisions d ON d.decision_id=o.decision_id
+                       WHERE d.strategy_version=? AND o.symbol=?
+                         AND o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE',
+                                         'PARTIALLY_FILLED','UNKNOWN_RECONCILING')
+                       LIMIT 1""",
+                    (self.STRATEGY_VERSION, position.symbol),
+                )
+            if pending is not None:
+                # Do not issue a competing exit while a Tactical entry/exit can
+                # still fill; pending quantities are reconciled before management.
+                continue
             state = self._fresh_position_state(position, now)
             if state is None:
                 self.audit.emit(
@@ -1218,21 +1238,26 @@ class TacticalTrader:
         )
         if fill is None:
             return
-        fill_qty, fill_price = fill
+        fill_qty, fill_price, fill_state = fill
         if fill_qty <= 0:
             return
         self._close_live(position, fill_qty, fill_price, reason, now, intent.client_order_id)
+        self.db.save_tactical_order_progress(
+            intent.client_order_id, fill_qty, fill_price,
+            terminal=fill_state in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"},
+        )
 
     def _wait_for_fill(
         self,
         intent: Any,
         instrument: Instrument,
         kraken_order_id: str | None = None,
-    ) -> tuple[D, D] | None:
+    ) -> tuple[D, D, str] | None:
         deadline = time.monotonic() + max(
             1.0, float(getattr(self.config, "tactical_order_confirm_seconds", 5))
         )
         last_payload: dict[str, Any] | None = None
+        last_state = ""
         while time.monotonic() < deadline:
             try:
                 rows = self.gateway.lookup_order(
@@ -1242,42 +1267,78 @@ class TacticalTrader:
                 )
                 if rows:
                     last_payload = rows[0]
-                    status = self.authority.reconciler.state_from_exchange(rows[0])
-                    if status.value == "FILLED":
-                        quantity = D(str(rows[0].get("vol_exec") or rows[0].get("executed_volume") or intent.quantity))
-                        price = D(
-                            str(
-                                rows[0].get("price")
-                                or rows[0].get("avg_price")
-                                or rows[0].get("avgPrice")
-                                or intent.limit_price
-                                or "0"
-                            )
-                        )
-                        if quantity > 0 and price > 0:
+                    state = self.authority.reconciler.state_from_exchange(last_payload)
+                    last_state = state.value
+                    resolved_id = str(
+                        last_payload.get("txid") or last_payload.get("order_id") or ""
+                    )
+                    if resolved_id:
+                        kraken_order_id = resolved_id
+                    quantity = D(str(
+                        last_payload.get("vol_exec")
+                        or last_payload.get("executed_volume")
+                        or "0"
+                    ))
+                    if state.value == "FILLED" and quantity <= 0:
+                        quantity = D(str(intent.quantity))
+                    price = D(str(
+                        last_payload.get("avg_price")
+                        or last_payload.get("avgPrice")
+                        or last_payload.get("price")
+                        or intent.limit_price
+                        or "0"
+                    ))
+                    if quantity > 0 and price > 0:
+                        if state.value == "FILLED" or state.value in {
+                            "CANCELED", "EXPIRED", "REJECTED"
+                        }:
                             self.db.update_order_state(
-                                intent.client_order_id,
-                                status.value,
-                                kraken_order_id=str(rows[0].get("txid") or rows[0].get("order_id") or "") or None,
+                                intent.client_order_id, state.value,
+                                kraken_order_id=kraken_order_id or None,
                             )
-                            return quantity, price
+                            return quantity, price, state.value
+                        # Wait out the configured confirmation window on partial
+                        # fills; the still-live remainder is tracked separately.
             except Exception as exc:
                 self.audit.emit(
-                    "TACTICAL_FILL_CHECK_FAILED",
-                    "WARNING",
-                    symbol=instrument.symbol,
-                    error_type=type(exc).__name__,
+                    "TACTICAL_FILL_CHECK_FAILED", "WARNING",
+                    symbol=instrument.symbol, error_type=type(exc).__name__,
                 )
             time.sleep(0.5)
+
+        if last_payload is not None:
+            quantity = D(str(
+                last_payload.get("vol_exec")
+                or last_payload.get("executed_volume")
+                or "0"
+            ))
+            price = D(str(
+                last_payload.get("avg_price")
+                or last_payload.get("avgPrice")
+                or last_payload.get("price")
+                or intent.limit_price
+                or "0"
+            ))
+            if quantity > 0 and price > 0 and last_state == "PARTIALLY_FILLED":
+                self.db.update_order_state(
+                    intent.client_order_id, last_state,
+                    kraken_order_id=kraken_order_id or None,
+                )
+                self.audit.emit(
+                    "TACTICAL_PARTIAL_FILL_APPLIED", "WARNING",
+                    symbol=instrument.symbol,
+                    client_order_id=intent.client_order_id,
+                    executed_quantity=str(quantity),
+                    requested_quantity=str(intent.quantity),
+                )
+                return quantity, price, last_state
+
         self.audit.emit(
-            "TACTICAL_FILL_PENDING",
-            "WARNING",
-            symbol=instrument.symbol,
-            client_order_id=intent.client_order_id,
-            state=(
+            "TACTICAL_FILL_PENDING", "WARNING",
+            symbol=instrument.symbol, client_order_id=intent.client_order_id,
+            state=last_state or (
                 str(last_payload.get("status") or last_payload.get("state") or "UNKNOWN")
-                if last_payload
-                else "UNKNOWN"
+                if last_payload else "UNKNOWN"
             ),
         )
         return None
@@ -1290,7 +1351,15 @@ class TacticalTrader:
         price: D,
         client_order_id: str,
         now: float,
+        *,
+        requested_quantity: D | None = None,
+        notional_eur: D | None = None,
     ) -> None:
+        actual_notional = (
+            abs(notional_eur)
+            if notional_eur is not None
+            else abs(decision.target_notional_eur)
+        )
         position = TacticalPosition(
             decision.instrument.symbol,
             decision.instrument.venue,
@@ -1299,7 +1368,7 @@ class TacticalTrader:
             price,
             price,
             price,
-            abs(decision.target_notional_eur),
+            actual_notional,
             decision.leverage,
             now,
             client_order_id,
@@ -1647,89 +1716,143 @@ class TacticalTrader:
 
     def _reconcile_pending(self) -> None:
         rows = self.db.query(
-            """SELECT o.client_order_id,o.symbol,o.state,o.kraken_order_id,o.quantity,o.side,
-                      o.direction,o.leverage,o.created_at,
-                      d.rationale_json,d.target_notional_eur
-               FROM orders o JOIN decisions d ON d.decision_id=o.decision_id
-               WHERE d.strategy_version=? AND o.state IN
-                 ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')""",
-            (self.STRATEGY_VERSION,),
+            """SELECT o.client_order_id,o.symbol,o.state,o.kraken_order_id,o.quantity,
+                      o.side,o.direction,o.leverage,o.created_at,o.reduce_only,
+                      d.rationale_json,d.target_notional_eur,
+                      p.last_filled_quantity,p.last_average_price,p.terminal AS progress_terminal
+               FROM orders o
+               JOIN decisions d ON d.decision_id=o.decision_id
+               LEFT JOIN tactical_order_progress p ON p.client_order_id=o.client_order_id
+               WHERE d.strategy_version=? AND o.created_at>=? AND (
+                 o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED',
+                             'UNKNOWN_RECONCILING')
+                 OR (o.state IN ('FILLED','CANCELED','EXPIRED','REJECTED')
+                     AND COALESCE(p.terminal,0)=0)
+               )
+               ORDER BY o.created_at ASC""",
+            (self.STRATEGY_VERSION, time.time() - 7 * 86400),
         )
+        terminal_states = {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}
         for row in rows:
             symbol = str(row.get("symbol") or "")
             client_order_id = str(row.get("client_order_id") or "")
             instrument = self._instrument_from_db(symbol)
             order_id = str(row.get("kraken_order_id") or "")
-            if instrument is None or not order_id:
+            if instrument is None or not client_order_id:
                 continue
             try:
                 found = self.gateway.lookup_order(
                     client_order_id=client_order_id,
                     instrument=instrument,
-                    kraken_order_id=order_id,
+                    kraken_order_id=order_id or None,
                 )
                 if not found:
+                    # An exchange lookup returning no record does not prove an
+                    # accepted order was unfilled; leave it pending for retry.
                     continue
                 payload = found[0]
                 state = self.authority.reconciler.state_from_exchange(payload)
-                resolved_id = str(payload.get("txid") or payload.get("order_id") or order_id)
+                resolved_id = str(
+                    payload.get("txid") or payload.get("order_id") or order_id
+                )
                 if state.value != str(row.get("state") or "") or resolved_id != order_id:
                     self.db.update_order_state(
                         client_order_id, state.value, kraken_order_id=resolved_id or None
                     )
-                if state.value != "FILLED":
-                    continue
-                qty = D(str(
-                    payload.get("vol_exec")
-                    or payload.get("executed_volume")
-                    or row.get("quantity")
-                    or "0"
-                ))
-                price = D(str(
-                    payload.get("price")
-                    or payload.get("avg_price")
-                    or payload.get("avgPrice")
-                    or "0"
-                ))
-                if qty <= 0 or price <= 0:
-                    continue
+
                 try:
                     rationale = __import__("json").loads(row.get("rationale_json") or "{}")
                 except (TypeError, ValueError):
                     rationale = {}
-                exit_reason = str(rationale.get("tactical_exit_reason") or "")
-                if exit_reason:
-                    with self._lock:
-                        position = self._positions.get(symbol)
-                    if position is not None:
-                        self._close_live(
-                            position, qty, price, exit_reason, time.time(), client_order_id
+                is_exit = bool(str(rationale.get("tactical_exit_reason") or ""))
+                last_qty = D(str(row.get("last_filled_quantity") or "0"))
+                last_avg = D(str(row.get("last_average_price") or "0"))
+                requested_qty = D(str(row.get("quantity") or "0"))
+                cumulative_qty = D(str(
+                    payload.get("vol_exec")
+                    or payload.get("executed_volume")
+                    or ("0")
+                ))
+                if state.value == "FILLED" and cumulative_qty <= 0:
+                    cumulative_qty = requested_qty
+                if requested_qty > 0:
+                    cumulative_qty = min(cumulative_qty, requested_qty)
+                avg_price = D(str(
+                    payload.get("avg_price") or payload.get("avgPrice")
+                    or payload.get("price") or last_avg or "0"
+                ))
+                delta_qty = max(D("0"), cumulative_qty - last_qty)
+                delta_price = avg_price
+                if (
+                    delta_qty > 0 and cumulative_qty > 0 and avg_price > 0
+                    and last_qty > 0 and last_avg > 0
+                ):
+                    value_delta = cumulative_qty * avg_price - last_qty * last_avg
+                    if value_delta > 0:
+                        delta_price = value_delta / delta_qty
+
+                if delta_qty > 0 and delta_price > 0:
+                    if is_exit:
+                        with self._lock:
+                            position = self._positions.get(symbol)
+                        exit_reason = str(rationale.get("tactical_exit_reason") or "RECOVERED_EXIT")
+                        if position is not None:
+                            self._close_live(
+                                position, delta_qty, delta_price, exit_reason,
+                                time.time(), client_order_id,
+                            )
+                        else:
+                            self.audit.emit(
+                                "TACTICAL_FILL_POSITION_MISSING", "ERROR",
+                                symbol=symbol, client_order_id=client_order_id,
+                                role="EXIT", incremental_quantity=str(delta_qty),
+                            )
+                    else:
+                        direction = Direction(str(row.get("direction") or ""))
+                        target_notional = abs(D(str(row.get("target_notional_eur") or "0")))
+                        cumulative_notional = (
+                            target_notional * cumulative_qty / requested_qty
+                            if requested_qty > 0 else target_notional
                         )
-                    self.audit.emit(
-                        "TACTICAL_ORDER_RECOVERED", "INFO",
-                        symbol=symbol, direction=str(row.get("direction") or ""),
-                        action="EXIT_FILLED", quantity=str(qty), price=str(price),
-                    )
-                    continue
-                direction = Direction(str(row.get("direction") or ""))
-                with self._lock:
-                    existing = self._positions.get(symbol)
-                if existing is None:
-                    self._restore_position(
-                        instrument=instrument,
-                        direction=direction,
-                        quantity=qty,
-                        price=price,
-                        notional_eur=abs(D(str(row.get("target_notional_eur") or "0"))),
-                        leverage=D(str(row.get("leverage") or "1")),
-                        opened_at=float(row.get("created_at") or time.time()),
-                        client_order_id=client_order_id,
-                        setup_score=D(str(rationale.get("tactical_setup_score") or "0")),
-                    )
-                self.audit.emit(
-                    "TACTICAL_ORDER_RECOVERED", "INFO",
-                    symbol=symbol, direction=direction.value,
-                    action="ENTRY_FILLED", quantity=str(qty), price=str(price),
+                        with self._lock:
+                            existing = self._positions.get(symbol)
+                        if existing is None:
+                            self._restore_position(
+                                instrument=instrument, direction=direction,
+                                quantity=cumulative_qty, price=avg_price or delta_price,
+                                notional_eur=cumulative_notional,
+                                leverage=D(str(row.get("leverage") or "1")),
+                                opened_at=float(row.get("created_at") or time.time()),
+                                client_order_id=client_order_id,
+                                setup_score=D(str(rationale.get("tactical_setup_score") or "0")),
+                            )
+                        elif existing.entry_client_order_id == client_order_id:
+                            existing.quantity = max(existing.quantity, cumulative_qty)
+                            if avg_price > 0:
+                                existing.entry_price = avg_price
+                            existing.notional_eur = cumulative_notional
+                            self.db.save_tactical_position(
+                                existing.symbol, existing.venue, existing.direction.value,
+                                existing.quantity, existing.entry_price, existing.peak_price,
+                                existing.trough_price, existing.notional_eur, existing.leverage,
+                                existing.opened_at, existing.entry_client_order_id,
+                                existing.setup_score, existing.state,
+                            )
+                        self.audit.emit(
+                            "TACTICAL_ORDER_FILL_RECONCILED", "INFO",
+                            symbol=symbol, client_order_id=client_order_id, role="ENTRY",
+                            state=state.value, cumulative_quantity=str(cumulative_qty),
+                            incremental_quantity=str(delta_qty), average_price=str(avg_price),
+                        )
+
+                is_terminal = (
+                    state.value in terminal_states
+                    or (requested_qty > 0 and cumulative_qty >= requested_qty)
+                )
+                self.db.save_tactical_order_progress(
+                    client_order_id, max(last_qty, cumulative_qty),
+                    avg_price if avg_price > 0 else last_avg,
+                    terminal=is_terminal,
                 )
             except Exception as exc:
                 self.audit.emit(
@@ -1739,8 +1862,7 @@ class TacticalTrader:
                 )
         if rows:
             self.audit.emit(
-                "TACTICAL_PENDING_ORDERS", "WARNING",
-                count=len(rows),
+                "TACTICAL_PENDING_ORDERS", "INFO", count=len(rows),
                 symbols=sorted({str(row.get("symbol", "")) for row in rows}),
             )
 

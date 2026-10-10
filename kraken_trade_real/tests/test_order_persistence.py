@@ -559,3 +559,21 @@ def test_funding_fill_poll_uses_returned_kraken_order_id(config, db, instrument)
     assert result["state"] == OrderState.FILLED.value
     assert calls
     assert calls[0]["kraken_order_id"] == "O-FUNDING-123"
+
+
+
+def test_closed_partial_order_is_terminal():
+    from app.execution import ExecutionReconciler
+
+    state = ExecutionReconciler().state_from_exchange({
+        "status": "closed", "vol": "2.0", "vol_exec": "0.75", "price": "10.0",
+    })
+    assert state == OrderState.CANCELED
+
+
+def test_closed_zero_fill_order_is_not_misreported_as_filled():
+    from app.execution import ExecutionReconciler
+
+    assert ExecutionReconciler().state_from_exchange({
+        "status": "closed", "vol": "2.0", "vol_exec": "0",
+    }) == OrderState.CANCELED
