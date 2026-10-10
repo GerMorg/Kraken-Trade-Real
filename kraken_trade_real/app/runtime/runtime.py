@@ -447,6 +447,10 @@ class TradingRuntime:
                         else self.config.__dict__
                     )
                     self.config_hash = digest_config(config_snapshot)
+                    self.db.execute(
+                        "UPDATE cycles SET config_hash=? WHERE cycle_id=?",
+                        (self.config_hash, cycle_id),
+                    )
                     self.audit.emit(
                         "ADAPTIVE_CONFIG_REFRESHED","INFO",
                         cycle_id=cycle_id,
