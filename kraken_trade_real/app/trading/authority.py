@@ -746,7 +746,11 @@ class TradingAuthority:
             if resolved_state == OrderState.FILLED:
                 return OrderState.FILLED, ""
             if status in {"canceled", "cancelled", "expired", "rejected"} or (
-                status == "closed" and executed < requested
+                status == "closed"
+                and (
+                    resolved_state == OrderState.PARTIALLY_FILLED
+                    or (requested > 0 and executed < requested)
+                )
             ):
                 detail = ""
                 if executed > 0:
@@ -845,7 +849,10 @@ class TradingAuthority:
                         requested_volume=str(payload.get("vol") or payload.get("volume") or "0"),
                         age_seconds=round(age_seconds, 2),
                     )
-                    if is_reduce_only and age_seconds >= reduce_timeout:
+                    if is_reduce_only:
+                        # Any exchange-terminal reduce order may have changed the
+                        # position after this cycle's portfolio snapshot, even if
+                        # its age is shorter than the timeout threshold.
                         refresh_required = True
                     continue
 
