@@ -224,6 +224,24 @@ CREATE TABLE IF NOT EXISTS tactical_trades(
 CREATE INDEX IF NOT EXISTS idx_tactical_trades_closed ON tactical_trades(closed_at);
 
 
+-- Every fresh price observed while managing a Tactical position is retained for
+-- path-aware, out-of-sample exit-policy research. Old positions remain queryable.
+CREATE TABLE IF NOT EXISTS tactical_price_path(
+  point_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  opened_at REAL NOT NULL,
+  observed_at REAL NOT NULL,
+  direction TEXT NOT NULL,
+  price TEXT NOT NULL,
+  pnl_bps TEXT NOT NULL,
+  peak_price TEXT NOT NULL,
+  trough_price TEXT NOT NULL,
+  state TEXT NOT NULL,
+  UNIQUE(symbol, opened_at, observed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_tactical_price_path_position
+  ON tactical_price_path(symbol, opened_at, observed_at);
+
 -- Cumulative Tactical fills are applied exactly once, including after restarts.
 CREATE TABLE IF NOT EXISTS tactical_order_progress(
   client_order_id TEXT PRIMARY KEY,
