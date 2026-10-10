@@ -203,6 +203,8 @@ class PortfolioReconciler:
     def reconcile(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
         positions: dict[str, D] = {}
+        spot_wallet_positions_eur: dict[str, D] = {}
+        spot_margin_position_eur: dict[str, D] = {}
         position_pnl_eur: dict[str, D] = {}
         position_pnl_pct: dict[str, D] = {}
         position_basis_eur: dict[str, D] = {}
@@ -250,7 +252,12 @@ class PortfolioReconciler:
                 if price <= 0 or rate is None:
                     continue
                 value_eur = quantity * price * rate
-                positions[instrument.symbol] = value_eur
+                positions[instrument.symbol] = (
+                    positions.get(instrument.symbol, D("0")) + value_eur
+                )
+                spot_wallet_positions_eur[instrument.symbol] = (
+                    spot_wallet_positions_eur.get(instrument.symbol, D("0")) + value_eur
+                )
                 gross += abs(value_eur)
                 net += value_eur
 
@@ -291,9 +298,9 @@ class PortfolioReconciler:
             open_positions = self.gateway.spot_open_positions()
             spot_open_positions_read_ok = isinstance(open_positions, dict)
             known_spot_instruments = self._spot_instruments()
-            # Freeze wallet-origin symbols before adding margin rows: a later
-            # OpenPositions lot must not be mistaken for an already-counted wallet asset.
-            wallet_position_symbols = set(positions)
+            # Kraken reports ordinary spot inventory in Balances and margin-backed
+            # inventory in OpenPositions. Those are separate exposure legs, even when
+            # they use the same pair symbol; sum the signed legs and retain each source.
             for item in open_positions.values():
                 if not isinstance(item, dict):
                     continue
@@ -345,25 +352,13 @@ class PortfolioReconciler:
                         position_quantity.get(position_symbol, D("0")) + quantity
                     )
 
-                # Preserve the existing wallet valuation policy, but don't let
-                # that wallet-key check suppress accounting of a second margin lot.
-                if position_symbol in wallet_position_symbols:
-                    self.db.event(
-                        "PORTFOLIO_MARGIN_POSITION_PNL",
-                        "INFO",
-                        {
-                            "symbol": position_symbol,
-                            "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
-                            "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
-                            "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
-                            "quantity": str(position_quantity.get(position_symbol, D("0"))),
-                            "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
-                            "wallet_inventory_present": True,
-                        },
-                    )
-                    continue
-
-                value = dec(item.get("value") or item.get("cost"))
+                # Value the exchange-reported margin leg independently of ordinary
+                # wallet inventory. Gross exposure counts both legs; signed position
+                # and net exposure combine them for risk and target calculations.
+                raw_value = item.get("value")
+                value = dec(
+                    raw_value if raw_value not in (None, "") else item.get("cost")
+                )
                 if quote_rate is not None and quote_rate > 0:
                     value *= quote_rate
                 side = str(item.get("type") or "").lower()
@@ -371,6 +366,9 @@ class PortfolioReconciler:
                     value = -abs(value)
                 elif side == "buy":
                     value = abs(value)
+                spot_margin_position_eur[position_symbol] = (
+                    spot_margin_position_eur.get(position_symbol, D("0")) + value
+                )
                 if value != 0:
                     positions[position_symbol] = (
                         positions.get(position_symbol, D("0")) + value
@@ -388,6 +386,12 @@ class PortfolioReconciler:
                         "quantity": str(position_quantity.get(position_symbol, D("0"))),
                         "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
                         "margin_lot_value_eur": str(value),
+                        "margin_position_total_eur": str(
+                            spot_margin_position_eur.get(position_symbol, D("0"))
+                        ),
+                        "wallet_position_eur": str(
+                            spot_wallet_positions_eur.get(position_symbol, D("0"))
+                        ),
                     },
                 )
         except Exception as exc:
@@ -473,6 +477,8 @@ class PortfolioReconciler:
             position_quantity=position_quantity,
             spot_open_positions_read_ok=spot_open_positions_read_ok,
             spot_margin_position_symbols=tuple(sorted(spot_margin_position_symbols)),
+            spot_wallet_positions_eur=spot_wallet_positions_eur,
+            spot_margin_position_eur=spot_margin_position_eur,
         )
 
 def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:

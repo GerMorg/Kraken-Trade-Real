@@ -66,7 +66,16 @@ class RiskEngine:
                 leverage,
             )
 
-        pos_pct = desired_abs / eq * 100
+        wallet_exposure = (
+            abs(p.spot_wallet_positions_eur.get(d.instrument.symbol, D("0")))
+            if d.instrument.symbol in p.spot_margin_position_symbols
+            else D("0")
+        )
+        pos_pct = (
+            (wallet_exposure + desired_abs) / eq * 100
+            if d.instrument.symbol in p.spot_margin_position_symbols
+            else desired_abs / eq * 100
+        )
         gross_pct = gross_after / eq * 100
         net_pct = abs(net_after) / eq * 100
         is_new_position = current == 0 and desired != 0

@@ -83,7 +83,11 @@ class PositionProfitProtection:
                         (pending_id,),
                     )
                     order_state = str(order.get("state") or "") if order else ""
-                    current_position = _d(portfolio.positions.get(symbol))
+                    current_position = (
+                        _d(portfolio.spot_margin_position_eur.get(symbol))
+                        if symbol in portfolio.spot_margin_position_symbols
+                        else _d(portfolio.positions.get(symbol))
+                    )
                     material_reduction = (
                         pending_start != 0
                         and abs(current_position) <= abs(pending_start) * D("0.90")
@@ -158,7 +162,11 @@ class PositionProfitProtection:
             return decision
 
         symbol = instrument.symbol
-        current = _d(portfolio.positions.get(symbol))
+        current = (
+            _d(portfolio.spot_margin_position_eur.get(symbol))
+            if symbol in portfolio.spot_margin_position_symbols
+            else _d(portfolio.positions.get(symbol))
+        )
         pnl_pct_value = portfolio.position_pnl_pct.get(symbol)
         if current == 0 or pnl_pct_value is None:
             return decision

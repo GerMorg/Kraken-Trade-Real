@@ -66,6 +66,11 @@ class PortfolioState:
     position_quantity:dict[str,Decimal]=field(default_factory=dict)
     spot_open_positions_read_ok:bool=False
     spot_margin_position_symbols:tuple[str,...]=()
+    # Spot wallet inventory and margin positions are separate Kraken exposure
+    # sources. Preserve each leg so strategy decisions can manage the margin
+    # position while risk limits still account for their combined exposure.
+    spot_wallet_positions_eur:dict[str,Decimal]=field(default_factory=dict)
+    spot_margin_position_eur:dict[str,Decimal]=field(default_factory=dict)
 
 @dataclass(frozen=True)
 class Fill:

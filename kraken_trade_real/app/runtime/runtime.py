@@ -956,7 +956,11 @@ class TradingRuntime:
                 # Apply opening/rollover financing only to Kraken Spot Margin.
                 # Use the same direction-specific leverage selection as execution and
                 # prefer exchange-reported leverage for already-open positions.
-                current_position_for_cost = portfolio.positions.get(instrument.symbol, D("0"))
+                current_position_for_cost = (
+                    portfolio.spot_margin_position_eur.get(instrument.symbol, D("0"))
+                    if instrument.symbol in portfolio.spot_margin_position_symbols
+                    else portfolio.positions.get(instrument.symbol, D("0"))
+                )
                 margin_cost_direction = (
                     instrument.venue == "spot"
                     and instrument.product_type.value == "SPOT_MARGIN"
