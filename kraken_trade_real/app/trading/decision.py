@@ -76,12 +76,13 @@ class DecisionEngine:
         instrument: Instrument,
         long_signal: Signal,
         short_signal: Signal,
-        scale: D,
+        model_parameters: dict[str, Any] | None,
         *,
         current: D,
     ) -> list[tuple[Signal, D, str]]:
         result: list[tuple[Signal, D, str]] = []
         for signal in (long_signal, short_signal):
+            scale = self._confidence_scale(model_parameters, signal.regime)
             calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
             if calibrated < D(str(self.config.strategy_min_confidence)):
                 continue
