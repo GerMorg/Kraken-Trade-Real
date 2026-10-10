@@ -103,7 +103,7 @@ class LearningEngine:
 
         # Chronological split: older rows select a scale, newest rows validate it.
         rows = self.db.query(
-            """SELECT p.prediction_id, p.created_at, p.probability, o.success, o.measured_at
+            """SELECT p.prediction_id, p.created_at, p.probability, p.regime, o.success, o.measured_at
                FROM predictions p
                JOIN prediction_outcomes o ON o.prediction_id=p.prediction_id
                WHERE p.outcome_status='SETTLED' AND o.success IS NOT NULL
