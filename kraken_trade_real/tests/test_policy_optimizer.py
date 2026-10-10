@@ -105,8 +105,28 @@ def test_optimizer_can_search_bounded_cost_and_confidence_parameters():
     }
     assert optimizer._variants(
         "signal_quality_spread_scale_bps", 200.0, defaults
-    ) == [150.0, 200.0, 225.0]
+    ) == [175.0, 200.0, 225.0]
     profile = optimizer.normalize_profile(
         {"signal_quality_spread_scale_bps": 1.0}, defaults
     )
     assert profile["signal_quality_spread_scale_bps"] == 75.0
+
+
+def test_optimizer_requires_independent_time_buckets_even_with_many_symbols():
+    optimizer = StrategyPolicyOptimizer()
+    params = _params()
+    rows = [
+        {
+            **_row(bucket, "LONG", net_return=15, trend=1.0),
+            "symbol": f"ASSET-{symbol}",
+        }
+        for bucket in range(4)
+        for symbol in range(100)
+    ]
+
+    result = optimizer.fit(rows, params, params)
+
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["groups"] == 400
+    assert result["time_buckets"] == 4
+    assert result["minimum_time_buckets"] == 20

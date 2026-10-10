@@ -64,6 +64,7 @@ class StrategyPolicyOptimizer:
     """
 
     MIN_GROUPS = 300
+    MIN_TIME_BUCKETS = 20
     MIN_TRAIN_TRADES = 30
     MIN_EVALUATION_TRADES = 20
     MIN_VALIDATION_IMPROVEMENT_BPS = 1.0
@@ -301,20 +302,31 @@ class StrategyPolicyOptimizer:
         current: dict[str, Any] | None,
     ) -> dict[str, Any]:
         groups = self.grouped(observations)
-        if len(groups) < self.MIN_GROUPS:
+        time_buckets = sorted({
+            int(_number(group[0].get("horizon_bucket"), 0))
+            for group in groups if group
+        })
+        if len(groups) < self.MIN_GROUPS or len(time_buckets) < self.MIN_TIME_BUCKETS:
             return {
                 "status": "INSUFFICIENT_DATA",
                 "groups": len(groups),
                 "minimum_groups": self.MIN_GROUPS,
+                "time_buckets": len(time_buckets),
+                "minimum_time_buckets": self.MIN_TIME_BUCKETS,
                 "promoted": False,
             }
         defaults_profile = self.normalize_profile(defaults, defaults)
         baseline = self.normalize_profile(current, defaults_profile)
-        train_end = max(1, int(len(groups) * 0.60))
-        validation_end = max(train_end + 1, int(len(groups) * 0.80))
-        train, validation, test = (
-            groups[:train_end], groups[train_end:validation_end], groups[validation_end:]
-        )
+        # Split by global 15-minute time buckets, not by rows. Otherwise different
+        # symbols from the same market interval could leak into train and test.
+        train_end = max(1, int(len(time_buckets) * 0.60))
+        validation_end = max(train_end + 1, int(len(time_buckets) * 0.80))
+        train_buckets = set(time_buckets[:train_end])
+        validation_buckets = set(time_buckets[train_end:validation_end])
+        test_buckets = set(time_buckets[validation_end:])
+        train = [group for group in groups if int(_number(group[0].get("horizon_bucket"), 0)) in train_buckets]
+        validation = [group for group in groups if int(_number(group[0].get("horizon_bucket"), 0)) in validation_buckets]
+        test = [group for group in groups if int(_number(group[0].get("horizon_bucket"), 0)) in test_buckets]
         minimum_train_trades = max(
             self.MIN_TRAIN_TRADES, int(math.ceil(len(train) * 0.05))
         )
