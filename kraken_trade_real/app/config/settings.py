@@ -193,7 +193,7 @@ class Config:
             strategy_entry_fee_bps=f("strategy_entry_fee_bps", 40.0, 0.0, 1000.0),
             strategy_exit_fee_bps=f("strategy_exit_fee_bps", 80.0, 0.0, 1000.0),
             strategy_execution_overhead_bps=f("strategy_execution_overhead_bps", 8.0, 0.0, 1000.0),
-            strategy_partial_profit_trigger_pct=f("strategy_partial_profit_trigger_pct", 3.5, 0.1, 100.0),
+            strategy_partial_profit_trigger_pct=f("strategy_partial_profit_trigger_pct", 10.0, 0.1, 100.0),
             strategy_partial_profit_fraction_pct=f("strategy_partial_profit_fraction_pct", 50.0, 10.0, 90.0),
             strategy_profit_lock_trigger_pct=f("strategy_profit_lock_trigger_pct", 5.0, 0.1, 100.0),
             strategy_profit_giveback_pct=f("strategy_profit_giveback_pct", 35.0, 5.0, 90.0),
