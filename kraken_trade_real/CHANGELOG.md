@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.51
+
+- Add versioned, bounded adaptive management of Normal strategy entry thresholds using fully closed app-managed Spot/Margin position outcomes.
+- Use directional gross return in basis points minus the entry decision's stored expected-cost estimate; do not read or learn from unverified TradesHistory fee amounts/net PnL.
+- Tighten entry filters after weak recent outcomes; only restore prior, extra selectivity toward documented defaults after sustained improving results. Never relax below defaults or alter hard risk controls.
+- Require 60 completed outcomes, compare chronological 30-outcome windows, wait for at least 10 new outcomes between evaluations, and enforce policy evidence and parameter bounds again in the model registry.
+- Create dedicated baseline model families for Normal and Tactical policies so version history, promotion and rollback stay within the correct strategy family.
+- Remove learned Normal entry thresholds from HA options/schema and ignore legacy values in existing options.json files; publish optimizer status in learning telemetry.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.51.
+
 ## 0.1.50
 
 - Rebuild a deterministic FIFO position-attribution ledger from app-managed Spot/Margin fills, including partial reductions and multiple closes linked back to their opening decision.

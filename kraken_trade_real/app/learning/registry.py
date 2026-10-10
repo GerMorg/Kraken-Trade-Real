@@ -45,6 +45,46 @@ class ModelRegistry:
                     "UPDATE model_versions SET status='RETIRED' WHERE family='decision' AND status='ACTIVE' AND version<>?",
                     (keep,),
                 )
+
+            # Strategy policies own version histories. Give each a real baseline
+            # in its own family so promotion/rollback can never point at a Decision
+            # model from an unrelated family.
+            for family, baseline_version in (
+                ("strategy_core", "core-entry-baseline-v1"),
+                ("strategy_tactical", "tactical-policy-baseline-v1"),
+            ):
+                active = con.execute(
+                    "SELECT version FROM model_versions WHERE family=? AND status='ACTIVE' "
+                    "ORDER BY created_at DESC",
+                    (family,),
+                ).fetchall()
+                if not active:
+                    baseline = con.execute(
+                        "SELECT version FROM model_versions WHERE version=? AND family=?",
+                        (baseline_version, family),
+                    ).fetchone()
+                    if baseline is None:
+                        con.execute(
+                            "INSERT INTO model_versions(version,family,status,created_at,parent_version,"
+                            "parameters_json,metrics_json,reason) VALUES(?,?,?,?,?,?,?,?)",
+                            (
+                                baseline_version, family, "ACTIVE", time.time(), None,
+                                json.dumps({}), json.dumps({"kind": "bounded_default_policy"}),
+                                "initial strategy policy baseline",
+                            ),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE model_versions SET status='ACTIVE' WHERE version=? AND family=?",
+                            (baseline_version, family),
+                        )
+                elif len(active) > 1:
+                    keep = active[0]["version"]
+                    con.execute(
+                        "UPDATE model_versions SET status='RETIRED' "
+                        "WHERE family=? AND status='ACTIVE' AND version<>?",
+                        (family, keep),
+                    )
             con.commit()
 
     def active(self, family: str="decision") -> str:
@@ -138,12 +178,16 @@ class ModelRegistry:
             params = json.loads(row["parameters_json"])
         except (TypeError, ValueError):
             return False
+        kind = metrics.get("kind")
+        supported_policy = (
+            row["family"] == "strategy_tactical"
+            and kind in {"bounded_online_controller", "path_replay_exit_policy"}
+        ) or (
+            row["family"] == "strategy_core"
+            and kind == "bounded_core_outcome_controller"
+        )
         if (
-            row["family"] != "strategy_tactical"
-            or metrics.get("kind") not in {
-                "bounded_online_controller",
-                "path_replay_exit_policy",
-            }
+            not supported_policy
             or int(metrics.get("samples", 0)) < minimum_samples
             or not isinstance(params, dict)
         ):
@@ -176,8 +220,49 @@ class ModelRegistry:
                 )
                 return False
 
+        if kind == "bounded_core_outcome_controller":
+            try:
+                action = str(metrics.get("action") or "")
+                common_quality = (
+                    metrics.get("data_basis")
+                    == "gross_return_bps_minus_decision_expected_cost_bps"
+                    and metrics.get("exchange_fee_estimates_used") is False
+                    and metrics.get("verified_net_pnl_used") is False
+                    and int(metrics.get("previous_samples", 0)) >= 30
+                    and int(metrics.get("recent_samples", 0)) >= 30
+                )
+                recent_mean = float(metrics.get("recent_mean_after_expected_cost_bps", 0.0))
+                previous_mean = float(metrics.get("previous_mean_after_expected_cost_bps", 0.0))
+                recent_positive_rate = float(
+                    metrics.get("recent_positive_after_expected_cost_rate", 0.0)
+                )
+                if action == "TIGHTEN":
+                    action_quality = recent_mean <= -10.0 and recent_positive_rate < 0.45
+                elif action == "RESTORE_TOWARD_DEFAULTS":
+                    action_quality = (
+                        recent_mean >= 15.0
+                        and recent_positive_rate >= 0.60
+                        and recent_mean >= previous_mean + 5.0
+                    )
+                else:
+                    action_quality = False
+                valid_metrics = common_quality and action_quality
+            except (TypeError, ValueError):
+                valid_metrics = False
+            if not valid_metrics:
+                self.db.learning_event(
+                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                    {"reason": "CORE_ENTRY_OUTCOME_QUALITY_GATE_FAILED"},
+                )
+                return False
+
         # Hard bounds are enforced again at promotion, independently of the optimizer.
         bounds = {
+            "strategy_min_edge_bps": (25.0, 80.0),
+            "strategy_min_confidence": (0.58, 0.85),
+            "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
+            "strategy_adaptive_min_confidence": (0.75, 0.95),
+            "strategy_adaptive_cost_ratio": (1.10, 1.50),
             "tactical_min_expected_move_bps": (80.0, 1200.0),
             "tactical_min_momentum_bps": (10.0, 300.0),
             "tactical_min_volume_ratio": (1.0, 8.0),
@@ -202,6 +287,32 @@ class ModelRegistry:
                 {"reason": "PARAMETER_OUT_OF_BOUNDS"},
             )
             return False
+        if kind == "bounded_core_outcome_controller":
+            try:
+                required_core_keys = {
+                    "strategy_min_edge_bps",
+                    "strategy_min_confidence",
+                    "strategy_adaptive_edge_floor_bps",
+                    "strategy_adaptive_min_confidence",
+                    "strategy_adaptive_cost_ratio",
+                }
+                if not required_core_keys.issubset(params):
+                    raise ValueError("INCOMPLETE_CORE_POLICY")
+                if (
+                    float(params["strategy_adaptive_edge_floor_bps"])
+                    > float(params["strategy_min_edge_bps"])
+                    or float(params["strategy_adaptive_min_confidence"])
+                    < float(params["strategy_min_confidence"])
+                    or float(params["strategy_adaptive_cost_ratio"]) < 1.10
+                ):
+                    raise ValueError("CORE_POLICY_RELATIONSHIP_INVALID")
+            except (TypeError, ValueError):
+                self.db.learning_event(
+                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                    {"reason": "CORE_POLICY_RELATIONSHIP_INVALID"},
+                )
+                return False
+
         try:
             if (
                 "tactical_stop_loss_pct" in params

@@ -7,7 +7,15 @@ from typing import Any
 # Tunable policy parameters live in versioned model records, not HA options.
 # Risk caps, credentials, execution switches and operational limits are intentionally
 # excluded: the learner may never relax the immutable safety envelope.
-CORE_DEFAULTS: dict[str, Any] = {}
+CORE_DEFAULTS: dict[str, Any] = {
+    # Core entry policy only. Position sizing, stop/profit protection and all
+    # hard risk caps remain governed by separate non-learnable controls.
+    "strategy_min_edge_bps": 25.0,
+    "strategy_min_confidence": 0.58,
+    "strategy_adaptive_edge_floor_bps": 15.0,
+    "strategy_adaptive_min_confidence": 0.75,
+    "strategy_adaptive_cost_ratio": 1.10,
+}
 
 LEARNED_TACTICAL_KEYS = {
     "tactical_portfolio_pct",
@@ -84,6 +92,11 @@ class AdaptiveConfig:
                 merged.update({name: defaults[name] for name in managed if name in defaults})
         # Keep type/range constraints independent of any model record.
         for name, bounds in {
+            "strategy_min_edge_bps": (25.0, 80.0),
+            "strategy_min_confidence": (0.58, 0.85),
+            "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
+            "strategy_adaptive_min_confidence": (0.75, 0.95),
+            "strategy_adaptive_cost_ratio": (1.10, 1.50),
             "tactical_portfolio_pct": (1.0, 25.0),
             "tactical_min_volume_ratio": (1.0, 8.0),
             "tactical_min_momentum_bps": (10.0, 300.0),
@@ -104,6 +117,18 @@ class AdaptiveConfig:
                     merged[name] = int(round(merged[name]))
             except (KeyError, TypeError, ValueError):
                 continue
+        # Core adaptive thresholds must remain economically nested. The
+        # adaptive cost multiplier may never fall below the validated baseline.
+        core_edge = float(merged.get("strategy_min_edge_bps", 25.0))
+        core_floor = float(merged.get("strategy_adaptive_edge_floor_bps", 15.0))
+        merged["strategy_adaptive_edge_floor_bps"] = min(core_edge, core_floor)
+        merged["strategy_adaptive_min_confidence"] = max(
+            float(merged.get("strategy_min_confidence", 0.58)),
+            float(merged.get("strategy_adaptive_min_confidence", 0.75)),
+        )
+        merged["strategy_adaptive_cost_ratio"] = max(
+            1.10, float(merged.get("strategy_adaptive_cost_ratio", 1.10))
+        )
         # Preserve stop/target ordering even if a corrupt or legacy model record
         # somehow bypasses candidate promotion.
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
