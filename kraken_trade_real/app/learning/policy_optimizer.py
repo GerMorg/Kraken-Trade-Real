@@ -189,8 +189,9 @@ class StrategyPolicyOptimizer:
             * min(1.0, liquidity / liquidity_scale)
         )
         expected_return = max(0.0, raw) * quality
-        fixed_fee = features.get("signal_fee_cost_bps")
-        if "signal_fee_cost_bps" not in features:
+        if "signal_fee_cost_bps" in features:
+            fixed_fee = max(0.0, features["signal_fee_cost_bps"])
+        else:
             fixed_fee = max(
                 0.0,
                 _number(row.get("expected_cost_bps"))
