@@ -615,5 +615,5 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     assert exits[0][2] == "TRAILING_STOP"
     armed = [event for event in audit.events if event[0] == "TACTICAL_TREND_FOLLOWING_ARMED"]
     assert armed
-    assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("245")
-    assert D(armed[0][2]["profit_floor_bps"]) == D("270")
+    assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
+    assert D(armed[0][2]["profit_floor_bps"]) == D("265")

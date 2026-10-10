@@ -5,11 +5,15 @@ import time
 
 
 class LearningEngine:
-    def __init__(self, db: Any, calibration: Any, registry: Any, research: Any) -> None:
+    def __init__(
+        self, db: Any, calibration: Any, registry: Any, research: Any,
+        auto_promotion_enabled: bool = True,
+    ) -> None:
         self.db = db
         self.calibration = calibration
         self.registry = registry
         self.research = research
+        self.auto_promotion_enabled = bool(auto_promotion_enabled)
 
     def record_cycle(self, cycle_id: str, decisions: int, orders: int, blockers: list[str]) -> None:
         self.db.learning_event(
@@ -93,7 +97,7 @@ class LearningEngine:
         promoted, candidate_version = False, ""
         if (
             best_scale != 1.0 and len(validation) >= 30 and improvement >= 0.005
-            and bool(getattr(self, "auto_promotion_enabled", True))
+            and self.auto_promotion_enabled
         ):
             candidate_version = f"decision-calibrated-{int(time.time())}"
             parameters = dict(parent_params)
