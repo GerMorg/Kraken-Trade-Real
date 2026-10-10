@@ -6,6 +6,7 @@
 - Require at least 300 settled forecasts and 90 chronological validation outcomes before automatic calibration; require meaningful Brier improvement and non-regressing ECE/absolute-quality gates.
 - Derive candidate IDs from the parent model and evaluated data so repeated feedback passes cannot overwrite an already promoted model with a same-second candidate.
 - Recover the model registry deterministically if persistent state has zero or multiple active decision models, and make promotion/rollback transitions transactional.
+- Honor `learning_enabled`, `learning_auto_calibration`, `learning_lookback_days` and `learning_validation_interval_hours`; the bounded calibration dataset advances to the most recent observations while preserving chronological order.
 - Bump the Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.43.
 
 
