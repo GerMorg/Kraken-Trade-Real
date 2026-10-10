@@ -1067,6 +1067,30 @@ class TacticalTrader:
                     )
                 )
 
+            # Persist the full sequence, not just final MFE/MAE. The unique
+            # observed_at key prevents repeatedly storing an unchanged WebSocket tick.
+            try:
+                self.db.record_tactical_price_point(
+                    position.symbol,
+                    position.opened_at,
+                    float(state.get("timestamp") or now),
+                    position.direction.value,
+                    price,
+                    pnl_bps,
+                    position.peak_price,
+                    position.trough_price,
+                    position.state,
+                )
+            except Exception as exc:
+                # Learning telemetry must never block live exit/risk handling.
+                self.audit.emit(
+                    "TACTICAL_PRICE_PATH_RECORD_FAILED",
+                    "WARNING",
+                    symbol=position.symbol,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:240],
+                )
+
             # Profit target arms trend-following instead of forcing a full close.
             target_gain_bps = (
                 D(str(getattr(self.config, "tactical_take_profit_pct", 2.2)))
