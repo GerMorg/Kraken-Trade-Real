@@ -15,6 +15,11 @@ LEARNED_OPTION_KEYS = {
     "tactical_max_spread_bps",
     "tactical_adaptive_min_expected_move_bps",
     "tactical_portfolio_pct",
+    "tactical_stop_loss_pct",
+    "tactical_take_profit_pct",
+    "tactical_trailing_trigger_bps",
+    "tactical_trailing_stop_pct",
+    "tactical_max_hold_seconds",
 }
 
 

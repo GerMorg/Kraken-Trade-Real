@@ -457,7 +457,7 @@ class Database:
                 "SELECT COUNT(*) FROM tactical_price_path WHERE symbol=? AND opened_at=?",
                 (symbol, opened),
             ).fetchone()[0]
-            if int(count or 0) > 2048 and int(count or 0) % 128 == 0:
+            if int(count or 0) > 2048:
                 con.execute(
                     """DELETE FROM tactical_price_path
                        WHERE point_id IN (

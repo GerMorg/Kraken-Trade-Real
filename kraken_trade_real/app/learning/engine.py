@@ -74,12 +74,25 @@ class LearningEngine:
             }
 
         adaptive_policy: dict[str, Any] = {"status": "OPTIMIZER_NOT_CONFIGURED"}
+        adaptive_exit_policy: dict[str, Any] = {"status": "EXIT_OPTIMIZER_NOT_CONFIGURED"}
         if self.optimizer is not None:
             try:
                 adaptive_policy = self.optimizer.optimize_tactical(now)
             except Exception as exc:
                 adaptive_policy = {"status": "OPTIMIZER_FAILED", "error": type(exc).__name__}
                 self.db.learning_event("ADAPTIVE_POLICY_FAILED", "strategy_tactical", adaptive_policy)
+            exit_optimizer = getattr(self.optimizer, "optimize_tactical_exits", None)
+            if callable(exit_optimizer):
+                try:
+                    adaptive_exit_policy = exit_optimizer(now)
+                except Exception as exc:
+                    adaptive_exit_policy = {
+                        "status": "EXIT_OPTIMIZER_FAILED",
+                        "error": type(exc).__name__,
+                    }
+                    self.db.learning_event(
+                        "TACTICAL_EXIT_POLICY_FAILED", "strategy_tactical", adaptive_exit_policy
+                    )
 
         last_run = self.db.one(
             "SELECT value FROM metadata WHERE key='learning_last_validation_at'"
@@ -99,6 +112,7 @@ class LearningEngine:
                         0, int(interval_seconds - (now - last_validation_at))
                     ),
                     "adaptive_policy": adaptive_policy,
+                    "adaptive_exit_policy": adaptive_exit_policy,
                 }
 
         # Chronological split: older rows select a scale, newest rows validate it.
@@ -267,6 +281,7 @@ class LearningEngine:
             "validation_method": "chronological_70_30_holdout",
             "candidate_version": candidate_version, "promoted": promoted,
             "adaptive_policy": adaptive_policy,
+            "adaptive_exit_policy": adaptive_exit_policy,
         }
         self.db.execute(
             "INSERT INTO metadata(key,value) VALUES('learning_last_validation_at',?) "
