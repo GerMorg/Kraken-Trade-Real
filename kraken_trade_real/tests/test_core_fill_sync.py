@@ -51,14 +51,23 @@ def test_spot_history_sync_paginates_durably_and_attributes_local_decision(
         decision_id="decision-1", symbol=instrument.symbol, at=now - 100,
     )
     pages = {
-        0: {"trades": {"T1": _trade("T1", "OLOCAL1", now - 50, "100")}, "count": 2},
-        1: {"trades": {"T2": _trade("T2", "OLOCAL1", now - 40, "101")}, "count": 2},
+        "": {
+            "trades": {"T1": _trade("T1", "OLOCAL1", now - 50, "100")},
+            "cursor": {"next": "CURSOR-2"},
+        },
+        "CURSOR-2": {
+            "trades": {"T2": _trade("T2", "OLOCAL1", now - 40, "101")},
+            "cursor": {},
+        },
     }
-    seen_offsets = []
+    seen_cursors = []
 
     def history(params):
-        seen_offsets.append((params["start"], params["end"], params["ofs"]))
-        return pages.get(params["ofs"], {"trades": {}, "count": 2})
+        assert params["with_cursor"] is True
+        assert params["limit"] == 1
+        assert params["trades"] is True
+        seen_cursors.append((params["start"], params["end"], params.get("cursor", "")))
+        return pages.get(params.get("cursor", ""), {"trades": {}, "cursor": {}})
 
     fake_gateway.spot_trades_history = history
     authority = TradingAuthority(config, fake_gateway, db, None, None, None)
@@ -66,14 +75,14 @@ def test_spot_history_sync_paginates_durably_and_attributes_local_decision(
     first = authority.sync_spot_fills([instrument], max_pages=1, page_size=1)
     assert first["status"] == "IN_PROGRESS"
     assert first["matched"] == 1
-    assert db.one("SELECT value FROM metadata WHERE key='core_spot_fill_sync_offset'")["value"] == "1"
+    assert db.one("SELECT value FROM metadata WHERE key='core_spot_fill_sync_cursor'")["value"] == "CURSOR-2"
 
     second = authority.sync_spot_fills([instrument], max_pages=1, page_size=1)
     assert second["status"] == "COMPLETE"
     assert second["inserted"] == 1
-    assert seen_offsets[0][0] == seen_offsets[1][0]
-    assert seen_offsets[0][1] == seen_offsets[1][1]
-    assert [entry[2] for entry in seen_offsets] == [0, 1]
+    assert seen_cursors[0][0] == seen_cursors[1][0]
+    assert seen_cursors[0][1] == seen_cursors[1][1]
+    assert [entry[2] for entry in seen_cursors] == ["", "CURSOR-2"]
 
     fills = db.query("SELECT * FROM fills ORDER BY created_at")
     assert [row["trade_id"] for row in fills] == ["T1", "T2"]
@@ -99,7 +108,7 @@ def test_spot_history_sync_ignores_untracked_manual_trades(
             "TMANUAL": _trade("TMANUAL", "OMANUAL", now - 30, "100"),
             "TLOCAL": _trade("TLOCAL", "OLOCAL2", now - 20, "102"),
         },
-        "count": 2,
+        "cursor": {},
     }
     authority = TradingAuthority(config, fake_gateway, db, None, None, None)
 
