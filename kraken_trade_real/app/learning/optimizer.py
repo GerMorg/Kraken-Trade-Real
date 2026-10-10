@@ -11,10 +11,9 @@ from app.config.adaptive import TACTICAL_DEFAULTS
 class AdaptiveParameterOptimizer:
     """Conservative online policy adaptation from realized Tactical trade outcomes.
 
-    This is a bounded controller, not a claim of counterfactual backtesting. It
-    only changes entry selectivity and allocation within a fixed safety envelope.
-    Exit/stop parameters remain at their validated defaults until the DB records
-    per-trade adverse/favourable excursion paths needed to evaluate them honestly.
+    Entry adaptation is a bounded realized-outcome controller. Exit adaptation is
+    a separate path replay and is promoted only after chronological holdout gates.
+    Neither controller can change the application's hard risk envelope.
     """
 
     MIN_TRADES = 60
@@ -561,7 +560,6 @@ class AdaptiveParameterOptimizer:
 
         baseline_train = [current_replay[item["key"]] for item in training]
         baseline_train_mean = sum(float(x["net_bps"]) for x in baseline_train) / len(baseline_train)
-        baseline_train_dd = self._exit_drawdown(baseline_train)
         selected: tuple[str, dict[str, Any], float, float, float] | None = None
         for label, candidate in variants:
             base_values, candidate_values, coverage = paired(training, candidate)
@@ -639,6 +637,8 @@ class AdaptiveParameterOptimizer:
                     "validation_improvement_bps": validation_improvement,
                     "training_coverage": training_coverage,
                     "validation_coverage": validation_coverage,
+                    "baseline_training_max_drawdown": self._exit_drawdown(baseline_train),
+                    "candidate_training_max_drawdown": training_dd,
                     "baseline_validation_mean_net_bps": base_mean,
                     "candidate_validation_mean_net_bps": candidate_mean,
                     "baseline_validation_max_drawdown": base_dd,
