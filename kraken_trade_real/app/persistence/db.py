@@ -51,7 +51,7 @@ class Database:
             ocols={row[1] for row in con.execute("PRAGMA table_info(orders)")}
             if "post_only" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN post_only INTEGER NOT NULL DEFAULT 0")
             if "submitted_at" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN submitted_at REAL")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','4')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','5')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
