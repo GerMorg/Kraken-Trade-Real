@@ -284,23 +284,33 @@ class PositionProfitProtection:
         # A confirmed successful OpenPositions read is the only signal allowed
         # to close old path episodes. An API failure returned above without erasing
         # either high-water marks or learning evidence.
-        for episode in self.db.query(
-            "SELECT episode_id,symbol,opened_at FROM core_exit_episodes WHERE closed_at IS NULL"
-        ):
-            episode_symbol = str(episode.get("symbol") or "")
-            if episode_symbol and episode_symbol not in active_symbols:
-                episode_id = str(episode.get("episode_id") or "")
-                opened_at = float(episode.get("opened_at") or 0.0)
-                close_reason = self._position_exit_close_reason(episode_symbol, opened_at)
-                if self.db.close_core_exit_episode(episode_id, time.time(), close_reason):
-                    self.audit.emit(
-                        "CORE_EXIT_EPISODE_CLOSED",
-                        "INFO",
-                        cycle_id=cycle_id,
-                        episode_id=episode_id,
-                        symbol=episode_symbol,
-                        close_reason=close_reason,
-                    )
+        try:
+            for episode in self.db.query(
+                "SELECT episode_id,symbol,opened_at FROM core_exit_episodes WHERE closed_at IS NULL"
+            ):
+                episode_symbol = str(episode.get("symbol") or "")
+                if episode_symbol and episode_symbol not in active_symbols:
+                    episode_id = str(episode.get("episode_id") or "")
+                    opened_at = float(episode.get("opened_at") or 0.0)
+                    close_reason = self._position_exit_close_reason(episode_symbol, opened_at)
+                    if self.db.close_core_exit_episode(episode_id, time.time(), close_reason):
+                        self.audit.emit(
+                            "CORE_EXIT_EPISODE_CLOSED",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            episode_id=episode_id,
+                            symbol=episode_symbol,
+                            close_reason=close_reason,
+                        )
+        except Exception as exc:
+            # Path-ledger failures must not prevent live protection from continuing.
+            self.audit.emit(
+                "CORE_EXIT_EPISODE_CLOSE_FAILED",
+                "WARNING",
+                cycle_id=cycle_id,
+                error_type=type(exc).__name__,
+                error=str(exc)[:240],
+            )
 
         rows = self.db.query(
             "SELECT symbol FROM position_profit_state"
@@ -323,9 +333,21 @@ class PositionProfitProtection:
         observation_time = float(portfolio.source_timestamp or time.time())
         for symbol in sorted(active_symbols):
             current_pct = _d(portfolio.position_pnl_pct.get(symbol))
-            episode = self._ensure_core_exit_episode(
-                portfolio, symbol, cycle_id, observation_time, current_pct
-            )
+            episode = None
+            try:
+                episode = self._ensure_core_exit_episode(
+                    portfolio, symbol, cycle_id, observation_time, current_pct
+                )
+            except Exception as exc:
+                # Exit-learning bookkeeping is isolated from live stop/profit logic.
+                self.audit.emit(
+                    "CORE_EXIT_EPISODE_SETUP_FAILED",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:240],
+                )
             row = self._state(symbol)
             previous_peak = _d(row.get("peak_profit_pct")) if row else D("0")
             peak = max(previous_peak, current_pct)
@@ -403,7 +425,16 @@ class PositionProfitProtection:
 
             # One path sample per cycle; the later/final reconciliation upserts
             # the same cycle row so a duplicate observation cannot bias training.
-            episode = self.db.active_core_exit_episode(symbol) or episode
+            try:
+                episode = self.db.active_core_exit_episode(symbol) or episode
+            except Exception as exc:
+                self.audit.emit(
+                    "CORE_EXIT_EPISODE_LOOKUP_FAILED",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    error_type=type(exc).__name__,
+                )
             if episode is not None:
                 final_state = self._state(symbol) or {}
                 basis = _d(portfolio.position_basis_eur.get(symbol))
