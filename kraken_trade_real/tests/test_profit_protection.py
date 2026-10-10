@@ -255,3 +255,29 @@ def test_config_preserves_custom_profit_protection_triplet(tmp_path):
     assert config.strategy_profit_lock_trigger_pct == 9.0
     assert config.strategy_profit_lock_floor_pct == 3.0
     assert config.profit_protection_legacy_defaults_overridden is False
+
+
+def test_core_position_loss_stop_forces_full_reduce_only_exit(db, config, instrument):
+    audit = FakeAudit()
+    manager = PositionProfitProtection(config, db, audit)
+    portfolio = portfolio_for(instrument, "-20", "-2.1")
+    manager.observe(portfolio, "cycle-stop-loss")
+
+    decision = manager.apply(
+        cycle_id="cycle-stop-loss",
+        instrument=instrument,
+        portfolio=portfolio,
+        decision=None,
+        long_signal=signal_for(instrument, Direction.LONG),
+        short_signal=signal_for(instrument, Direction.SHORT),
+        model_version="test",
+        config_hash="test",
+        min_cost_eur=D("0.5"),
+    )
+
+    assert decision is not None
+    assert decision.rationale["position_management_action"] == "STOP_LOSS_EXIT"
+    assert decision.target_position_eur == D("0")
+    assert decision.reduce_only is True
+    assert decision.execution_direction == Direction.LONG
+    assert any(event[0] == "POSITION_STOP_LOSS_TRIGGERED" for event in audit.events)

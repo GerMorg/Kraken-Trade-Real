@@ -76,11 +76,15 @@ class RiskEngine:
         volatility_limit = D("30")
         if risk_profile == "tactical":
             requested_position_limit = D(str(d.rationale.get("risk_position_limit_pct", "25")))
-            position_limit_pct = min(D("30"), max(D("0.1"), requested_position_limit))
+            position_limit_pct = min(D("100"), max(D("0.1"), requested_position_limit))
             volatility_limit = min(
                 D("60"),
                 max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
             )
+
+        net_limit_pct = D(str(self.config.risk_max_net_pct))
+        if risk_profile == "tactical":
+            net_limit_pct = max(net_limit_pct, position_limit_pct)
 
         risk_edge_threshold = D(str(self.config.strategy_min_edge_bps))
         economic_cost_ratio = D("1")
@@ -111,7 +115,7 @@ class RiskEngine:
             "drawdown": valid_reduction or p.drawdown_pct <= D(str(self.config.risk_max_drawdown_pct)),
             "position_limit": valid_reduction or pos_pct <= position_limit_pct,
             "gross_limit": valid_reduction or gross_pct <= D(str(self.config.risk_max_gross_pct)),
-            "net_limit": valid_reduction or net_pct <= D(str(self.config.risk_max_net_pct)),
+            "net_limit": valid_reduction or net_pct <= net_limit_pct,
             "open_positions_limit": (
                 not is_new_position
                 or len(p.positions) < self.config.risk_max_open_positions

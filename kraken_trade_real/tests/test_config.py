@@ -53,3 +53,16 @@ def test_legacy_generic_margin_fee_defaults_are_migrated_to_conservative_fallbac
     cfg = Config.load(str(path))
     assert cfg.execution_margin_open_fee_bps == 2.1
     assert cfg.execution_margin_rollover_fee_bps == 2.1
+
+
+def test_legacy_tactical_position_limit_migrates_only_untouched_default(tmp_path):
+    path = tmp_path / "options.json"
+    path.write_text('{"tactical_position_limit_pct":25.0}', encoding="utf-8")
+    cfg = Config.load(str(path))
+    assert cfg.tactical_position_limit_pct == 80.0
+    assert cfg.tactical_position_limit_legacy_default_overridden is True
+
+    path.write_text('{"tactical_position_limit_pct":15.0}', encoding="utf-8")
+    cfg = Config.load(str(path))
+    assert cfg.tactical_position_limit_pct == 15.0
+    assert cfg.tactical_position_limit_legacy_default_overridden is False
