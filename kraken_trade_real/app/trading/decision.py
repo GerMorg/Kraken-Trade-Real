@@ -290,10 +290,10 @@ class DecisionEngine:
         )
         force_flatten = False
         edge_tier = "STANDARD"
-        edge_threshold = D(str(self.config.strategy_min_edge_bps))
+        edge_threshold = policy["strategy_min_edge_bps"]
         held_signal = long_signal if current > 0 else short_signal
         held_needs_exit = current != 0 and self._held_position_needs_exit(
-            held_signal, scale
+            held_signal, scale, model_parameters
         )
         # A stale held-position signal must take priority over position-size
         # targeting. Otherwise the sizing branch can keep an unintended residual.

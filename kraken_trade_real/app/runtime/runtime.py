@@ -914,8 +914,45 @@ class TradingRuntime:
 
             stage="DECISIONS"
             self._watchdog_arm(cycle_id, stage)
-            model_version=self.registry.active()
-            model_parameters=self.registry.parameters(model_version)
+            model_version=self.registry.active("decision")
+            model_parameters=self.registry.parameters(model_version, family="decision")
+            strategy_policy_version=self.registry.active("strategy_policy")
+            strategy_policy_parameters=self.registry.parameters(
+                strategy_policy_version, family="strategy_policy"
+            )
+            model_parameters.update({
+                key: value for key, value in strategy_policy_parameters.items()
+                if key in {
+                    "strategy_min_edge_bps",
+                    "strategy_min_confidence",
+                    "strategy_adaptive_cost_ratio",
+                }
+            })
+            model_parameters["_strategy_policy_version"]=strategy_policy_version
+            probability_model_version=self.registry.active("probability_calibration")
+            probability_parameters=self.registry.parameters(
+                probability_model_version, family="probability_calibration"
+            )
+            probability_scale=float(probability_parameters.get("probability_scale", 1.0))
+            self.audit.emit(
+                "CYCLE_MODEL_POLICY_ACTIVE",
+                "INFO",
+                cycle_id=cycle_id,
+                decision_model_version=model_version,
+                strategy_policy_version=strategy_policy_version,
+                strategy_policy={
+                    key: model_parameters.get(key)
+                    for key in (
+                        "strategy_min_edge_bps",
+                        "strategy_min_confidence",
+                        "strategy_adaptive_cost_ratio",
+                    )
+                },
+                probability_calibration_version=probability_model_version,
+                probability_scale=probability_scale,
+                auto_calibration_enabled=bool(getattr(self.config, "learning_enabled", True))
+                and bool(getattr(self.config, "learning_auto_calibration", True)),
+            )
             placed=0
             decisions_count=0
             strategy_rejected=0
@@ -1058,7 +1095,6 @@ class TradingRuntime:
                     reason="FX_RATE_UNAVAILABLE"
                     no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
                     strategy_rejected+=1
-                    self.learning.record_cycle(cycle_id,0,0,[f"{instrument.symbol}:{reason}"])
                     self.audit.emit(
                         "CYCLE_DECISION_REJECTED",
                         "WARNING",
@@ -1067,6 +1103,25 @@ class TradingRuntime:
                         reason=reason,
                     )
                     continue
+                # Record both directions before strategy gates. This removes the
+                # selection bias in the old learner, which only learned from orders
+                # that had already passed the current thresholds.
+                self.db.save_signal_observation(
+                    instrument,
+                    long_signal,
+                    snap.price,
+                    policy_version=strategy_policy_version,
+                    captured_at=time.time(),
+                    horizon_seconds=900,
+                )
+                self.db.save_signal_observation(
+                    instrument,
+                    short_signal,
+                    snap.price,
+                    policy_version=strategy_policy_version,
+                    captured_at=time.time(),
+                    horizon_seconds=900,
+                )
                 decision=self.decisions.choose(
                     instrument,
                     long_signal,
@@ -1311,6 +1366,7 @@ class TradingRuntime:
                     prediction_id,
                     decision,
                     float(decision.signal.confidence),
+                    probability_scale=probability_scale,
                 )
                 self.audit.emit(
                     "PREDICTION_CREATED",
@@ -1322,7 +1378,7 @@ class TradingRuntime:
                     horizon="15m",
                     probability=str(stored_probability),
                     raw_confidence=str(decision.signal.confidence),
-                    probability_source="CAPPED_RULE_CONFIDENCE_SCORE",
+                    probability_source="OUT_OF_SAMPLE_PROBABILITY_CALIBRATION",
                     predicted_direction=decision.signal.direction.value,
                     expected_cost_bps=str(decision.signal.expected_cost_bps),
                     model_version=decision.model_version,

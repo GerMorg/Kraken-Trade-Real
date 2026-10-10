@@ -69,7 +69,30 @@ def build_runtime() -> TradingRuntime:
     calibration = CalibrationEngine()
     registry = ModelRegistry(db)
     research = ResearchEngine(db)
-    learning = LearningEngine(db, calibration, registry, research, config.learning_auto_promotion)
+    learning = LearningEngine(
+        db,
+        calibration,
+        registry,
+        research,
+        auto_promotion_enabled=config.learning_auto_promotion,
+        auto_calibration_enabled=(
+            config.learning_enabled and config.learning_auto_calibration
+        ),
+        validation_interval_hours=config.learning_validation_interval_hours,
+        lookback_days=config.learning_lookback_days,
+        policy_defaults={
+            "strategy_min_edge_bps": config.strategy_min_edge_bps,
+            "strategy_min_confidence": config.strategy_min_confidence,
+            "strategy_adaptive_edge_floor_bps": config.strategy_adaptive_edge_floor_bps,
+            "strategy_adaptive_min_confidence": config.strategy_adaptive_min_confidence,
+            "strategy_adaptive_cost_ratio": config.strategy_adaptive_cost_ratio,
+            "strategy_adaptive_edge_enabled": config.strategy_adaptive_edge_enabled,
+            "risk_max_position_pct": config.risk_max_position_pct,
+            "risk_max_gross_pct": config.risk_max_gross_pct,
+            "risk_max_net_pct": config.risk_max_net_pct,
+            "risk_max_open_positions": config.risk_max_open_positions,
+        },
+    )
     sensors = SensorPublisher(config.sensors_enabled, os.getenv("SUPERVISOR_TOKEN"))
     tax = AustrianTaxLedger(
         db,
