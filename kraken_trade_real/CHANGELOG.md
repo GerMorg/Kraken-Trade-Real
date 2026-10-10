@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.48
+
+- Record a cost snapshot and execution context with each closed Tactical LIVE trade so path-based comparisons account for fees, spread, slippage, safety buffer and estimated margin financing.
+- Add a conservative path-replay exit optimizer for stop-loss, take-profit activation, trailing trigger/stop and maximum hold. It requires at least 60 supported closed episodes, baseline replay alignment, at least 85% candidate coverage, a chronological 70/30 split, positive holdout net expectancy and bounded drawdown degradation before promotion.
+- Enable versioned AdaptiveConfig management of the five Tactical exit parameters and hide them from HA options/schema; stale values in old options.json files cannot override the learned policy.
+- Add registry-side hard bounds and independent holdout checks. Daily loss, leverage, exposure caps, maximum position/capital controls and other hard safety boundaries remain outside the optimizer.
+- Do not fabricate entry-time observations for recovered legacy positions; their replay path begins when actual post-upgrade prices are observed.
+- Bump app/package/container version and Kraken API User-Agent to 0.1.48.
+
 ## 0.1.47
 
 - Persist timestamped Tactical price-path observations per position (including direction, PnL, peak/trough and state) for future path-aware exit-policy evaluation.
