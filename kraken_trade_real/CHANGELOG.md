@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.44
+
+- Derive daily P/L from persisted UTC-day equity baselines rather than Kraken TradeBalance's non-daily P/L field; avoid double-counting open-position P/L.
+- Include Kraken Spot Margin used margin in portfolio-wide margin utilization and budget checks.
+- Treat Kraken terminal closed partial fills as terminal while preserving cumulative execution quantities for reconciliation.
+- Track Tactical cumulative fills durably, apply incremental entry/exit fills once only, size positions to actual entry fills, and avoid competing orders while a Tactical order remains active.
+- Add regression coverage for daily P/L, Spot Margin utilization and terminal partial/zero-fill order states.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.44.
+
 ## 0.1.43
 
 - Bound forecast scoring to fresh market snapshots; expired forecasts without a valid sampling window become explicitly `UNSCORABLE` instead of remaining `OPEN` indefinitely.
