@@ -1812,7 +1812,6 @@ class TacticalTrader:
                     position.opened_at, position.entry_client_order_id,
                     position.setup_score, position.state,
                 )
-                self._record_entry_price_point(position)
             except Exception:
                 self.db.delete_tactical_position(str(row.get("symbol", "")))
 
@@ -1986,7 +1985,6 @@ class TacticalTrader:
             position.notional_eur, position.leverage, position.opened_at,
             position.entry_client_order_id, position.setup_score, position.state,
         )
-        self._record_entry_price_point(position)
 
     def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:
         self._last_signal_reason = reason
