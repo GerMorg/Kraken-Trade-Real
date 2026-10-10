@@ -90,3 +90,55 @@ def test_learning_validation_interval_is_persisted(db):
     )
     result = engine.process_feedback(now=1_000_100)
     assert result["status"] == "VALIDATION_INTERVAL_NOT_ELAPSED"
+
+
+def test_learning_promotes_validated_regime_specific_scales(db):
+    from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
+
+    registry = ModelRegistry(db)
+    now = 1_800_000_000.0
+    prediction_rows = []
+    outcome_rows = []
+    for index in range(150):
+        created_at = now - (300 - index) * 60
+        for regime, probability, success_rate, success_period in (
+            ("LOW_QUALITY", 0.65, 3, 10),
+            ("HIGH_QUALITY", 0.85, 19, 20),
+        ):
+            prediction_id = f"{regime}-{index}"
+            success = int(index % success_period < success_rate)
+            prediction_rows.append((
+                prediction_id, created_at, prediction_id, "BTC/EUR", "1h",
+                probability, "50", "baseline-v1", "features", "SETTLED",
+                "LONG", regime, "10", probability,
+            ))
+            outcome_rows.append((
+                prediction_id, created_at + 30, "25" if success else "-25",
+                success, "0", "{}",
+            ))
+    db.executemany(
+        """INSERT INTO predictions(
+            prediction_id,created_at,decision_id,symbol,horizon,probability,
+            expected_return_bps,model_version,feature_hash,outcome_status,
+            predicted_direction,regime,expected_cost_bps,raw_confidence
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        prediction_rows,
+    )
+    db.executemany(
+        """INSERT INTO prediction_outcomes(
+            prediction_id,measured_at,realized_return_bps,success,error_bps,detail_json
+        ) VALUES(?,?,?,?,?,?)""",
+        outcome_rows,
+    )
+    engine = LearningEngine(
+        db, CalibrationEngine(), registry, ResearchEngine(db),
+        auto_promotion_enabled=True, enabled=True, auto_calibration_enabled=True,
+    )
+    result = engine.process_feedback(now=now)
+    assert result["promoted"] is True, {key: result.get(key) for key in ("status", "best_scale", "regime_scales", "improvement", "brier", "candidate_brier", "ece", "candidate_ece", "candidate_version", "promoted")}
+    assert "LOW_QUALITY" in result["regime_scales"]
+    assert "HIGH_QUALITY" in result["regime_scales"]
+    parameters = registry.parameters(registry.active(), family="decision")
+    assert parameters["confidence_scale_by_regime"]["LOW_QUALITY"] < 1.0
+    assert parameters["confidence_scale_by_regime"]["HIGH_QUALITY"] > 1.0
+

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from decimal import Decimal
 
 from app.config.adaptive import AdaptiveConfig
 from app.config.settings import Config
 from app.learning.optimizer import AdaptiveParameterOptimizer
 from app.learning.registry import ModelRegistry
+from app.trading.decision import DecisionEngine
 
 
 class FakeRegistry:
@@ -38,6 +40,17 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.strategy_min_edge_bps == 33.0
     assert config.as_dict()["strategy_min_edge_bps"] == 33.0
 
+
+
+def test_decision_engine_uses_regime_specific_confidence_scale():
+    engine = DecisionEngine(SimpleNamespace())
+    params = {
+        "confidence_scale": 1.1,
+        "confidence_scale_by_regime": {"TRENDING": 0.8, "RANGING": 1.2},
+    }
+    assert engine._confidence_scale(params, "TRENDING") == Decimal("0.8")
+    assert engine._confidence_scale(params, "RANGING") == Decimal("1.2")
+    assert engine._confidence_scale(params, "UNKNOWN") == Decimal("1.1")
 
 def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     path = tmp_path / "options.json"

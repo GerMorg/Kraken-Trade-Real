@@ -15,9 +15,15 @@ class DecisionEngine:
     def __init__(self, config: Any) -> None:
         self.config = config
 
-    def _confidence_scale(self, model_parameters: dict[str, Any] | None) -> D:
+    def _confidence_scale(
+        self, model_parameters: dict[str, Any] | None, regime: str | None = None
+    ) -> D:
         parameters = model_parameters or {}
-        scale = D(str(parameters.get("confidence_scale", "1")))
+        scale_value = parameters.get("confidence_scale", "1")
+        by_regime = parameters.get("confidence_scale_by_regime", {})
+        if regime and isinstance(by_regime, dict) and regime in by_regime:
+            scale_value = by_regime[regime]
+        scale = D(str(scale_value))
         return max(D("0.5"), min(D("1.5"), scale))
 
     def _target_position(self, equity: D, confidence: D, signal_direction: Direction) -> D:
@@ -70,12 +76,13 @@ class DecisionEngine:
         instrument: Instrument,
         long_signal: Signal,
         short_signal: Signal,
-        scale: D,
+        model_parameters: dict[str, Any] | None,
         *,
         current: D,
     ) -> list[tuple[Signal, D, str]]:
         result: list[tuple[Signal, D, str]] = []
         for signal in (long_signal, short_signal):
+            scale = self._confidence_scale(model_parameters, signal.regime)
             calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
             if calibrated < D(str(self.config.strategy_min_confidence)):
                 continue
@@ -159,20 +166,21 @@ class DecisionEngine:
         model_parameters: dict[str, Any] | None = None,
         min_cost_eur: D | None = None,
     ) -> str:
-        scale = self._confidence_scale(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
         if current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if self._held_position_needs_exit(held_signal, scale):
+            held_scale = self._confidence_scale(model_parameters, held_signal.regime)
+            if self._held_position_needs_exit(held_signal, held_scale):
                 return "REBALANCE_EXIT"
 
         candidates = self._candidate_signals(
-            instrument, long_signal, short_signal, scale, current=current
+            instrument, long_signal, short_signal, model_parameters, current=current
         )
         if not candidates and current != 0:
             held_signal = long_signal if current > 0 else short_signal
-            if held_signal.confidence * scale < D(str(self.config.strategy_min_confidence)):
+            held_scale = self._confidence_scale(model_parameters, held_signal.regime)
+            if held_signal.confidence * held_scale < D(str(self.config.strategy_min_confidence)):
                 return "MIN_CONFIDENCE"
             return "TARGET_BALANCED"
 
@@ -184,7 +192,8 @@ class DecisionEngine:
                 if signal.net_edge_bps >= standard_edge
             ]
             if standard_signals and not any(
-                signal.confidence * scale >= standard_conf for signal in standard_signals
+                signal.confidence * self._confidence_scale(model_parameters, signal.regime) >= standard_conf
+                for signal in standard_signals
             ):
                 return "MIN_CONFIDENCE"
             raw_directional = [
@@ -199,7 +208,7 @@ class DecisionEngine:
                 return "ECONOMIC_EDGE_GUARD"
             if any(
                 signal.net_edge_bps >= standard_edge
-                and signal.confidence * scale >= standard_conf
+                and signal.confidence * self._confidence_scale(model_parameters, signal.regime) >= standard_conf
                 for signal in (long_signal, short_signal)
             ):
                 return "INSTRUMENT_DIRECTION"
@@ -215,7 +224,8 @@ class DecisionEngine:
 
         best = max(candidates, key=lambda item: (item[0].net_edge_bps, item[0].confidence))
         signal, _, _ = best
-        calibrated_confidence = max(D("0"), min(D("1"), signal.confidence * scale))
+        signal_scale = self._confidence_scale(model_parameters, signal.regime)
+        calibrated_confidence = max(D("0"), min(D("1"), signal.confidence * signal_scale))
         plan = self._trade_plan(
             instrument, portfolio, signal, calibrated_confidence, effective_min_cost
         )
@@ -240,19 +250,19 @@ class DecisionEngine:
         model_parameters: dict[str, Any] | None = None,
         min_cost_eur: D | None = None,
     ) -> Decision | None:
-        scale = self._confidence_scale(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
 
         candidates = self._candidate_signals(
-            instrument, long_signal, short_signal, scale, current=current
+            instrument, long_signal, short_signal, model_parameters, current=current
         )
         force_flatten = False
         edge_tier = "STANDARD"
         edge_threshold = D(str(self.config.strategy_min_edge_bps))
         held_signal = long_signal if current > 0 else short_signal
+        held_scale = self._confidence_scale(model_parameters, held_signal.regime)
         held_needs_exit = current != 0 and self._held_position_needs_exit(
-            held_signal, scale
+            held_signal, held_scale
         )
         # A stale held-position signal must take priority over position-size
         # targeting. Otherwise the sizing branch can keep an unintended residual.
@@ -270,8 +280,9 @@ class DecisionEngine:
         else:
             return None
 
+        signal_scale = self._confidence_scale(model_parameters, signal.regime)
         calibrated_confidence = max(
-            D("0.0"), min(D("1.0"), signal.confidence * scale)
+            D("0.0"), min(D("1.0"), signal.confidence * signal_scale)
         )
         plan = self._trade_plan(
             instrument,

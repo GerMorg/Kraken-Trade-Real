@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.46
+
+- Extend forecast calibration with regime-specific confidence scales trained on chronological training windows and accepted only when the combined holdout improves Brier score while respecting ECE and absolute-quality gates.
+- Apply the active regime-specific scale consistently in core signal selection, position sizing, held-position quality checks and rejection diagnostics.
+- Keep regime scales in versioned model parameters; no additional HA tuning options are introduced.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.46.
+
 ## 0.1.45
 
 - Add a versioned adaptive configuration overlay so selected Tactical entry filters and allocation are loaded from the active policy model, not Home Assistant options.
