@@ -571,7 +571,7 @@ def test_tactical_keeps_winner_running_after_take_profit_threshold():
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
         quantity=D("0.1"), entry_price=D("100"), peak_price=D("102"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
-        opened_at=900.0, entry_client_order_id="test-order", setup_score=D("200"),
+        opened_at=0.0, entry_client_order_id="test-order", setup_score=D("200"),
         state="OPEN",
     )
     trader._positions[position.symbol] = position
@@ -579,7 +579,41 @@ def test_tactical_keeps_winner_running_after_take_profit_threshold():
     trader._opposite_signal = lambda position: None
     exits = []
     trader._exit = lambda *args: exits.append(args)
-    trader._manage_positions(1000.0)
+    trader._manage_positions(5000.0)
     assert exits == []
     assert position.state == "TRAILING"
     assert any(event[0] == "TACTICAL_TREND_FOLLOWING_ARMED" for event in audit.events)
+
+
+def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
+    audit = DummyAudit()
+    trader = TacticalTrader(
+        cfg(), DummyDB(), audit, None, DummyWS(), None, None, None, None,
+    )
+    inst = instrument()
+    trader._candidates[inst.symbol] = inst
+    trader._portfolio = PortfolioState(
+        equity_eur=D("50"), cash_eur=D("50"), positions={},
+        gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+        unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"), open_orders=0, source_timestamp=5000.0,
+    )
+    position = TacticalPosition(
+        symbol=inst.symbol, venue="spot", direction=Direction.LONG,
+        quantity=D("0.1"), entry_price=D("100"), peak_price=D("104"),
+        trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
+        opened_at=0.0, entry_client_order_id="test-order", setup_score=D("250"),
+        state="OPEN",
+    )
+    trader._positions[position.symbol] = position
+    trader._fresh_position_state = lambda position, now: {"price": D("103.2")}
+    trader._opposite_signal = lambda position: None
+    exits = []
+    trader._exit = lambda *args: exits.append(args)
+    trader._manage_positions(5000.0)
+    assert len(exits) == 1
+    assert exits[0][2] == "TRAILING_STOP"
+    armed = [event for event in audit.events if event[0] == "TACTICAL_TREND_FOLLOWING_ARMED"]
+    assert armed
+    assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("245")
+    assert D(armed[0][2]["profit_floor_bps"]) == D("270")
