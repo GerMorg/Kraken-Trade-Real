@@ -192,3 +192,61 @@ def test_learned_policy_weights_and_thresholds_apply_without_legacy_confidence_s
     assert decision.target_notional_eur == Decimal("6.00")
     assert decision.rationale["strategy_policy_version"] == "candidate-policy-test"
     assert decision.rationale["legacy_confidence_scale_ignored"] is True
+
+
+def test_offsetting_wallet_inventory_does_not_hide_margin_position_for_decisions(
+    config, instrument
+):
+    portfolio = PortfolioState(
+        equity_eur=Decimal("50"),
+        cash_eur=Decimal("42"),
+        positions={instrument.symbol: Decimal("0")},
+        gross_eur=Decimal("16"),
+        net_eur=Decimal("0"),
+        spot_wallet_positions_eur={instrument.symbol: Decimal("8")},
+        spot_margin_position_eur={instrument.symbol: Decimal("-8")},
+        spot_margin_position_symbols=(instrument.symbol,),
+    )
+    long_signal = _signal(instrument.symbol, Direction.LONG, 10, 40, "0.9")
+    short_signal = _signal(instrument.symbol, Direction.SHORT, 0, 50, "0.1")
+
+    decision = DecisionEngine(config).choose(
+        instrument, long_signal, short_signal, portfolio,
+        "model-test", "config-test", {}, Decimal("0.5"),
+    )
+
+    assert decision is not None
+    assert decision.current_position_eur == Decimal("-8")
+    assert decision.target_position_eur == Decimal("0")
+    assert decision.reduce_only is True
+    assert decision.execution_direction == Direction.LONG
+
+
+def test_position_limit_counts_wallet_and_margin_legs_together(config, instrument):
+    portfolio = PortfolioState(
+        equity_eur=Decimal("50"),
+        cash_eur=Decimal("45"),
+        positions={instrument.symbol: Decimal("9")},
+        gross_eur=Decimal("9"),
+        net_eur=Decimal("9"),
+        spot_wallet_positions_eur={instrument.symbol: Decimal("5")},
+        spot_margin_position_eur={instrument.symbol: Decimal("4")},
+        spot_margin_position_symbols=(instrument.symbol,),
+    )
+    signal = _signal(instrument.symbol, Direction.LONG, 150, 10, "0.9")
+    from app.domain.models import Decision
+
+    decision = Decision(
+        "decision-symbol-cap", instrument, signal, Decimal("1"), Decimal("1"), {},
+        "test", "test-model", "", Decimal("4"), Decimal("5"), Direction.LONG, False,
+    )
+    market = MarketSnapshot(
+        instrument.symbol, Decimal("60005"), Decimal("60000"), Decimal("60010"),
+        Decimal("1000"), 1.0, tuple(Decimal("60000") for _ in range(40)),
+    )
+    result = RiskEngine(config, object(), object(), object()).evaluate(
+        decision, portfolio, market
+    )
+
+    assert result.allowed is False
+    assert result.checks["position_limit"] is False
