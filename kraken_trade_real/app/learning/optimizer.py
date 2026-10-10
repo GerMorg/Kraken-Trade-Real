@@ -48,6 +48,27 @@ class AdaptiveParameterOptimizer:
                 "minimum_samples": self.MIN_TRADES,
             }
 
+        last_evaluated = self.db.one(
+            "SELECT value FROM metadata WHERE key='tactical_policy_last_evaluated_closed_at'"
+        )
+        if last_evaluated:
+            try:
+                last_evaluated_at = float(last_evaluated["value"])
+            except (TypeError, ValueError):
+                last_evaluated_at = 0.0
+            new_trade_row = self.db.one(
+                "SELECT COUNT(*) AS n FROM tactical_trades WHERE closed_at > ?",
+                (last_evaluated_at,),
+            )
+            new_trade_count = int(new_trade_row["n"]) if new_trade_row else 0
+            if new_trade_count < 10:
+                return {
+                    "status": "WAITING_FOR_NEW_TRADE_DATA",
+                    "samples": len(rows),
+                    "new_trades_since_last_evaluation": new_trade_count,
+                    "minimum_new_trades": 10,
+                }
+
         recent = rows[-self.WINDOW:]
         previous = rows[-2 * self.WINDOW:-self.WINDOW]
         if len(previous) < self.WINDOW:
@@ -56,6 +77,14 @@ class AdaptiveParameterOptimizer:
                 "samples": len(rows),
                 "validation_samples": len(recent),
             }
+
+        def mark_evaluated() -> None:
+            latest_closed_at = float(rows[-1].get("closed_at") or now)
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('tactical_policy_last_evaluated_closed_at',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(latest_closed_at),),
+            )
 
         def stats(items: list[dict[str, Any]]) -> dict[str, float]:
             pnl = [self._number(row.get("net_pnl_eur")) for row in items]
@@ -139,6 +168,7 @@ class AdaptiveParameterOptimizer:
                 "recent": after,
                 "active_version": active_version,
             }
+            mark_evaluated()
             self.db.learning_event("ADAPTIVE_POLICY_EVALUATED", active_version, result)
             return result
 
@@ -181,5 +211,6 @@ class AdaptiveParameterOptimizer:
             "candidate_version": version,
             "promoted": promoted,
         }
+        mark_evaluated()
         self.db.learning_event("ADAPTIVE_POLICY_EVALUATED", version, result)
         return result
