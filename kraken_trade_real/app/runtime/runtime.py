@@ -147,6 +147,17 @@ class TradingRuntime:
         self.instruments: list[Any]=[]
         self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
         self.profit_protection = PositionProfitProtection(config, db, audit)
+        if getattr(config, "profit_protection_legacy_defaults_overridden", False):
+            self.audit.emit(
+                "PROFIT_PROTECTION_LEGACY_DEFAULTS_OVERRIDDEN",
+                "WARNING",
+                previous_partial_profit_trigger_pct="3.5",
+                previous_profit_lock_trigger_pct="5.0",
+                previous_profit_lock_floor_pct="2.0",
+                active_partial_profit_trigger_pct=str(config.strategy_partial_profit_trigger_pct),
+                active_profit_lock_trigger_pct=str(config.strategy_profit_lock_trigger_pct),
+                active_profit_lock_floor_pct=str(config.strategy_profit_lock_floor_pct),
+            )
         self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:
