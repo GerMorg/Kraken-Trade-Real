@@ -253,3 +253,26 @@ def test_position_limit_counts_wallet_and_margin_legs_together(config, instrumen
 
     assert result.allowed is False
     assert result.checks["position_limit"] is False
+
+
+def test_optimizer_requires_positive_median_and_profit_factor_for_promotion():
+    optimizer = StrategyPolicyOptimizer()
+    params = {
+        **DEFAULT_WEIGHTS,
+        **DEFAULT_SHAPE,
+        "strategy_sizing_confidence_power": 1.0,
+        "strategy_min_edge_bps": 25.0,
+        "strategy_min_confidence": 0.58,
+        "strategy_adaptive_edge_floor_bps": 15.0,
+        "strategy_adaptive_min_confidence": 0.75,
+        "strategy_adaptive_cost_ratio": 1.1,
+    }
+    # Two independent buckets don't meet training requirements; this test documents
+    # that the required time-bucket guard is stricter than raw instrument counts.
+    rows = [
+        _row(bucket, "LONG", net_return=100 if bucket % 2 else -50, trend=1.0)
+        for bucket in range(90)
+    ]
+    result = optimizer.fit(rows, params, params)
+    assert result["status"] == "NO_VALIDATED_IMPROVEMENT"
+    assert result["promoted"] is False

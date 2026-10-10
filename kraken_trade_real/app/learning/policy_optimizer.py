@@ -24,6 +24,7 @@ SHAPE_KEYS = (
     "signal_confidence_volatility_scale",
 )
 POLICY_KEYS = (
+    "strategy_sizing_confidence_power",
     "strategy_min_edge_bps",
     "strategy_min_confidence",
     "strategy_adaptive_edge_floor_bps",
@@ -64,7 +65,7 @@ class StrategyPolicyOptimizer:
     """
 
     MIN_GROUPS = 300
-    MIN_TIME_BUCKETS = 20
+    MIN_TIME_BUCKETS = 80
     MIN_TRAIN_TRADES = 30
     MIN_EVALUATION_TRADES = 20
     MIN_VALIDATION_IMPROVEMENT_BPS = 1.0
@@ -84,6 +85,7 @@ class StrategyPolicyOptimizer:
             "strategy_adaptive_cost_ratio": _number(
                 getattr(config, "strategy_adaptive_cost_ratio", 1.10), 1.10
             ),
+            "strategy_sizing_confidence_power": 1.0,
         }
         values.update(DEFAULT_WEIGHTS)
         values.update(DEFAULT_SHAPE)
@@ -115,6 +117,11 @@ class StrategyPolicyOptimizer:
             normalized[key] = min(
                 high, max(low, _number(source.get(key), base))
             )
+        normalized["strategy_sizing_confidence_power"] = min(
+            2.0, max(0.5, _number(
+                source.get("strategy_sizing_confidence_power"), 1.0
+            ))
+        )
         normalized["strategy_min_edge_bps"] = min(
             100.0, max(5.0, _number(source.get("strategy_min_edge_bps"), 25.0))
         )
@@ -216,6 +223,7 @@ class StrategyPolicyOptimizer:
         cls, groups: list[list[dict[str, Any]]], profile: dict[str, float]
     ) -> dict[str, float]:
         selected_outcomes: list[float] = []
+        exposure_weighted_outcomes: list[float] = []
         for group in groups:
             eligible: list[tuple[float, float, dict[str, Any]]] = []
             for row in group:
@@ -241,8 +249,13 @@ class StrategyPolicyOptimizer:
             if not eligible:
                 continue
             # Match live selection: choose the strongest estimated edge, then confidence.
-            chosen = max(eligible, key=lambda item: (item[0], item[1]))[2]
-            selected_outcomes.append(_number(chosen.get("net_return_bps")))
+            _, confidence, chosen = max(eligible, key=lambda item: (item[0], item[1]))
+            outcome = _number(chosen.get("net_return_bps"))
+            size_factor = max(0.25, min(1.0, confidence)) ** profile[
+                "strategy_sizing_confidence_power"
+            ]
+            selected_outcomes.append(outcome)
+            exposure_weighted_outcomes.append(outcome * size_factor)
 
         count = len(selected_outcomes)
         if not count:
@@ -250,9 +263,14 @@ class StrategyPolicyOptimizer:
                 "samples": 0.0, "mean_net_bps": -1_000_000.0,
                 "median_net_bps": -1_000_000.0, "hit_rate": 0.0,
                 "total_net_bps": 0.0, "profit_factor": 0.0,
+                "mean_exposure_weighted_net_bps": -1_000_000.0,
+                "median_exposure_weighted_net_bps": -1_000_000.0,
+                "exposure_weighted_total_net_bps": 0.0,
             }
         positive = sum(value for value in selected_outcomes if value > 0)
         negative = -sum(value for value in selected_outcomes if value < 0)
+        weighted_positive = sum(value for value in exposure_weighted_outcomes if value > 0)
+        weighted_negative = -sum(value for value in exposure_weighted_outcomes if value < 0)
         return {
             "samples": float(count),
             "mean_net_bps": sum(selected_outcomes) / count,
@@ -260,6 +278,13 @@ class StrategyPolicyOptimizer:
             "hit_rate": sum(value > 0 for value in selected_outcomes) / count,
             "total_net_bps": sum(selected_outcomes),
             "profit_factor": positive / negative if negative > 0 else (999.0 if positive > 0 else 0.0),
+            "mean_exposure_weighted_net_bps": sum(exposure_weighted_outcomes) / count,
+            "median_exposure_weighted_net_bps": float(median(exposure_weighted_outcomes)),
+            "exposure_weighted_total_net_bps": sum(exposure_weighted_outcomes),
+            "exposure_weighted_profit_factor": (
+                weighted_positive / weighted_negative
+                if weighted_negative > 0 else (999.0 if weighted_positive > 0 else 0.0)
+            ),
         }
 
     @staticmethod
@@ -283,6 +308,8 @@ class StrategyPolicyOptimizer:
                 step, low, high = 10.0, 20.0, 150.0
             else:
                 step, low, high = 20.0, 50.0, 300.0
+        elif key == "strategy_sizing_confidence_power":
+            step, low, high = 0.25, 0.5, 2.0
         elif key in {"strategy_min_edge_bps", "strategy_adaptive_edge_floor_bps"}:
             step = 5.0
             low, high = (5.0, 100.0) if key == "strategy_min_edge_bps" else (3.0, 50.0)
@@ -337,7 +364,7 @@ class StrategyPolicyOptimizer:
             best_profile = dict(profile)
             best_score = self.score(train, profile)
             best_rank = (
-                best_score["mean_net_bps"]
+                best_score["mean_exposure_weighted_net_bps"]
                 if best_score["samples"] >= minimum_train_trades
                 else -1_000_000.0
             )
@@ -346,7 +373,7 @@ class StrategyPolicyOptimizer:
                 candidate[key] = candidate_value
                 measured = self.score(train, candidate)
                 rank = (
-                    measured["mean_net_bps"]
+                    measured["mean_exposure_weighted_net_bps"]
                     if measured["samples"] >= minimum_train_trades
                     else -1_000_000.0
                 )
@@ -365,15 +392,25 @@ class StrategyPolicyOptimizer:
             and candidate_test["samples"] >= self.MIN_EVALUATION_TRADES
         )
         validation_improvement = (
-            candidate_validation["mean_net_bps"] - baseline_validation["mean_net_bps"]
+            candidate_validation["mean_exposure_weighted_net_bps"]
+            - baseline_validation["mean_exposure_weighted_net_bps"]
         )
-        test_improvement = candidate_test["mean_net_bps"] - baseline_test["mean_net_bps"]
+        test_improvement = (
+            candidate_test["mean_exposure_weighted_net_bps"]
+            - baseline_test["mean_exposure_weighted_net_bps"]
+        )
         changed = any(abs(profile[key] - baseline[key]) > 1e-9 for key in profile)
         promoted = bool(
             changed
             and stable_samples
             and candidate_validation["mean_net_bps"] > 0
             and candidate_test["mean_net_bps"] > 0
+            and candidate_validation["median_net_bps"] > 0
+            and candidate_test["median_net_bps"] > 0
+            and candidate_validation["profit_factor"] > 1.0
+            and candidate_test["profit_factor"] > 1.0
+            and candidate_validation["mean_exposure_weighted_net_bps"] > 0
+            and candidate_test["mean_exposure_weighted_net_bps"] > 0
             and validation_improvement >= self.MIN_VALIDATION_IMPROVEMENT_BPS
             and test_improvement >= self.MIN_TEST_IMPROVEMENT_BPS
         )

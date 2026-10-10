@@ -89,8 +89,9 @@ class LearningEngine:
         degraded = (
             candidate_score["samples"] >= 30
             and parent_score["samples"] >= 30
-            and candidate_score["mean_net_bps"] < 0
-            and parent_score["mean_net_bps"] - candidate_score["mean_net_bps"] >= 5.0
+            and candidate_score["mean_exposure_weighted_net_bps"] < 0
+            and parent_score["mean_exposure_weighted_net_bps"]
+            - candidate_score["mean_exposure_weighted_net_bps"] >= 5.0
         )
         if degraded:
             rolled_back_to = self.registry.rollback("strategy_policy")
@@ -176,6 +177,12 @@ class LearningEngine:
             "validation_improvement_bps": float(result["validation_improvement_bps"]),
             "test_mean_net_bps": float(test["mean_net_bps"]),
             "validation_mean_net_bps": float(validation["mean_net_bps"]),
+            "test_median_net_bps": float(test["median_net_bps"]),
+            "validation_median_net_bps": float(validation["median_net_bps"]),
+            "test_profit_factor": float(test["profit_factor"]),
+            "validation_profit_factor": float(validation["profit_factor"]),
+            "test_exposure_weighted_net_bps": float(test["mean_exposure_weighted_net_bps"]),
+            "validation_exposure_weighted_net_bps": float(validation["mean_exposure_weighted_net_bps"]),
             "test_hit_rate": float(test["hit_rate"]),
             "validation_hit_rate": float(validation["hit_rate"]),
             "training_groups": int(result["training_groups"]),

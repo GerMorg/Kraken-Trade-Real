@@ -131,6 +131,12 @@ class ModelRegistry:
             invalid_quality = (
                 float(metrics.get("test_mean_net_bps", -1.0)) <= 0
                 or float(metrics.get("validation_mean_net_bps", -1.0)) <= 0
+                or float(metrics.get("test_median_net_bps", -1.0)) <= 0
+                or float(metrics.get("validation_median_net_bps", -1.0)) <= 0
+                or float(metrics.get("test_profit_factor", 0.0)) <= 1.0
+                or float(metrics.get("validation_profit_factor", 0.0)) <= 1.0
+                or float(metrics.get("test_exposure_weighted_net_bps", -1.0)) <= 0
+                or float(metrics.get("validation_exposure_weighted_net_bps", -1.0)) <= 0
                 or float(metrics.get("validation_improvement_bps", -1.0)) < 0
             )
             reason_code = "POLICY_VALIDATION_GATE"

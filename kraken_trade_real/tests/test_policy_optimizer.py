@@ -38,6 +38,7 @@ def _params():
         "signal_quality_liquidity_scale": 1000.0,
         "signal_confidence_return_scale_bps": 45.0,
         "signal_confidence_volatility_scale": 120.0,
+        "strategy_sizing_confidence_power": 1.0,
         "strategy_min_edge_bps": 5.0,
         "strategy_min_confidence": 0.35,
         "strategy_adaptive_edge_floor_bps": 3.0,
@@ -130,3 +131,30 @@ def test_optimizer_requires_independent_time_buckets_even_with_many_symbols():
     assert result["groups"] == 400
     assert result["time_buckets"] == 4
     assert result["minimum_time_buckets"] == 20
+
+
+def test_sizing_confidence_power_is_bounded_and_changes_position_notional(config, instrument):
+    from app.domain.models import PortfolioState
+    from app.trading.decision import DecisionEngine
+    from app.domain.states import Direction
+    from decimal import Decimal
+
+    engine = DecisionEngine(config)
+    linear = engine._target_position(
+        Decimal("100"), Decimal("0.5"), Direction.LONG,
+        {"strategy_sizing_confidence_power": 1.0},
+    )
+    conservative = engine._target_position(
+        Decimal("100"), Decimal("0.5"), Direction.LONG,
+        {"strategy_sizing_confidence_power": 2.0},
+    )
+    aggressive = engine._target_position(
+        Decimal("100"), Decimal("0.5"), Direction.LONG,
+        {"strategy_sizing_confidence_power": 0.5},
+    )
+
+    assert conservative < linear < aggressive
+    assert engine._target_position(
+        Decimal("100"), Decimal("0.5"), Direction.LONG,
+        {"strategy_sizing_confidence_power": 99},
+    ) == conservative

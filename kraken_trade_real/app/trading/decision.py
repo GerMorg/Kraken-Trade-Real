@@ -37,11 +37,22 @@ class DecisionEngine:
         except Exception:
             return D(str(default))
 
-    def _target_position(self, equity: D, confidence: D, signal_direction: Direction) -> D:
+    def _target_position(
+        self,
+        equity: D,
+        confidence: D,
+        signal_direction: Direction,
+        strategy_parameters: dict[str, Any] | None = None,
+    ) -> D:
         if equity <= 0:
             return D("0")
         target = equity * D(str(self.config.risk_max_position_pct)) / 100
-        target *= max(D("0.25"), min(D("1"), confidence))
+        clipped_confidence = max(D("0.25"), min(D("1"), confidence))
+        sizing_power = self._policy_value(
+            strategy_parameters, "strategy_sizing_confidence_power", 1.0
+        )
+        sizing_power = max(D("0.5"), min(D("2.0"), sizing_power))
+        target *= clipped_confidence ** sizing_power
         return target if signal_direction == Direction.LONG else -target
 
     def _edge_policy(
@@ -140,12 +151,15 @@ class DecisionEngine:
         calibrated_confidence: D,
         min_cost_eur: D,
         force_flatten: bool = False,
+        strategy_parameters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         current = self._current_position(instrument, portfolio)
         desired = (
             D("0")
             if force_flatten and current != 0
-            else self._target_position(portfolio.equity_eur, calibrated_confidence, signal.direction)
+            else self._target_position(
+                portfolio.equity_eur, calibrated_confidence, signal.direction, strategy_parameters
+            )
         )
         reversal = (
             not force_flatten
@@ -278,7 +292,8 @@ class DecisionEngine:
         signal, _, _ = best
         calibrated_confidence = max(D("0"), min(D("1"), signal.confidence * scale))
         plan = self._trade_plan(
-            instrument, portfolio, signal, calibrated_confidence, effective_min_cost
+            instrument, portfolio, signal, calibrated_confidence, effective_min_cost,
+            strategy_parameters=strategy_parameters,
         )
         if plan["trade_notional_eur"] <= 0 or plan["balanced"]:
             return "TARGET_BALANCED"
@@ -343,6 +358,7 @@ class DecisionEngine:
             calibrated_confidence,
             effective_min_cost,
             force_flatten=force_flatten,
+            strategy_parameters=strategy_parameters,
         )
         if force_flatten and current != 0:
             # Preserve the explicit two-stage reversal state: flatten now, wait
@@ -398,7 +414,8 @@ class DecisionEngine:
                 if key in {
                     "strategy_min_edge_bps", "strategy_min_confidence",
                     "strategy_adaptive_edge_floor_bps", "strategy_adaptive_min_confidence",
-                    "strategy_adaptive_cost_ratio", "signal_weight_trend",
+                    "strategy_adaptive_cost_ratio", "strategy_sizing_confidence_power",
+                    "signal_weight_trend",
                     "signal_weight_return_5", "signal_weight_return_15",
                     "signal_weight_return_60", "signal_weight_return_240",
                     "signal_weight_news", "signal_weight_gemini",
