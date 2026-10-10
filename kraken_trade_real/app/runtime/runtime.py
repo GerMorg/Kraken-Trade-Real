@@ -522,9 +522,18 @@ class TradingRuntime:
                     # Rebuild FIFO attribution only after data changed or a cursor
                     # session completed. Fee reports are estimates, never verified
                     # Normal-strategy promotion labels.
-                    if int(fill_sync.get("inserted", 0) or 0) > 0 or fill_sync.get("status") == "COMPLETE":
+                    rebuild_outcomes = getattr(
+                        self.learning, "rebuild_core_spot_outcomes", None
+                    )
+                    if (
+                        callable(rebuild_outcomes)
+                        and (
+                            int(fill_sync.get("inserted", 0) or 0) > 0
+                            or fill_sync.get("status") == "COMPLETE"
+                        )
+                    ):
                         try:
-                            outcome_rebuild = self.learning.rebuild_core_spot_outcomes()
+                            outcome_rebuild = rebuild_outcomes()
                             self.audit.emit(
                                 "CORE_SPOT_REALIZED_ATTRIBUTION_REBUILT",
                                 "INFO",
