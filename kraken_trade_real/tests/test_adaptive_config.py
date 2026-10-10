@@ -36,7 +36,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.tactical_portfolio_pct == 20.0
     # The adaptive overlay must not silently replace parameters it does not own.
     assert config.strategy_min_edge_bps == 33.0
-    assert config.__dict__["strategy_min_edge_bps"] == 33.0
+    assert config.as_dict()["strategy_min_edge_bps"] == 33.0
 
 
 def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
