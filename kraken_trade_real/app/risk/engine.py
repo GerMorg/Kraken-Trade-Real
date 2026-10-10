@@ -53,6 +53,18 @@ class RiskEngine:
             and desired_abs < current_abs
             and (desired == 0 or current * desired > 0)
         )
+        risk_profile = str(d.rationale.get("risk_profile", "core"))
+        if (
+            d.instrument.product_type.value == "SPOT_MARGIN"
+            and not p.spot_open_positions_read_ok
+            and not (risk_profile == "tactical" and valid_reduction)
+        ):
+            return RiskResult(
+                False,
+                "SPOT_MARGIN_POSITIONS_UNVERIFIED",
+                {"spot_margin_positions_verified": False},
+                leverage,
+            )
         gross_after = p.gross_eur - current_abs + desired_abs
         net_after = p.net_eur - current + desired
         delta = desired - current
@@ -80,7 +92,6 @@ class RiskEngine:
         net_pct = abs(net_after) / eq * 100
         is_new_position = current == 0 and desired != 0
         min_cost_eur = D(str(d.rationale.get("min_cost_eur", "0")))
-        risk_profile = str(d.rationale.get("risk_profile", "core"))
         position_limit_pct = D(str(self.config.risk_max_position_pct))
         volatility_limit = D("30")
         if risk_profile == "tactical":

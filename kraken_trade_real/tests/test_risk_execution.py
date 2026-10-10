@@ -115,6 +115,7 @@ def test_risk_engine_accepts_adaptive_core_edge_when_economics_clear(config, ins
     portfolio = PortfolioState(
         equity_eur=Decimal("100"), cash_eur=Decimal("100"),
         positions={}, gross_eur=Decimal("0"), net_eur=Decimal("0"),
+        spot_open_positions_read_ok=True,
     )
     market = MarketSnapshot(
         instrument.symbol, Decimal("100"), Decimal("99.9"), Decimal("100.1"),
@@ -237,6 +238,7 @@ def test_risk_engine_normalizes_float_leverage_from_legacy_decision(config, inst
         gross_eur=Decimal("0"),
         net_eur=Decimal("0"),
         margin_used_eur=Decimal("0"),
+        spot_open_positions_read_ok=True,
     )
     result = RiskEngine(
         config, MarginEngine(), LeverageEngine(), CostModel()
@@ -249,3 +251,38 @@ def test_risk_engine_normalizes_float_leverage_from_legacy_decision(config, inst
     assert result.allowed is True
     assert isinstance(result.effective_leverage, Decimal)
     assert result.effective_leverage == Decimal("2")
+
+
+def test_new_margin_risk_is_blocked_when_exchange_positions_cannot_be_read(
+    config, instrument
+):
+    from app.domain.models import Decision, MarketSnapshot, PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.risk.engine import RiskEngine
+
+    signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("200"), Decimal("10"),
+        Decimal("0.95"), "TREND_UP", Decimal("0"), Decimal("0"),
+        {"volatility": Decimal("2")},
+    )
+    decision = Decision(
+        "unverified-margin-position-read", instrument, signal,
+        Decimal("10"), Decimal("1"), {"min_cost_eur": "0.5"},
+        "test", "test", "", Decimal("0"), Decimal("10"), Direction.LONG, False,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("100"),
+        positions={}, gross_eur=Decimal("0"), net_eur=Decimal("0"),
+        spot_open_positions_read_ok=False,
+    )
+    market = MarketSnapshot(
+        instrument.symbol, Decimal("100"), Decimal("99.9"), Decimal("100.1"),
+        Decimal("100000"), 1.0, tuple(Decimal("100") for _ in range(40)),
+    )
+
+    result = RiskEngine(config, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()).evaluate(
+        decision, portfolio, market
+    )
+
+    assert result.allowed is False
+    assert result.reason == "SPOT_MARGIN_POSITIONS_UNVERIFIED"

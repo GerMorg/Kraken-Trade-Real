@@ -41,3 +41,10 @@ Regression tests cover confidence-tiered leverage, side-specific support, exposu
 - Both accepted and rejected directional signals are recorded once per symbol/direction/15-minute bucket. Labels use the observed directional price change minus the expected transaction costs. Missing price history remains pending only for a bounded period and then becomes unscorable.
 - Tactical order timeouts no longer silently discard partial fills. The exact exchange order must be terminally reconciled after a cancellation request; cumulative filled quantity is applied to the local position only after confirmation. Unknown cancellation status remains a blocker.
 - Stop-loss and trailing behaviour are still monitored by the running app, not guaranteed server-side conditional orders. Their parameter family should only be optimized after reliable high-frequency path and actual-fill records can replay the full exit path; this release deliberately does not tune those risk controls from incomplete trade summaries.
+
+
+## Additional portfolio safety in v0.1.43
+
+- Kraken's ordinary spot balances and margin-backed assets are distinct inventory sources. The reconciler stores wallet exposure and signed margin exposure separately, then combines both legs for portfolio gross/net values rather than silently skipping a margin position when the same symbol is present in the wallet.
+- Strategy decisions manage the margin leg when an OpenPositions row exists, while risk checks replace that leg in aggregate gross/net exposure math and apply the per-symbol position limit to wallet plus margin exposure.
+- New risk on Spot Margin-eligible instruments is blocked while OpenPositions reconciliation is unverified; Tactical may still attempt a locally known reduce-only exit. This prevents a temporary private API/read failure from being interpreted as a flat margin book.

@@ -13,7 +13,7 @@
 
 ## 0.1.42
 
-- Aggregate all Kraken OpenPositions lots per pair for quantity, PnL, cost basis, exposure and leverage instead of silently dropping later lots.
+- Aggregate all Kraken OpenPositions lots per pair for quantity, PnL, cost basis, exposure and leverage instead of silently dropping later lots; keep ordinary wallet inventory and margin positions as separate exposure legs even when the pair symbol matches.
 - Use Kraken's native Spot Margin `settle-position` order for confirmed full exits with Kraken's documented `volume=0` settle-all sentinel, which does not need an estimated quantity; strictly validate this reduce-only path and avoid irrelevant minimum-cost/FX-funding checks.
 - Score forecasts using their explicit LONG/SHORT direction and net directional outcome after expected costs; preserve regime and raw confidence, and cap the heuristic score away from false certainty.
 - Exclude legacy forecasts with unknown direction from calibration and require at least 100 outcomes plus chronological hold-out validation before promoting a confidence scale.
