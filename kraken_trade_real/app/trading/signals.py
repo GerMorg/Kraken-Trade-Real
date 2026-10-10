@@ -30,7 +30,23 @@ class SignalEngine:
         regime: str,
         news_bps: D = D("0"),
         gemini_bps: D = D("0"),
+        strategy_parameters: dict[str, Any] | None = None,
     ) -> tuple[Signal, Signal]:
+        params = strategy_parameters or {}
+
+        def weight(name: str, default: str) -> D:
+            try:
+                return max(D("0"), D(str(params.get(name, default))))
+            except Exception:
+                return D(default)
+
+        trend_weight = weight("signal_weight_trend", "18")
+        return_5_weight = weight("signal_weight_return_5", "4")
+        return_15_weight = weight("signal_weight_return_15", "5")
+        return_60_weight = weight("signal_weight_return_60", "6")
+        return_240_weight = weight("signal_weight_return_240", "3")
+        news_weight = weight("signal_weight_news", "1")
+        gemini_weight = weight("signal_weight_gemini", "1")
         trend = features.get("trend", D("0"))
         momentum_5 = features.get("return_5", D("0"))
         momentum_15 = features.get("return_15", D("0"))
@@ -45,14 +61,14 @@ class SignalEngine:
         )
 
         directional_raw = (
-            trend * D("18")
-            + momentum_5 * D("4")
-            + momentum_15 * D("5")
-            + momentum_60 * D("6")
-            + momentum_240 * D("3")
+            trend * trend_weight
+            + momentum_5 * return_5_weight
+            + momentum_15 * return_15_weight
+            + momentum_60 * return_60_weight
+            + momentum_240 * return_240_weight
         )
-        long_raw = directional_raw + news_bps + gemini_bps
-        short_raw = -directional_raw - news_bps - gemini_bps
+        long_raw = directional_raw + news_bps * news_weight + gemini_bps * gemini_weight
+        short_raw = -directional_raw - news_bps * news_weight - gemini_bps * gemini_weight
         long_return = max(D("0"), long_raw) * quality
         short_return = max(D("0"), short_raw) * quality
 
@@ -85,6 +101,13 @@ class SignalEngine:
                 "return_15": momentum_15,
                 "return_60": momentum_60,
                 "return_240": momentum_240,
+                "signal_weight_trend": trend_weight,
+                "signal_weight_return_5": return_5_weight,
+                "signal_weight_return_15": return_15_weight,
+                "signal_weight_return_60": return_60_weight,
+                "signal_weight_return_240": return_240_weight,
+                "signal_weight_news": news_weight,
+                "signal_weight_gemini": gemini_weight,
             }
         )
         return (

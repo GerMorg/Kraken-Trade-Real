@@ -258,12 +258,6 @@ class StrategyPolicyOptimizer:
             self.MIN_TRAIN_TRADES, int(math.ceil(len(train) * 0.05))
         )
         profile = dict(baseline)
-        start_score = self.score(train, profile)
-        start_rank = (
-            start_score["mean_net_bps"]
-            if start_score["samples"] >= minimum_train_trades
-            else -1_000_000.0
-        )
         coordinate_keys = (*WEIGHT_KEYS, *POLICY_KEYS)
         for key in coordinate_keys:
             best_profile = dict(profile)
@@ -334,7 +328,7 @@ class StrategyPolicyOptimizer:
         observations: list[dict[str, Any]],
         candidate: dict[str, Any],
         parent: dict[str, Any],
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         groups = self.grouped(observations)
         return {
             "groups": float(len(groups)),
