@@ -29,3 +29,39 @@ def test_learning_promotion_respects_configuration_flag(db):
         auto_promotion_enabled=False,
     )
     assert engine.auto_promotion_enabled is False
+
+
+
+def test_registry_recovers_when_no_model_is_active(db):
+    registry = ModelRegistry(db)
+    db.execute("UPDATE model_versions SET status='RETIRED' WHERE family='decision'")
+    assert registry.active() == "baseline-v1"
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM model_versions WHERE family='decision' AND status='ACTIVE'"
+    )["n"] == 1
+
+
+def test_registry_recovers_multiple_active_models_deterministically(db):
+    registry = ModelRegistry(db)
+    registry.register_candidate(
+        "candidate-active-conflict", "decision", "baseline-v1",
+        {"confidence_scale": 1.1}, {"samples": 100},
+    )
+    db.execute(
+        "UPDATE model_versions SET status='ACTIVE' WHERE version='candidate-active-conflict'"
+    )
+    registry.active()
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM model_versions WHERE family='decision' AND status='ACTIVE'"
+    )["n"] == 1
+
+
+def test_model_registry_rejects_ece_regression(db):
+    registry = ModelRegistry(db)
+    registry.register_candidate(
+        "candidate-ece-regression", "decision", "baseline-v1",
+        {"confidence_scale": 1.1},
+        {"samples": 100, "improvement": 0.02, "brier": 0.20, "ece": 0.16},
+    )
+    assert registry.promote("candidate-ece-regression", min_improvement=0.01, min_samples=90) is False
+    assert registry.active() == "baseline-v1"
