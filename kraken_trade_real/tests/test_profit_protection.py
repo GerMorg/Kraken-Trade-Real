@@ -163,3 +163,44 @@ def test_failed_open_positions_read_does_not_erase_profit_high_water_mark(
         (instrument.symbol,),
     )
     assert D(row["peak_profit_pct"]) == D("8.0")
+
+
+def test_stronger_signal_reduction_is_tagged_for_partial_profit_reconciliation(
+    db, config, instrument
+):
+    manager = PositionProfitProtection(config, db, FakeAudit())
+    portfolio = portfolio_for(instrument, "-20", "4.0")
+    manager.observe(portfolio, "cycle-stronger-reduction")
+    signal = signal_for(instrument, Direction.LONG)
+    stronger_reduction = Decision(
+        decision_id="decision-stronger-reduction",
+        instrument=instrument,
+        signal=signal,
+        target_notional_eur=D("5"),
+        leverage=D("2"),
+        rationale={"risk_profile": "core"},
+        strategy_version="test",
+        model_version="test",
+        config_hash="test",
+        current_position_eur=D("-20"),
+        target_position_eur=D("-5"),
+        execution_direction=Direction.LONG,
+        reduce_only=True,
+    )
+
+    decision = manager.apply(
+        cycle_id="cycle-stronger-reduction",
+        instrument=instrument,
+        portfolio=portfolio,
+        decision=stronger_reduction,
+        long_signal=signal,
+        short_signal=signal_for(instrument, Direction.SHORT),
+        model_version="test",
+        config_hash="test",
+        min_cost_eur=D("0.5"),
+    )
+
+    assert decision is not None
+    assert decision.target_position_eur == D("-5")
+    assert decision.reduce_only is True
+    assert decision.rationale["position_management_action"] == "PARTIAL_TAKE_PROFIT"
