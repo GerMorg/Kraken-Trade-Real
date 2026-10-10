@@ -4,7 +4,7 @@ import json
 import sqlite3
 import time
 
-from app.persistence import Database
+from app.persistence.db import Database
 
 
 def _insert_order(db, *, order_id: str, client_id: str, decision_id: str, symbol: str, at: float):
@@ -159,4 +159,4 @@ def test_legacy_fill_table_migrates_before_attribution_indexes_are_created(tmp_p
     ) == {"decision_id": "", "raw_json": "{}"}
     assert migrated.one(
         "SELECT value FROM metadata WHERE key='schema_version'"
-    )["value"] == "8"
+    )["value"] == "9"

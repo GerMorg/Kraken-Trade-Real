@@ -519,6 +519,35 @@ class TradingRuntime:
                             cycle_id=cycle_id,
                             **fill_sync,
                         )
+                    # Rebuild FIFO attribution only after data changed or a cursor
+                    # session completed. Fee reports are estimates, never verified
+                    # Normal-strategy promotion labels.
+                    rebuild_outcomes = getattr(
+                        self.learning, "rebuild_core_spot_outcomes", None
+                    )
+                    if (
+                        callable(rebuild_outcomes)
+                        and (
+                            int(fill_sync.get("inserted", 0) or 0) > 0
+                            or fill_sync.get("status") == "COMPLETE"
+                        )
+                    ):
+                        try:
+                            outcome_rebuild = rebuild_outcomes()
+                            self.audit.emit(
+                                "CORE_SPOT_REALIZED_ATTRIBUTION_REBUILT",
+                                "INFO",
+                                cycle_id=cycle_id,
+                                **outcome_rebuild,
+                            )
+                        except Exception as exc:
+                            self.audit.emit(
+                                "CORE_SPOT_REALIZED_ATTRIBUTION_FAILED",
+                                "WARNING",
+                                cycle_id=cycle_id,
+                                error_type=type(exc).__name__,
+                                error=str(exc)[:300],
+                            )
                 except Exception as exc:
                     # History permissions or rate limits must be visible but can
                     # never block live order management for the cycle.

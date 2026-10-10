@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.50
+
+- Rebuild a deterministic FIFO position-attribution ledger from app-managed Spot/Margin fills, including partial reductions and multiple closes linked back to their opening decision.
+- Record each matched close leg with entry/exit prices, quote-currency gross PnL, proportional TradeHistory fee estimates and estimated—not verified—net PnL. Open inventory lots persist separately from realized legs.
+- Handle long and short position direction explicitly using local order direction and `reduce_only`; quarantine unexplained reversals, side mismatches, missing raw exchange context and closes that exceed tracked inventory.
+- Rebuild derived outcome tables atomically and deterministically after new fill data, preserving auditability across restarts and repeated sync pages.
+- Keep every outcome marked `QUOTE_ESTIMATE_ONLY` / `net_verified=0`. This release does not use estimated Spot fee amounts to auto-promote Normal strategy parameters; actual Ledger fee reconciliation and Futures attribution remain required.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.50.
+
 ## 0.1.49
 
 - Wire Kraken Spot TradesHistory into the live cycle so actual local Spot/Margin order fills are persisted; the pre-existing fill table is no longer an unused sink.
