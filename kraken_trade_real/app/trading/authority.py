@@ -215,6 +215,7 @@ class TradingAuthority:
             monotonic_now = time.monotonic()
             if (
                 not active_session
+                and self._last_spot_fill_sync_monotonic > 0.0
                 and monotonic_now - self._last_spot_fill_sync_monotonic
                 < max(1.0, float(minimum_interval_seconds))
             ):
