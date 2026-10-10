@@ -63,8 +63,11 @@ class LearningEngine:
                FROM predictions p
                JOIN prediction_outcomes o ON o.prediction_id=p.prediction_id
                WHERE p.outcome_status='SETTLED' AND o.success IS NOT NULL
-               ORDER BY p.created_at ASC, o.measured_at ASC LIMIT 2000"""
+               ORDER BY p.created_at DESC, o.measured_at DESC LIMIT 2000"""
         )
+        # Select the most recent bounded window, then restore chronological order
+        # before making the training/validation split.
+        rows.reverse()
         pairs = [(float(r["probability"]), bool(r["success"])) for r in rows]
         # Avoid repeated promotion decisions on a tiny, repeatedly reused holdout.
         minimum_samples = 300
