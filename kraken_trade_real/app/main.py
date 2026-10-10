@@ -69,7 +69,14 @@ def build_runtime() -> TradingRuntime:
     calibration = CalibrationEngine()
     registry = ModelRegistry(db)
     research = ResearchEngine(db)
-    learning = LearningEngine(db, calibration, registry, research, config.learning_auto_promotion)
+    learning = LearningEngine(
+        db, calibration, registry, research,
+        auto_promotion_enabled=config.learning_auto_promotion,
+        enabled=config.learning_enabled,
+        auto_calibration_enabled=config.learning_auto_calibration,
+        lookback_days=config.learning_lookback_days,
+        validation_interval_hours=config.learning_validation_interval_hours,
+    )
     sensors = SensorPublisher(config.sensors_enabled, os.getenv("SUPERVISOR_TOKEN"))
     tax = AustrianTaxLedger(
         db,
