@@ -8,6 +8,11 @@ import os
 # These options are now internal, versioned learning parameters. Ignore legacy HA
 # values even when an existing installation still has them in options.json.
 LEARNED_OPTION_KEYS = {
+    "strategy_min_edge_bps",
+    "strategy_min_confidence",
+    "strategy_adaptive_edge_floor_bps",
+    "strategy_adaptive_min_confidence",
+    "strategy_adaptive_cost_ratio",
     "tactical_min_expected_move_bps",
     "tactical_min_momentum_bps",
     "tactical_min_volume_ratio",
