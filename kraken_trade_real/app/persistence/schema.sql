@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS core_exit_path_points(
   peak_profit_pct TEXT NOT NULL,
   basis_eur TEXT NOT NULL,
   quantity TEXT NOT NULL,
-  position_eur TEXT NOT NULL,
+  position_pnl_eur TEXT NOT NULL,
   partial_taken INTEGER NOT NULL DEFAULT 0,
   pending_order_id TEXT NOT NULL DEFAULT '',
   policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
