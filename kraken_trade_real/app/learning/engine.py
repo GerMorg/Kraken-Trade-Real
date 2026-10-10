@@ -12,6 +12,7 @@ class LearningEngine:
         auto_promotion_enabled: bool = True, enabled: bool = True,
         auto_calibration_enabled: bool = True, lookback_days: int = 365,
         validation_interval_hours: int = 24,
+        optimizer: Any | None = None,
     ) -> None:
         self.db = db
         self.calibration = calibration
@@ -22,6 +23,7 @@ class LearningEngine:
         self.auto_calibration_enabled = bool(auto_calibration_enabled)
         self.lookback_days = max(1, int(lookback_days))
         self.validation_interval_hours = max(1, int(validation_interval_hours))
+        self.optimizer = optimizer
 
     def record_cycle(self, cycle_id: str, decisions: int, orders: int, blockers: list[str]) -> None:
         self.db.learning_event(
@@ -71,6 +73,14 @@ class LearningEngine:
                 "open_predictions": open_predictions, "status": "LEARNING_DISABLED",
             }
 
+        adaptive_policy: dict[str, Any] = {"status": "OPTIMIZER_NOT_CONFIGURED"}
+        if self.optimizer is not None:
+            try:
+                adaptive_policy = self.optimizer.optimize_tactical(now)
+            except Exception as exc:
+                adaptive_policy = {"status": "OPTIMIZER_FAILED", "error": type(exc).__name__}
+                self.db.learning_event("ADAPTIVE_POLICY_FAILED", "strategy_tactical", adaptive_policy)
+
         last_run = self.db.one(
             "SELECT value FROM metadata WHERE key='learning_last_validation_at'"
         )
@@ -88,6 +98,7 @@ class LearningEngine:
                     "next_validation_in_seconds": max(
                         0, int(interval_seconds - (now - last_validation_at))
                     ),
+                    "adaptive_policy": adaptive_policy,
                 }
 
         # Chronological split: older rows select a scale, newest rows validate it.
@@ -207,6 +218,7 @@ class LearningEngine:
             "best_scale": best_scale, "improvement": improvement,
             "validation_method": "chronological_70_30_holdout",
             "candidate_version": candidate_version, "promoted": promoted,
+            "adaptive_policy": adaptive_policy,
         }
         self.db.execute(
             "INSERT INTO metadata(key,value) VALUES('learning_last_validation_at',?) "

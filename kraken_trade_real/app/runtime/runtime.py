@@ -143,7 +143,8 @@ class TradingRuntime:
         self._learning_summary: dict[str,Any] = {"status":"UNKNOWN","samples":0,"settled":0,"settled_total":0,"open_predictions":0}
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
-        self.config_hash=digest_config(config.__dict__)
+        config_snapshot = config.as_dict() if callable(getattr(config, "as_dict", None)) else config.__dict__
+        self.config_hash=digest_config(config_snapshot)
         self.instruments: list[Any]=[]
         self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
         self.profit_protection = PositionProfitProtection(config, db, audit)
@@ -437,6 +438,26 @@ class TradingRuntime:
             try:
                 feedback=self.learning.process_feedback()
                 self._learning_summary=feedback
+                refresh_adaptive_config=getattr(self.config,"refresh",None)
+                if callable(refresh_adaptive_config):
+                    active_parameters=refresh_adaptive_config()
+                    config_snapshot = (
+                        self.config.as_dict()
+                        if callable(getattr(self.config, "as_dict", None))
+                        else self.config.__dict__
+                    )
+                    self.config_hash = digest_config(config_snapshot)
+                    self.db.execute(
+                        "UPDATE cycles SET config_hash=? WHERE cycle_id=?",
+                        (self.config_hash, cycle_id),
+                    )
+                    self.audit.emit(
+                        "ADAPTIVE_CONFIG_REFRESHED","INFO",
+                        cycle_id=cycle_id,
+                        active_core_version=self.registry.active("strategy_core"),
+                        active_tactical_version=self.registry.active("strategy_tactical"),
+                        parameter_count=len(active_parameters),
+                    )
                 self.audit.emit("LEARNING_FEEDBACK","INFO",cycle_id=cycle_id,**feedback)
             except Exception as exc:
                 self.audit.emit("LEARNING_FEEDBACK_FAILED","WARNING",cycle_id=cycle_id,error=f"{type(exc).__name__}:{str(exc)[:500]}")

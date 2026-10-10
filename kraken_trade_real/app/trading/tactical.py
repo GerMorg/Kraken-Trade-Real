@@ -1392,6 +1392,44 @@ class TacticalTrader:
             position.state,
         )
 
+    def _trade_learning_context(
+        self, position: TacticalPosition, mode: str, client_order_id: str = ""
+    ) -> dict[str, Any]:
+        entry = position.entry_price
+        if entry <= 0:
+            mfe_bps = mae_bps = D("0")
+        elif position.direction == Direction.LONG:
+            mfe_bps = max(D("0"), (position.peak_price / entry - D("1")) * D("10000"))
+            adverse = (position.trough_price / entry - D("1")) * D("10000")
+            mae_bps = max(D("0"), -adverse)
+        else:
+            mfe_bps = max(D("0"), (entry / max(position.trough_price, D("0.00000001")) - D("1")) * D("10000"))
+            adverse = (entry / max(position.peak_price, D("0.00000001")) - D("1")) * D("10000")
+            mae_bps = max(D("0"), -adverse)
+        return {
+            "mode": mode,
+            "client_order_id": client_order_id,
+            "max_favourable_excursion_bps": str(mfe_bps),
+            "max_adverse_excursion_bps": str(mae_bps),
+            "observed_peak_price": str(position.peak_price),
+            "observed_trough_price": str(position.trough_price),
+            "entry_policy_snapshot": {
+                "min_expected_move_bps": str(getattr(self.config, "tactical_min_expected_move_bps", 280)),
+                "min_momentum_bps": str(getattr(self.config, "tactical_min_momentum_bps", 40)),
+                "min_volume_ratio": str(getattr(self.config, "tactical_min_volume_ratio", 2)),
+                "min_breakout_bps": str(getattr(self.config, "tactical_min_breakout_bps", 25)),
+                "max_spread_bps": str(getattr(self.config, "tactical_max_spread_bps", 25)),
+                "portfolio_pct": str(getattr(self.config, "tactical_portfolio_pct", 25)),
+            },
+            "exit_policy_snapshot": {
+                "stop_loss_pct": str(getattr(self.config, "tactical_stop_loss_pct", 1)),
+                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 2.2)),
+                "trailing_trigger_bps": str(getattr(self.config, "tactical_trailing_trigger_bps", 100)),
+                "trailing_stop_pct": str(getattr(self.config, "tactical_trailing_stop_pct", 0.7)),
+                "max_hold_seconds": str(getattr(self.config, "tactical_max_hold_seconds", 1800)),
+            },
+        }
+
     @staticmethod
     def _trade_gross_pnl(
         direction: Direction, notional_eur: D, entry_price: D, exit_price: D
@@ -1439,7 +1477,7 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            {"mode": "SHADOW"},
+            self._trade_learning_context(position, "SHADOW"),
         )
         self.db.delete_tactical_position(position.symbol)
         with self._lock:
@@ -1491,7 +1529,7 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            {"mode": "LIVE", "client_order_id": client_order_id},
+            self._trade_learning_context(position, "LIVE", client_order_id),
         )
         if ratio >= D("0.999999"):
             self.db.delete_tactical_position(position.symbol)

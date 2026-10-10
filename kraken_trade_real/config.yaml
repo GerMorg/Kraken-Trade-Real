@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.44
+version: 0.1.45
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -94,7 +94,6 @@ options:
   tactical_enabled: true
   tactical_shadow_mode: false
   tactical_allow_short: true
-  tactical_portfolio_pct: 25.0
   tactical_max_capital_eur: 15.0
   tactical_position_limit_pct: 80.0
   tactical_max_positions: 1
@@ -103,12 +102,7 @@ options:
   tactical_market_max_age_seconds: 5
   tactical_min_volatility_bps: 12.0
   tactical_max_volatility_bps: 55.0
-  tactical_min_volume_ratio: 2.0
-  tactical_min_momentum_bps: 40.0
-  tactical_min_breakout_bps: 25.0
   tactical_min_imbalance: 0.10
-  tactical_max_spread_bps: 25.0
-  tactical_min_expected_move_bps: 280.0
   tactical_entry_fee_bps: 80.0
   tactical_exit_fee_bps: 80.0
   tactical_margin_open_fee_bps: 5.0
@@ -129,7 +123,6 @@ options:
   tactical_short_leverage: 2.0
   tactical_order_confirm_seconds: 5
   tactical_adaptive_entry_enabled: true
-  tactical_adaptive_min_expected_move_bps: 230.0
   tactical_adaptive_min_confidence: 0.75
   tactical_adaptive_min_net_edge_bps: 15.0
   tactical_seed_history: true
@@ -210,7 +203,6 @@ schema:
   tactical_enabled: bool
   tactical_shadow_mode: bool
   tactical_allow_short: bool
-  tactical_portfolio_pct: float
   tactical_max_capital_eur: float
   tactical_position_limit_pct: float
   tactical_max_positions: int
@@ -219,12 +211,7 @@ schema:
   tactical_market_max_age_seconds: int
   tactical_min_volatility_bps: float
   tactical_max_volatility_bps: float
-  tactical_min_volume_ratio: float
-  tactical_min_momentum_bps: float
-  tactical_min_breakout_bps: float
   tactical_min_imbalance: float
-  tactical_max_spread_bps: float
-  tactical_min_expected_move_bps: float
   tactical_entry_fee_bps: float
   tactical_exit_fee_bps: float
   tactical_margin_open_fee_bps: float
@@ -245,7 +232,6 @@ schema:
   tactical_short_leverage: float
   tactical_order_confirm_seconds: int
   tactical_adaptive_entry_enabled: bool
-  tactical_adaptive_min_expected_move_bps: float
   tactical_adaptive_min_confidence: float
   tactical_adaptive_min_net_edge_bps: float
   tactical_seed_history: bool

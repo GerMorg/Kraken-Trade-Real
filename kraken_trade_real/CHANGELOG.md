@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.45
+
+- Add a versioned adaptive configuration overlay so selected Tactical entry filters and allocation are loaded from the active policy model, not Home Assistant options.
+- Ignore legacy HA option values for internally learned parameters and remove those fields from the visible add-on schema.
+- Add a bounded Tactical policy controller based on realized closed-trade outcomes, with minimum sample windows, deterministic candidate versions, transactional promotion and independent hard bounds.
+- Refresh promoted policy values between cycles and emit auditable policy evaluation/promotion events.
+- Keep stop-loss, take-profit, trailing exits, leverage and global risk caps outside this controller until the trade ledger contains the path-dependent evidence needed to optimize them safely.
+- Add regression tests for learned configuration isolation and adaptive policy promotion.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.45.
+
 ## 0.1.44
 
 - Derive daily P/L from persisted UTC-day equity baselines rather than Kraken TradeBalance's non-daily P/L field; avoid double-counting open-position P/L.
