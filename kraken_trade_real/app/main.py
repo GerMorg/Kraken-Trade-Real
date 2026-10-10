@@ -4,10 +4,12 @@ import os
 import time
 
 from app.config import Config
+from app.config.adaptive import AdaptiveConfig
 from app.execution import CostModel, ExecutionPolicy, ExecutionReconciler
 from app.gemini import GeminiAnalyzer
 from app.kraken import InstrumentDiscovery, KrakenGateway, WebSocketSupervisor
 from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
+from app.learning.optimizer import AdaptiveParameterOptimizer
 from app.market import FeatureEngine, MarketData, MarketScanner, RegimeEngine
 from app.monitoring import AuditLogger
 from app.news import NewsEngine
@@ -23,8 +25,10 @@ from app.runtime import TradingRuntime
 
 
 def build_runtime() -> TradingRuntime:
-    config = Config.load()
+    base_config = Config.load()
     db = Database()
+    registry = ModelRegistry(db)
+    config = AdaptiveConfig(base_config, registry)
     audit = AuditLogger(config.log_file_enabled)
     gateway = KrakenGateway(
         config.api_key,
@@ -67,8 +71,8 @@ def build_runtime() -> TradingRuntime:
     breaker = CircuitBreaker()
     recovery = RecoveryManager(db, audit, breaker)
     calibration = CalibrationEngine()
-    registry = ModelRegistry(db)
     research = ResearchEngine(db)
+    optimizer = AdaptiveParameterOptimizer(db, registry)
     learning = LearningEngine(
         db, calibration, registry, research,
         auto_promotion_enabled=config.learning_auto_promotion,
@@ -76,6 +80,7 @@ def build_runtime() -> TradingRuntime:
         auto_calibration_enabled=config.learning_auto_calibration,
         lookback_days=config.learning_lookback_days,
         validation_interval_hours=config.learning_validation_interval_hours,
+        optimizer=optimizer,
     )
     sensors = SensorPublisher(config.sensors_enabled, os.getenv("SUPERVISOR_TOKEN"))
     tax = AustrianTaxLedger(
