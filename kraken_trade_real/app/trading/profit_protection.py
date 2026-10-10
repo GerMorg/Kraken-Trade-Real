@@ -36,10 +36,11 @@ class PositionProfitProtection:
             # conclude that a live position has disappeared.
             return
 
-        active_symbols = {
-            symbol for symbol, pct in portfolio.position_pnl_pct.items()
+        active_symbols = set(portfolio.spot_margin_position_symbols)
+        active_symbols.update(
+            symbol for symbol in portfolio.position_pnl_pct
             if symbol and symbol in portfolio.positions and portfolio.positions.get(symbol, D("0")) != 0
-        }
+        )
         rows = self.db.query(
             "SELECT symbol FROM position_profit_state"
         )
@@ -61,7 +62,8 @@ class PositionProfitProtection:
         for symbol in sorted(active_symbols):
             current_pct = _d(portfolio.position_pnl_pct.get(symbol))
             row = self._state(symbol)
-            peak = max(_d(row.get("peak_profit_pct")) if row else D("0"), current_pct)
+            previous_peak = _d(row.get("peak_profit_pct")) if row else D("0")
+            peak = max(previous_peak, current_pct)
             if row is None:
                 self.db.execute(
                     """INSERT INTO position_profit_state
@@ -124,7 +126,7 @@ class PositionProfitProtection:
                     (str(max(D("0"), peak)), int(partial_taken), pending_id,
                      str(pending_start), symbol),
                 )
-            if current_pct >= peak and peak > D("0"):
+            if current_pct > previous_peak and peak > D("0"):
                 self.audit.emit(
                     "POSITION_PROFIT_PEAK_UPDATED",
                     "INFO",
