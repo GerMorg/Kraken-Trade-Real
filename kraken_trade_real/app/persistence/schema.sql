@@ -200,7 +200,9 @@ CREATE TABLE IF NOT EXISTS tactical_positions(
   last_update REAL NOT NULL,
   entry_client_order_id TEXT NOT NULL,
   setup_score TEXT NOT NULL,
-  state TEXT NOT NULL
+  state TEXT NOT NULL,
+  entry_context_json TEXT,
+  entry_parameters_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tactical_positions_state ON tactical_positions(state);
 
@@ -232,3 +234,26 @@ CREATE TABLE IF NOT EXISTS tactical_order_progress(
   terminal INTEGER NOT NULL DEFAULT 0,
   updated_at REAL NOT NULL
 );
+
+
+-- Current learner-managed strategy values and immutable history for audit/rollback.
+CREATE TABLE IF NOT EXISTS managed_strategy_parameters(
+  family TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  parameters_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  sample_count INTEGER NOT NULL,
+  updated_at REAL NOT NULL,
+  source TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS managed_strategy_parameter_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  family TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  parameters_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  source TEXT NOT NULL,
+  UNIQUE(family,version)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_strategy_history ON managed_strategy_parameter_history(family,created_at);

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.45
+
+- Move learner-controlled core and Tactical tuning parameters out of Home Assistant options into a durable SQLite registry with bounded values, version history and audit metadata.
+- Add chronological train/validation tuning for core entry thresholds and Tactical entry filters; promote only candidates with enough outcomes and held-out improvement. Tactical exit calibration uses recorded trade paths as an explicitly approximate replay.
+- Capture Tactical signal features and parameter snapshots at entry, preserve them across restarts, and attribute completed trade outcomes to the originating setup.
+- Flatten stale core positions when held-direction confidence falls below the current entry-quality floor.
+- Keep leverage, exposure, daily-loss, drawdown, cash-reserve and margin ceilings outside the learning parameter set; insufficient evidence leaves the current safe version unchanged.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.45.
+
 ## 0.1.44
 
 - Derive daily P/L from persisted UTC-day equity baselines rather than Kraken TradeBalance's non-daily P/L field; avoid double-counting open-position P/L.

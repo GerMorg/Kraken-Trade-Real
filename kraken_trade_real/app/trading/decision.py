@@ -146,6 +146,7 @@ class DecisionEngine:
         required_return = signal.expected_cost_bps * cost_ratio
         return (
             not ok
+            or calibrated < D(str(self.config.strategy_min_confidence))
             or signal.expected_return_bps < required_return
             or signal.net_edge_bps <= D("0")
         )

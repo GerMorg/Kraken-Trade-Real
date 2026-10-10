@@ -137,6 +137,7 @@ class TradingRuntime:
         self.tax=tax
         self.websocket=websocket
         self.tactical=tactical
+        self.managed_parameter_summary = self.learning.apply_managed_parameters(self.config)
         self._last_tax_sync=0.0
         self._tax_status="UNKNOWN"
         self._tax_error=""
@@ -144,6 +145,17 @@ class TradingRuntime:
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
         self.config_hash=digest_config(config.__dict__)
+        self.audit.emit(
+            "STRATEGY_PARAMETERS_APPLIED", "INFO",
+            parameter_families={
+                family: {
+                    "version": item.get("version"), "source": item.get("source"),
+                    "sample_count": item.get("sample_count"),
+                }
+                for family, item in self.managed_parameter_summary.items()
+            },
+            note="Learnable strategy parameters are persisted internally, not in HA options.",
+        )
         self.instruments: list[Any]=[]
         self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
         self.profit_protection = PositionProfitProtection(config, db, audit)
@@ -419,6 +431,28 @@ class TradingRuntime:
         if self.state.stage not in {RuntimeStage.READY,RuntimeStage.RUNNING}:
             if not self.startup():
                 return {"cycle_id":"","status":"DEGRADED","error":self.state.blocker or self.state.stage.value}
+        try:
+            parameter_learning = self.learning.recalibrate_strategy_parameters(self.config)
+            self.managed_parameter_summary = self.learning.apply_managed_parameters(self.config)
+            self.config_hash = digest_config(self.config.__dict__)
+            if parameter_learning.get("status") != "INTERVAL_NOT_ELAPSED":
+                self.audit.emit(
+                    "STRATEGY_PARAMETER_RECALIBRATION", "INFO",
+                    result=parameter_learning,
+                    applied_versions={
+                        family: item.get("version")
+                        for family, item in self.managed_parameter_summary.items()
+                    },
+                )
+        except Exception as exc:
+            parameter_learning = {
+                "status": "FAILED",
+                "error": f"{type(exc).__name__}:{str(exc)[:500]}",
+            }
+            self.audit.emit(
+                "STRATEGY_PARAMETER_RECALIBRATION_FAILED", "WARNING",
+                error=parameter_learning["error"],
+            )
         cycle_id=new_id("cycle")
         cycle_started=False
         stage="CYCLE_START"
@@ -436,6 +470,11 @@ class TradingRuntime:
             self._watchdog_arm(cycle_id, stage)
             try:
                 feedback=self.learning.process_feedback()
+                feedback["strategy_parameters"] = {
+                    "status": parameter_learning.get("status", "UNKNOWN"),
+                    "core_version": self.managed_parameter_summary.get("core", {}).get("version"),
+                    "tactical_version": self.managed_parameter_summary.get("tactical", {}).get("version"),
+                }
                 self._learning_summary=feedback
                 self.audit.emit("LEARNING_FEEDBACK","INFO",cycle_id=cycle_id,**feedback)
             except Exception as exc:

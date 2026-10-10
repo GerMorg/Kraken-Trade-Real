@@ -51,6 +51,10 @@ class Database:
             ocols={row[1] for row in con.execute("PRAGMA table_info(orders)")}
             if "post_only" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN post_only INTEGER NOT NULL DEFAULT 0")
             if "submitted_at" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN submitted_at REAL")
+            tcols={row[1] for row in con.execute("PRAGMA table_info(tactical_positions)")}
+            for name in ("entry_context_json", "entry_parameters_json"):
+                if name not in tcols:
+                    con.execute(f"ALTER TABLE tactical_positions ADD COLUMN {name} TEXT")
             # Legacy OPEN predictions don't carry direction, so migration marks
             # them UNKNOWN rather than incorrectly scoring shorts as longs.
             pcols={row[1] for row in con.execute("PRAGMA table_info(predictions)")}
@@ -62,7 +66,7 @@ class Database:
             }.items():
                 if name not in pcols:
                     con.execute(f"ALTER TABLE predictions ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','6')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','7')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -397,24 +401,30 @@ class Database:
         entry_client_order_id: str,
         setup_score: Any,
         state: str,
+        entry_context: dict[str, Any] | None = None,
+        entry_parameters: dict[str, Any] | None = None,
     ) -> None:
         self.execute(
             """INSERT INTO tactical_positions(
                symbol,venue,direction,quantity,entry_price,peak_price,trough_price,
                notional_eur,leverage,opened_at,last_update,entry_client_order_id,
-               setup_score,state
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               setup_score,state,entry_context_json,entry_parameters_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(symbol) DO UPDATE SET
                venue=excluded.venue,direction=excluded.direction,quantity=excluded.quantity,
                entry_price=excluded.entry_price,peak_price=excluded.peak_price,
                trough_price=excluded.trough_price,notional_eur=excluded.notional_eur,
                leverage=excluded.leverage,last_update=excluded.last_update,
                entry_client_order_id=excluded.entry_client_order_id,
-               setup_score=excluded.setup_score,state=excluded.state""",
+               setup_score=excluded.setup_score,state=excluded.state,
+               entry_context_json=COALESCE(excluded.entry_context_json,tactical_positions.entry_context_json),
+               entry_parameters_json=COALESCE(excluded.entry_parameters_json,tactical_positions.entry_parameters_json)""",
             (
                 symbol, venue, direction, str(quantity), str(entry_price), str(peak_price),
                 str(trough_price), str(abs(Decimal(str(notional_eur)))), str(leverage), opened_at, time.time(),
                 entry_client_order_id, str(setup_score), state,
+                json.dumps(entry_context, sort_keys=True, default=str) if entry_context is not None else None,
+                json.dumps(entry_parameters, sort_keys=True, default=str) if entry_parameters is not None else None,
             ),
         )
 
@@ -559,3 +569,154 @@ class Database:
                 int(terminal), time.time(),
             ),
         )
+
+
+    def managed_strategy_parameters(self, family: str) -> dict[str, Any] | None:
+        return self.one(
+            "SELECT family,version,parameters_json,metrics_json,sample_count,updated_at,source "
+            "FROM managed_strategy_parameters WHERE family=?",
+            (family,),
+        )
+
+    def save_managed_strategy_parameters(
+        self,
+        family: str,
+        parameters: dict[str, Any],
+        metrics: dict[str, Any],
+        sample_count: int,
+        source: str,
+    ) -> dict[str, Any]:
+        parameters_json = json.dumps(parameters, sort_keys=True, default=str)
+        metrics_json = json.dumps(metrics, sort_keys=True, default=str)
+        now = time.time()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT version,parameters_json FROM managed_strategy_parameters WHERE family=?",
+                (family,),
+            ).fetchone()
+            if row is not None and row["parameters_json"] == parameters_json:
+                version = int(row["version"])
+                con.rollback()
+                return {"changed": False, "version": version}
+            version = int(row["version"]) + 1 if row is not None else 1
+            con.execute(
+                """INSERT INTO managed_strategy_parameter_history(
+                     family,version,created_at,parameters_json,metrics_json,source
+                   ) VALUES(?,?,?,?,?,?)""",
+                (family, version, now, parameters_json, metrics_json, source),
+            )
+            con.execute(
+                """INSERT INTO managed_strategy_parameters(
+                     family,version,parameters_json,metrics_json,sample_count,updated_at,source
+                   ) VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(family) DO UPDATE SET
+                     version=excluded.version,parameters_json=excluded.parameters_json,
+                     metrics_json=excluded.metrics_json,sample_count=excluded.sample_count,
+                     updated_at=excluded.updated_at,source=excluded.source""",
+                (family, version, parameters_json, metrics_json, max(0, int(sample_count)), now, source),
+            )
+            con.commit()
+        return {"changed": True, "version": version}
+
+
+    def commit_tactical_exit_fill(
+        self,
+        *,
+        client_order_id: str,
+        previous_filled_quantity: Any,
+        cumulative_filled_quantity: Any,
+        cumulative_average_price: Any,
+        terminal: bool,
+        trade: dict[str, Any],
+        remaining_position: dict[str, Any] | None,
+    ) -> bool:
+        """Atomically commit an incremental Tactical exit, position remainder and fill watermark.
+
+        The caller supplies the observed cumulative exchange fill and the previous
+        watermark it used to calculate the increment. A mismatch aborts the whole
+        transaction so a stale/replayed response cannot debit the position twice.
+        """
+        previous = Decimal(str(previous_filled_quantity))
+        cumulative = Decimal(str(cumulative_filled_quantity))
+        if not client_order_id or cumulative <= previous:
+            return False
+        now = time.time()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            progress = con.execute(
+                "SELECT last_filled_quantity FROM tactical_order_progress WHERE client_order_id=?",
+                (client_order_id,),
+            ).fetchone()
+            persisted = Decimal(str(progress["last_filled_quantity"])) if progress else Decimal("0")
+            if persisted != previous or cumulative <= persisted:
+                con.rollback()
+                return False
+
+            con.execute(
+                """INSERT OR IGNORE INTO tactical_trades(
+                     trade_id,symbol,direction,entry_price,exit_price,quantity,
+                     gross_pnl_eur,fees_eur,net_pnl_eur,opened_at,closed_at,
+                     hold_seconds,exit_reason,setup_score,detail_json
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(trade["trade_id"]), str(trade["symbol"]), str(trade["direction"]),
+                    str(trade["entry_price"]), str(trade["exit_price"]), str(trade["quantity"]),
+                    str(trade["gross_pnl_eur"]), str(trade["fees_eur"]), str(trade["net_pnl_eur"]),
+                    float(trade["opened_at"]), float(trade["closed_at"]),
+                    float(trade["hold_seconds"]), str(trade["exit_reason"]), str(trade["setup_score"]),
+                    json.dumps(trade.get("detail", {}), sort_keys=True, default=str),
+                ),
+            )
+
+            if remaining_position is None:
+                con.execute(
+                    "DELETE FROM tactical_positions WHERE symbol=?",
+                    (str(trade["symbol"]),),
+                )
+            else:
+                position = remaining_position
+                con.execute(
+                    """INSERT INTO tactical_positions(
+                         symbol,venue,direction,quantity,entry_price,peak_price,trough_price,
+                         notional_eur,leverage,opened_at,last_update,entry_client_order_id,
+                         setup_score,state,entry_context_json,entry_parameters_json
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(symbol) DO UPDATE SET
+                         venue=excluded.venue,direction=excluded.direction,quantity=excluded.quantity,
+                         entry_price=excluded.entry_price,peak_price=excluded.peak_price,
+                         trough_price=excluded.trough_price,notional_eur=excluded.notional_eur,
+                         leverage=excluded.leverage,last_update=excluded.last_update,
+                         entry_client_order_id=excluded.entry_client_order_id,
+                         setup_score=excluded.setup_score,state=excluded.state,
+                         entry_context_json=COALESCE(excluded.entry_context_json,tactical_positions.entry_context_json),
+                         entry_parameters_json=COALESCE(excluded.entry_parameters_json,tactical_positions.entry_parameters_json)""",
+                    (
+                        str(position["symbol"]), str(position["venue"]), str(position["direction"]),
+                        str(position["quantity"]), str(position["entry_price"]), str(position["peak_price"]),
+                        str(position["trough_price"]), str(abs(Decimal(str(position["notional_eur"])))),
+                        str(position["leverage"]), float(position["opened_at"]), now,
+                        str(position["entry_client_order_id"]), str(position["setup_score"]),
+                        str(position["state"]),
+                        json.dumps(position.get("entry_context"), sort_keys=True, default=str)
+                        if position.get("entry_context") is not None else None,
+                        json.dumps(position.get("entry_parameters"), sort_keys=True, default=str)
+                        if position.get("entry_parameters") is not None else None,
+                    ),
+                )
+
+            con.execute(
+                """INSERT INTO tactical_order_progress(
+                     client_order_id,last_filled_quantity,last_average_price,terminal,updated_at
+                   ) VALUES(?,?,?,?,?)
+                   ON CONFLICT(client_order_id) DO UPDATE SET
+                     last_filled_quantity=excluded.last_filled_quantity,
+                     last_average_price=excluded.last_average_price,
+                     terminal=excluded.terminal,updated_at=excluded.updated_at""",
+                (
+                    client_order_id, str(cumulative), str(cumulative_average_price),
+                    int(terminal), now,
+                ),
+            )
+            con.commit()
+        return True
