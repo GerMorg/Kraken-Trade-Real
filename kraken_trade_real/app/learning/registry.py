@@ -154,6 +154,9 @@ class ModelRegistry:
             "tactical_min_expected_move_bps": (80.0, 1200.0),
             "tactical_min_momentum_bps": (10.0, 300.0),
             "tactical_min_volume_ratio": (1.0, 8.0),
+            "tactical_min_breakout_bps": (5.0, 250.0),
+            "tactical_max_spread_bps": (3.0, 60.0),
+            "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
             "tactical_portfolio_pct": (1.0, 25.0),
             "tactical_position_limit_pct": (1.0, 80.0),
         }
