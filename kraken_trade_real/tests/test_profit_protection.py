@@ -397,3 +397,119 @@ def test_core_exit_path_resets_profit_high_water_when_exchange_position_changes(
     )
     assert old["closed_at"] is not None
     assert old["close_reason"] == "POSITION_IDENTITY_CHANGED"
+
+
+def test_core_exit_episode_requires_current_cycle_app_managed_opening(
+    db, config, instrument
+):
+    import time
+
+    cycle_id = "core-open-cycle"
+    db.start_cycle(cycle_id, "test-hash")
+    cycle = db.one("SELECT started_at FROM cycles WHERE cycle_id=?", (cycle_id,))
+    now = max(time.time(), float(cycle["started_at"]) + 0.1)
+    decision_id = "core-open-decision"
+    db.execute(
+        """INSERT INTO decisions(
+             decision_id,created_at,symbol,direction,target_notional_eur,leverage,
+             expected_return_bps,expected_cost_bps,confidence,regime,news_effect_bps,
+             gemini_effect_bps,strategy_version,model_version,config_hash,rationale_json
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            decision_id, now, instrument.symbol, "SHORT", "20", "2", "150", "20",
+            "0.8", "TREND_DOWN", "0", "0", "core-v1", "baseline-v1", "test-hash", "{}",
+        ),
+    )
+    db.execute(
+        """INSERT INTO orders(
+             intent_id,client_order_id,created_at,decision_id,symbol,direction,side,
+             order_type,quantity,limit_price,leverage,margin,reduce_only,post_only,
+             state,submitted_at,kraken_order_id,expected_edge_bps,max_slippage_bps,
+             expires_seconds,last_error
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "core-open-intent", "core-open-client", now, decision_id, instrument.symbol,
+            "SHORT", "sell", "limit", "1", "100", "2", 1, 0, 0, "FILLED",
+            now, "exchange-open-1", "100", "25", 60, "",
+        ),
+    )
+
+    portfolio = portfolio_for(instrument, "-20", "5.0")
+    portfolio.spot_margin_open_order_ids = {instrument.symbol: ("exchange-open-1",)}
+    portfolio.spot_margin_position_directions = {instrument.symbol: "SHORT"}
+    portfolio.spot_margin_open_lot_count = {instrument.symbol: 1}
+    manager = PositionProfitProtection(config, db, FakeAudit())
+    manager.observe(portfolio, cycle_id)
+
+    episode = db.active_core_exit_episode(instrument.symbol)
+    assert episode is not None
+    assert episode["eligible_for_learning"] == 1
+    assert episode["opening_decision_ids_json"] == '["core-open-decision"]'
+    assert episode["eligibility_reason"] == (
+        "APP_MANAGED_SINGLE_ORDER_CAPTURED_FROM_ENTRY_CYCLE"
+    )
+
+
+def test_core_exit_path_is_preserved_on_read_failure_and_closed_on_confirmed_absence(
+    db, config, instrument
+):
+    manager = PositionProfitProtection(config, db, FakeAudit())
+    manager.observe(portfolio_for(instrument, "-20", "8.0"), "core-path-1")
+    episode = db.active_core_exit_episode(instrument.symbol)
+    assert episode is not None
+
+    # Failed account reads cannot be interpreted as a flat/closed position.
+    manager.observe(
+        portfolio_for(instrument, "-20", "0", read_ok=False),
+        "core-path-read-failure",
+    )
+    still_active = db.active_core_exit_episode(instrument.symbol)
+    assert still_active is not None
+    assert still_active["episode_id"] == episode["episode_id"]
+
+    flat = PortfolioState(spot_open_positions_read_ok=True)
+    manager.observe(flat, "core-path-confirmed-flat")
+    assert db.active_core_exit_episode(instrument.symbol) is None
+    closed = db.one(
+        "SELECT closed_at,close_reason FROM core_exit_episodes WHERE episode_id=?",
+        (episode["episode_id"],),
+    )
+    assert closed["closed_at"] is not None
+    assert closed["close_reason"] == "EXTERNAL_OR_UNATTRIBUTED_CLOSE"
+
+
+def test_core_exit_path_resets_profit_high_water_when_exchange_position_changes(
+    db, config, instrument
+):
+    manager = PositionProfitProtection(config, db, FakeAudit())
+    first = portfolio_for(instrument, "-20", "12.0")
+    first.spot_margin_open_order_ids = {instrument.symbol: ("exchange-open-1",)}
+    first.spot_margin_position_directions = {instrument.symbol: "SHORT"}
+    first.spot_margin_open_lot_count = {instrument.symbol: 1}
+    manager.observe(first, "core-path-old-position")
+    old_episode = db.active_core_exit_episode(instrument.symbol)
+    assert old_episode is not None
+    assert D(db.one(
+        "SELECT peak_profit_pct FROM position_profit_state WHERE symbol=?",
+        (instrument.symbol,),
+    )["peak_profit_pct"]) == D("12.0")
+
+    second = portfolio_for(instrument, "-20", "1.0")
+    second.spot_margin_open_order_ids = {instrument.symbol: ("exchange-open-2",)}
+    second.spot_margin_position_directions = {instrument.symbol: "SHORT"}
+    second.spot_margin_open_lot_count = {instrument.symbol: 1}
+    manager.observe(second, "core-path-new-position")
+
+    new_episode = db.active_core_exit_episode(instrument.symbol)
+    assert new_episode is not None
+    assert new_episode["episode_id"] != old_episode["episode_id"]
+    assert D(db.one(
+        "SELECT peak_profit_pct FROM position_profit_state WHERE symbol=?",
+        (instrument.symbol,),
+    )["peak_profit_pct"]) == D("1.0")
+    old = db.one(
+        "SELECT closed_at,close_reason FROM core_exit_episodes WHERE episode_id=?",
+        (old_episode["episode_id"],),
+    )
+    assert old["closed_at"] is not None
+    assert old["close_reason"] == "POSITION_IDENTITY_CHANGED"
