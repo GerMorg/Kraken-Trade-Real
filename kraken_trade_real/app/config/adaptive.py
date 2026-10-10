@@ -74,9 +74,10 @@ class AdaptiveConfig:
                     for name, value in params.items():
                         if name in managed and name in defaults:
                             merged[name] = value
-            except Exception:
+            except Exception as exc:
                 # A registry read failure must fall back to validated defaults.
-                continue
+                object.__setattr__(self, "_registry_error", type(exc).__name__)
+                merged.update({name: defaults[name] for name in managed if name in defaults})
         # Keep type/range constraints independent of any model record.
         for name, bounds in {
             "tactical_portfolio_pct": (1.0, 25.0),
