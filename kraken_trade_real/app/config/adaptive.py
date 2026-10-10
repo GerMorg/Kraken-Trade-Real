@@ -17,6 +17,11 @@ LEARNED_TACTICAL_KEYS = {
     "tactical_max_spread_bps",
     "tactical_min_expected_move_bps",
     "tactical_adaptive_min_expected_move_bps",
+    "tactical_stop_loss_pct",
+    "tactical_take_profit_pct",
+    "tactical_trailing_trigger_bps",
+    "tactical_trailing_stop_pct",
+    "tactical_max_hold_seconds",
 }
 
 TACTICAL_DEFAULTS: dict[str, Any] = {
@@ -86,6 +91,11 @@ class AdaptiveConfig:
             "tactical_max_spread_bps": (3.0, 60.0),
             "tactical_min_expected_move_bps": (80.0, 1200.0),
             "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
+            "tactical_stop_loss_pct": (0.35, 2.0),
+            "tactical_take_profit_pct": (1.0, 5.0),
+            "tactical_trailing_trigger_bps": (50.0, 500.0),
+            "tactical_trailing_stop_pct": (0.2, 1.5),
+            "tactical_max_hold_seconds": (300, 7200),
         }.items():
             try:
                 value = float(merged[name])
@@ -94,6 +104,13 @@ class AdaptiveConfig:
                     merged[name] = int(round(merged[name]))
             except (KeyError, TypeError, ValueError):
                 continue
+        # Preserve stop/target ordering even if a corrupt or legacy model record
+        # somehow bypasses candidate promotion.
+        stop = float(merged.get("tactical_stop_loss_pct", 1.0))
+        target = float(merged.get("tactical_take_profit_pct", 2.2))
+        if stop >= target:
+            merged["tactical_stop_loss_pct"] = 1.0
+            merged["tactical_take_profit_pct"] = 2.2
         with self._lock:
             object.__setattr__(self, "_overrides", merged)
         return dict(merged)
