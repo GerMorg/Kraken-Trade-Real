@@ -203,6 +203,11 @@ class PortfolioReconciler:
     def reconcile(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
         positions: dict[str, D] = {}
+        position_pnl_eur: dict[str, D] = {}
+        position_pnl_pct: dict[str, D] = {}
+        position_basis_eur: dict[str, D] = {}
+        position_quantity: dict[str, D] = {}
+        spot_open_positions_read_ok = False
         self.position_leverages = {}
         self.cash_balances = {}
         self.spot_margin_account = None
@@ -283,25 +288,79 @@ class PortfolioReconciler:
 
         try:
             open_positions = self.gateway.spot_open_positions()
+            spot_open_positions_read_ok = isinstance(open_positions, dict)
+            known_spot_instruments = self._spot_instruments()
             for item in open_positions.values():
                 if not isinstance(item, dict):
                     continue
                 symbol = str(item.get("pair") or item.get("symbol") or "")
                 if not symbol:
                     continue
-                instrument = resolve_instrument_symbol(symbol, self._spot_instruments())
+                instrument = resolve_instrument_symbol(symbol, known_spot_instruments)
                 position_symbol = instrument.symbol if instrument is not None else symbol
                 position_leverage = dec(item.get("leverage"))
                 if position_leverage > 0:
                     self.position_leverages[position_symbol] = position_leverage
+
+                # Kraken OpenPositions(docalcs=true) supplies net PnL and cost in
+                # the pair's quote currency. Preserve that independently of the
+                # signed gross exposure used by position sizing.
+                quote_rate = (
+                    self.quote_to_eur_rate(instrument.quote)
+                    if instrument is not None else None
+                )
+                reported_net = dec(item.get("net"))
+                reported_cost = abs(dec(item.get("cost")))
+                if reported_cost > 0:
+                    position_pnl_pct[position_symbol] = (
+                        reported_net / reported_cost * D("100")
+                    )
+                if quote_rate is not None and quote_rate > 0:
+                    basis_eur = reported_cost * quote_rate
+                    pnl_eur = reported_net * quote_rate
+                    if basis_eur > 0:
+                        position_basis_eur[position_symbol] = basis_eur
+                    position_pnl_eur[position_symbol] = pnl_eur
+                    unreal += pnl_eur
+                quantity = max(
+                    D("0"),
+                    dec(item.get("vol")) - dec(item.get("vol_closed")),
+                )
+                if quantity > 0:
+                    position_quantity[position_symbol] = quantity
+
                 if position_symbol in positions:
+                    # The base-wallet balance and the financed leg are separate
+                    # valuation views; don't add the same symbol twice to gross,
+                    # but retain the exchange-reported margin PnL above.
+                    self.db.event(
+                        "PORTFOLIO_MARGIN_POSITION_PNL",
+                        "INFO",
+                        {"symbol": position_symbol,
+                         "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
+                         "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
+                         "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
+                         "quantity": str(position_quantity.get(position_symbol, D("0"))),
+                         "source": "KRAKEN_OPENPOSITIONS_DOCALCS"},
+                    )
                     continue
                 value = dec(item.get("value") or item.get("cost"))
-                if instrument is not None:
-                    rate = self.quote_to_eur_rate(instrument.quote)
-                    if rate is not None:
-                        value *= rate
+                if quote_rate is not None and quote_rate > 0:
+                    value *= quote_rate
                 if value == 0:
+                    # Still retain PnL/basis maps if Kraken reports zero market
+                    # value during a close/settlement edge case.
+                    if position_symbol in position_pnl_pct:
+                        self.db.event(
+                            "PORTFOLIO_MARGIN_POSITION_PNL",
+                            "INFO",
+                            {"symbol": position_symbol,
+                             "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
+                             "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
+                             "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
+                             "quantity": str(position_quantity.get(position_symbol, D("0"))),
+                             "source": "KRAKEN_OPENPOSITIONS_DOCALCS"},
+                        )
                     continue
                 if str(item.get("type") or "").lower() == "sell":
                     value = -abs(value)
@@ -312,7 +371,18 @@ class PortfolioReconciler:
                 positions[position_symbol] = value
                 gross += abs(value)
                 net += value
+                self.db.event(
+                    "PORTFOLIO_MARGIN_POSITION_PNL",
+                    "INFO",
+                    {"symbol": position_symbol,
+                     "pnl_eur": str(position_pnl_eur.get(position_symbol, D("0"))),
+                     "pnl_pct": str(position_pnl_pct.get(position_symbol, D("0"))),
+                     "basis_eur": str(position_basis_eur.get(position_symbol, D("0"))),
+                     "quantity": str(position_quantity.get(position_symbol, D("0"))),
+                     "source": "KRAKEN_OPENPOSITIONS_DOCALCS"},
+                )
         except Exception as exc:
+            spot_open_positions_read_ok = False
             self.db.event(
                 "PORTFOLIO_SPOT_POSITIONS_FAILED",
                 "WARNING",
@@ -388,6 +458,11 @@ class PortfolioReconciler:
             drawdown,
             0,
             time.time(),
+            position_pnl_eur=position_pnl_eur,
+            position_pnl_pct=position_pnl_pct,
+            position_basis_eur=position_basis_eur,
+            position_quantity=position_quantity,
+            spot_open_positions_read_ok=spot_open_positions_read_ok,
         )
 
 def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:
