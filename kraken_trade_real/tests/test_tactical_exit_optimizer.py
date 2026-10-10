@@ -94,8 +94,6 @@ def test_exit_replay_restores_a_trailing_position_baseline():
         _point(1_000, 101.0, peak=103.0, trough=100.5, state="TRAILING"),
         _point(1_010, 101.0, peak=103.0, trough=100.5, state="TRAILING"),
     ], close=1_010)
-    # The restored peak is above the entry, so a drop below the stored trail
-    # must be evaluated against that peak rather than a fabricated fresh entry.
     result = AdaptiveParameterOptimizer._simulate_tactical_exit(
         trade,
         _policy(
