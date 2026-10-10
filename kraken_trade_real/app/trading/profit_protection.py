@@ -220,11 +220,21 @@ class PositionProfitProtection:
         if action == "PARTIAL_TAKE_PROFIT" and decision is not None:
             desired = _d(decision.target_position_eur)
             # Keep an existing full exit or stronger reduction; a profit-taking
-            # instruction must never weaken a signal-driven reduction.
-            if desired == 0 or (
-                desired * current > 0 and abs(desired) < abs(target)
-            ):
+            # instruction must never weaken a signal-driven reduction. Tag a
+            # stronger nonzero reduction as profit-taking too, so its accepted
+            # order is reconciled and the anti-reentry flag is persisted.
+            if desired == 0:
                 return decision
+            if desired * current > 0 and abs(desired) < abs(target):
+                rationale = dict(decision.rationale)
+                rationale.update({
+                    "position_management_action": action,
+                    "position_profit_pct": str(current_pct),
+                    "position_profit_peak_pct": str(peak_pct),
+                    "position_profit_lock_threshold_pct": str(lock_threshold),
+                    "position_profit_partial_fraction_pct": str(partial_fraction * D("100")),
+                })
+                return replace(decision, rationale=rationale)
 
         delta = target - current
         if delta == 0:
