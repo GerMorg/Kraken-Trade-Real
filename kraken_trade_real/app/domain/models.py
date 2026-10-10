@@ -66,6 +66,11 @@ class PortfolioState:
     position_quantity:dict[str,Decimal]=field(default_factory=dict)
     spot_open_positions_read_ok:bool=False
     spot_margin_position_symbols:tuple[str,...]=()
+    # Exchange open-position identities keep the Normal exit-learning path tied
+    # to the exact live margin position epoch; aggregates may contain wallet inventory.
+    spot_margin_open_order_ids:dict[str,tuple[str,...]]=field(default_factory=dict)
+    spot_margin_position_directions:dict[str,str]=field(default_factory=dict)
+    spot_margin_open_lot_count:dict[str,int]=field(default_factory=dict)
 
 @dataclass(frozen=True)
 class Fill:
