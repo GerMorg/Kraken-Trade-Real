@@ -41,6 +41,12 @@ class LearningEngine:
     def record_order_outcome(self, client_order_id: str, payload: dict) -> None:
         self.db.learning_event("ORDER_OUTCOME", client_order_id, payload)
 
+    def rebuild_core_spot_outcomes(self) -> dict[str, Any]:
+        """Rebuild audit-first FIFO outcomes from app-managed Spot fill history."""
+        from app.learning.realized import CoreSpotRealizedOutcomeLedger
+
+        return CoreSpotRealizedOutcomeLedger(self.db).rebuild()
+
     def calibrate(self, pairs: list[tuple[float, bool]], model_version: str) -> dict:
         metrics = self.calibration.evaluate(pairs)
         self.db.execute(
