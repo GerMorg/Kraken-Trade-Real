@@ -21,6 +21,11 @@ class FakeRegistry:
                 "tactical_min_expected_move_bps": 350,
                 "tactical_min_momentum_bps": 60,
                 "tactical_portfolio_pct": 20,
+                "tactical_stop_loss_pct": 1.25,
+                "tactical_take_profit_pct": 3.0,
+                "tactical_trailing_trigger_bps": 150,
+                "tactical_trailing_stop_pct": 0.55,
+                "tactical_max_hold_seconds": 900,
             }
         return {}
 
@@ -31,11 +36,21 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
         tactical_min_expected_move_bps=280.0,
         tactical_min_momentum_bps=40.0,
         tactical_portfolio_pct=25.0,
+        tactical_stop_loss_pct=1.0,
+        tactical_take_profit_pct=2.2,
+        tactical_trailing_trigger_bps=100.0,
+        tactical_trailing_stop_pct=0.7,
+        tactical_max_hold_seconds=1800,
     )
     config = AdaptiveConfig(base, FakeRegistry())
     assert config.tactical_min_expected_move_bps == 350.0
     assert config.tactical_min_momentum_bps == 60.0
     assert config.tactical_portfolio_pct == 20.0
+    assert config.tactical_stop_loss_pct == 1.25
+    assert config.tactical_take_profit_pct == 3.0
+    assert config.tactical_trailing_trigger_bps == 150
+    assert config.tactical_trailing_stop_pct == 0.55
+    assert config.tactical_max_hold_seconds == 900
     # The adaptive overlay must not silently replace parameters it does not own.
     assert config.strategy_min_edge_bps == 33.0
     assert config.as_dict()["strategy_min_edge_bps"] == 33.0
@@ -62,6 +77,11 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
         "tactical_max_spread_bps": 0.1,
         "tactical_adaptive_min_expected_move_bps": 9999,
         "tactical_portfolio_pct": 99,
+        "tactical_stop_loss_pct": 99,
+        "tactical_take_profit_pct": 0.01,
+        "tactical_trailing_trigger_bps": 99999,
+        "tactical_trailing_stop_pct": 99,
+        "tactical_max_hold_seconds": 1,
     }), encoding="utf-8")
     config = Config.load(str(path))
     assert config.tactical_min_expected_move_bps == 280.0
@@ -71,6 +91,11 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_max_spread_bps == 25.0
     assert config.tactical_adaptive_min_expected_move_bps == 230.0
     assert config.tactical_portfolio_pct == 25.0
+    assert config.tactical_stop_loss_pct == 1.0
+    assert config.tactical_take_profit_pct == 2.2
+    assert config.tactical_trailing_trigger_bps == 100.0
+    assert config.tactical_trailing_stop_pct == 0.7
+    assert config.tactical_max_hold_seconds == 1800
 
 
 def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
