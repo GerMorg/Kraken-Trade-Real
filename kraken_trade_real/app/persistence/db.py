@@ -62,7 +62,7 @@ class Database:
             }.items():
                 if name not in pcols:
                     con.execute(f"ALTER TABLE predictions ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','6')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','7')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -347,6 +347,158 @@ class Database:
             )
             settled += 1
         return settled
+
+    def save_signal_observation(
+        self,
+        snapshot: MarketSnapshot,
+        signal: Any,
+        *,
+        direction_available: bool,
+        model_version: str,
+        horizon_seconds: int = 900,
+    ) -> bool:
+        """Record both accepted and rejected directional signals for unbiased learning.
+
+        One observation per symbol/direction/horizon bucket prevents the 5-minute
+        main cycle from creating three overlapping 15-minute labels for the same
+        market interval. The input timestamp is the market snapshot timestamp.
+        """
+        import hashlib
+
+        horizon = max(60, int(horizon_seconds))
+        created_at = float(snapshot.timestamp)
+        bucket = int(created_at // horizon)
+        direction = str(getattr(signal.direction, "value", signal.direction)).upper()
+        key = f"{signal.symbol}|{horizon}|{bucket}|{direction}"
+        observation_id = "signal_" + hashlib.sha256(key.encode()).hexdigest()[:32]
+        features = getattr(signal, "features", {}) or {}
+        cursor_before = self.one(
+            "SELECT 1 AS found FROM signal_observations "
+            "WHERE symbol=? AND horizon_bucket=? AND direction=?",
+            (str(signal.symbol), bucket, direction),
+        )
+        self.execute(
+            """INSERT OR IGNORE INTO signal_observations(
+               observation_id,created_at,horizon_seconds,horizon_bucket,symbol,direction,
+               direction_available,expected_return_bps,expected_cost_bps,expected_net_edge_bps,
+               confidence,regime,news_effect_bps,gemini_effect_bps,features_json,model_version,
+               outcome_status
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                observation_id,
+                created_at,
+                horizon,
+                bucket,
+                str(signal.symbol),
+                direction,
+                int(bool(direction_available)),
+                str(signal.expected_return_bps),
+                str(signal.expected_cost_bps),
+                str(signal.net_edge_bps),
+                float(signal.confidence),
+                str(signal.regime or ""),
+                str(signal.news_effect_bps),
+                str(signal.gemini_effect_bps),
+                json.dumps(features, sort_keys=True, default=str),
+                str(model_version),
+                "OPEN",
+            ),
+        )
+        return cursor_before is None
+
+    def settle_signal_observations(
+        self, now: float | None = None, limit: int = 500
+    ) -> dict[str, int]:
+        """Settle signal labels from observed prices; retain missing data as unscorable."""
+        now = time.time() if now is None else float(now)
+        batch_limit = max(1, min(2000, int(limit)))
+        rows = self.query(
+            """SELECT o.*,
+                 (SELECT price FROM market_snapshots m
+                  WHERE m.symbol=o.symbol AND m.captured_at<=o.created_at
+                  ORDER BY m.captured_at DESC LIMIT 1) AS start_price,
+                 (SELECT price FROM market_snapshots m
+                  WHERE m.symbol=o.symbol AND m.captured_at>=o.created_at+o.horizon_seconds
+                  ORDER BY m.captured_at ASC LIMIT 1) AS end_price
+               FROM signal_observations o
+               WHERE o.outcome_status='OPEN'
+                 AND o.created_at+o.horizon_seconds<=?
+               ORDER BY o.created_at ASC LIMIT ?""",
+            (now, batch_limit),
+        )
+        updates: list[tuple[Any, ...]] = []
+        unscorable: list[tuple[str, str]] = []
+        counts = {"settled": 0, "unscorable": 0, "waiting_for_prices": 0}
+        for row in rows:
+            start_raw, end_raw = row.get("start_price"), row.get("end_price")
+            created_at = float(row.get("created_at") or 0)
+            horizon = max(60, int(row.get("horizon_seconds") or 900))
+            if start_raw in (None, "") or end_raw in (None, ""):
+                if now > created_at + horizon + 86400:
+                    unscorable.append((str(row["observation_id"]), "PRICE_HISTORY_MISSING"))
+                else:
+                    counts["waiting_for_prices"] += 1
+                continue
+            try:
+                start_price, end_price = Decimal(str(start_raw)), Decimal(str(end_raw))
+            except Exception:
+                unscorable.append((str(row["observation_id"]), "INVALID_PRICE"))
+                continue
+            if start_price <= 0 or end_price <= 0:
+                unscorable.append((str(row["observation_id"]), "NON_POSITIVE_PRICE"))
+                continue
+            direction = str(row.get("direction") or "").upper()
+            if direction not in {"LONG", "SHORT"}:
+                unscorable.append((str(row["observation_id"]), "UNKNOWN_DIRECTION"))
+                continue
+            raw_return = (end_price / start_price - Decimal("1")) * Decimal("10000")
+            directional_return = raw_return if direction == "LONG" else -raw_return
+            cost = max(
+                Decimal("0"),
+                Decimal(str(row.get("expected_cost_bps") or "0")),
+            )
+            net_return = directional_return - cost
+            updates.append((
+                now,
+                str(raw_return),
+                str(net_return),
+                int(net_return > 0),
+                json.dumps({
+                    "start_price": str(start_price),
+                    "end_price": str(end_price),
+                    "direction": direction,
+                    "raw_return_bps": str(raw_return),
+                    "directional_return_bps": str(directional_return),
+                    "expected_cost_bps": str(cost),
+                    "net_return_bps": str(net_return),
+                    "label": "directional_return_minus_expected_cost_gt_zero",
+                }, sort_keys=True),
+                str(row["observation_id"]),
+            ))
+
+        with self.connect() as con:
+            con.execute("BEGIN")
+            try:
+                con.executemany(
+                    """UPDATE signal_observations
+                       SET settled_at=?,realized_return_bps=?,net_return_bps=?,success=?,
+                           outcome_detail_json=?,outcome_status='SETTLED'
+                       WHERE observation_id=? AND outcome_status='OPEN'""",
+                    updates,
+                )
+                con.executemany(
+                    """UPDATE signal_observations SET outcome_status='UNSCORABLE',
+                       outcome_detail_json=? WHERE observation_id=? AND outcome_status='OPEN'""",
+                    [(json.dumps({"reason": reason}), observation_id)
+                     for observation_id, reason in unscorable],
+                )
+                con.commit()
+            except BaseException:
+                con.rollback()
+                raise
+        counts["settled"] = len(updates)
+        counts["unscorable"] = len(unscorable)
+        return counts
 
     def learning_event(self,event_type:str,entity_id:str,payload:dict[str,Any])->None:
         self.execute("INSERT INTO learning_events(created_at,event_type,entity_id,payload_json) VALUES(?,?,?,?)",

@@ -74,6 +74,38 @@ CREATE TABLE IF NOT EXISTS prediction_outcomes(
   success INTEGER, error_bps TEXT, detail_json TEXT NOT NULL
 );
 
+-- Shadow-evaluate every eligible directional signal, not only signals that survive
+-- the currently active policy. Outcomes are independent of order placement.
+CREATE TABLE IF NOT EXISTS signal_observations(
+  observation_id TEXT PRIMARY KEY,
+  created_at REAL NOT NULL,
+  horizon_seconds INTEGER NOT NULL,
+  horizon_bucket INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  direction_available INTEGER NOT NULL,
+  expected_return_bps TEXT NOT NULL,
+  expected_cost_bps TEXT NOT NULL,
+  expected_net_edge_bps TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  regime TEXT NOT NULL,
+  news_effect_bps TEXT NOT NULL,
+  gemini_effect_bps TEXT NOT NULL,
+  features_json TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  outcome_status TEXT NOT NULL DEFAULT 'OPEN',
+  settled_at REAL,
+  realized_return_bps TEXT,
+  net_return_bps TEXT,
+  success INTEGER,
+  outcome_detail_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(symbol,horizon_bucket,direction)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_observation_status_time
+  ON signal_observations(outcome_status,created_at);
+CREATE INDEX IF NOT EXISTS idx_signal_observation_settled_time
+  ON signal_observations(outcome_status,settled_at);
+
 CREATE TABLE IF NOT EXISTS orders(
   intent_id TEXT PRIMARY KEY, client_order_id TEXT NOT NULL UNIQUE, created_at REAL NOT NULL,
   decision_id TEXT NOT NULL, symbol TEXT NOT NULL, direction TEXT NOT NULL, side TEXT NOT NULL,
