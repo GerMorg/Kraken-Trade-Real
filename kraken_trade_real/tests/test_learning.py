@@ -65,3 +65,28 @@ def test_model_registry_rejects_ece_regression(db):
     )
     assert registry.promote("candidate-ece-regression", min_improvement=0.01, min_samples=90) is False
     assert registry.active() == "baseline-v1"
+
+
+
+def test_learning_disabled_flag_is_honored(db):
+    from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
+
+    engine = LearningEngine(
+        db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db),
+        enabled=False,
+    )
+    assert engine.process_feedback(now=1_800_000_000)["status"] == "LEARNING_DISABLED"
+
+
+def test_learning_validation_interval_is_persisted(db):
+    from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
+
+    db.execute(
+        "INSERT INTO metadata(key,value) VALUES('learning_last_validation_at','1000000')"
+    )
+    engine = LearningEngine(
+        db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db),
+        validation_interval_hours=24,
+    )
+    result = engine.process_feedback(now=1_000_100)
+    assert result["status"] == "VALIDATION_INTERVAL_NOT_ELAPSED"
