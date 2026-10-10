@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.43
+
+- Bound forecast scoring to fresh market snapshots; expired forecasts without a valid sampling window become explicitly `UNSCORABLE` instead of remaining `OPEN` indefinitely.
+- Require at least 300 settled forecasts and 90 chronological validation outcomes before automatic calibration; require meaningful Brier improvement and non-regressing ECE/absolute-quality gates.
+- Derive candidate IDs from the parent model and evaluated data so repeated feedback passes cannot overwrite an already promoted model with a same-second candidate.
+- Recover the model registry deterministically if persistent state has zero or multiple active decision models, and make promotion/rollback transitions transactional.
+- Bump the Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.43.
+
+
 ## 0.1.42
 
 - Aggregate all Kraken OpenPositions lots per pair for quantity, PnL, cost basis, exposure and leverage instead of silently dropping later lots.
