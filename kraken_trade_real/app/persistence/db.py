@@ -74,7 +74,7 @@ class Database:
                     con.execute(f"ALTER TABLE fills ADD COLUMN {name} {definition}")
             con.execute("CREATE INDEX IF NOT EXISTS idx_fills_decision_time ON fills(decision_id, created_at)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_fills_client_order ON fills(client_order_id, created_at)")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','8')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','9')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
