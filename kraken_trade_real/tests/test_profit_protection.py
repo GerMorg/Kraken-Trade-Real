@@ -1,5 +1,4 @@
 from decimal import Decimal
-from types import SimpleNamespace
 
 from app.domain.models import Decision, PortfolioState, Signal
 from app.domain.states import Direction
