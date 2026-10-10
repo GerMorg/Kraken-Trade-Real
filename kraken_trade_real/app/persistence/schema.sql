@@ -107,8 +107,6 @@ CREATE TABLE IF NOT EXISTS fills(
   quote_asset TEXT NOT NULL DEFAULT '',
   raw_json TEXT NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS idx_fills_decision_time ON fills(decision_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_fills_client_order ON fills(client_order_id, created_at);
 
 CREATE TABLE IF NOT EXISTS positions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, captured_at REAL NOT NULL, venue TEXT NOT NULL,
