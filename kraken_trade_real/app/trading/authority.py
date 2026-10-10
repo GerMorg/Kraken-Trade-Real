@@ -195,10 +195,9 @@ class TradingAuthority:
     ) -> dict[str, Any]:
         """Backfill known Spot/Margin order fills without blocking trading on failure.
 
-        Kraken TradesHistory is reverse-chronological and pages by offset. Each
-        sync session pins a start/end window and persists its offset, so new
-        fills cannot shift pagination between Home Assistant cycles. The DB's
-        (order_id, trade_id) key makes retries idempotent.
+        Each sync session pins a start/end window and persists Kraken's cursor
+        token between cycles. The DB's (order_id, trade_id) key makes retries
+        idempotent even if a page is replayed after a process restart.
         """
         if not callable(getattr(self.gateway, "spot_trades_history", None)):
             return {"status": "UNSUPPORTED", "pages": 0, "inserted": 0, "matched": 0}
@@ -209,7 +208,7 @@ class TradingAuthority:
                 for key in (
                     "core_spot_fill_sync_start",
                     "core_spot_fill_sync_end",
-                    "core_spot_fill_sync_offset",
+                    "core_spot_fill_sync_cursor",
                 )
             }
             active_session = all(session[key] is not None for key in session)
@@ -262,7 +261,7 @@ class TradingAuthority:
             if active_session:
                 start_at = int(float(session["core_spot_fill_sync_start"]["value"]))
                 end_at = int(float(session["core_spot_fill_sync_end"]["value"]))
-                offset = max(0, int(float(session["core_spot_fill_sync_offset"]["value"])))
+                cursor = str(session["core_spot_fill_sync_cursor"].get("value") or "")
             else:
                 watermark = metadata_value("core_spot_fill_sync_watermark")
                 cutoff = int(now - max(1, int(lookback_days)) * 86400)
@@ -278,12 +277,12 @@ class TradingAuthority:
                     )
                     start_at = max(cutoff, int(first_order) - 2)
                 end_at = int(now)
-                offset = 0
+                cursor = ""
                 if end_at <= start_at:
                     return {"status": "UP_TO_DATE", "pages": 0, "inserted": 0, "matched": 0}
                 set_metadata("core_spot_fill_sync_start", start_at)
                 set_metadata("core_spot_fill_sync_end", end_at)
-                set_metadata("core_spot_fill_sync_offset", 0)
+                set_metadata("core_spot_fill_sync_cursor", "")
 
             stats: dict[str, Any] = {
                 "status": "IN_PROGRESS",
@@ -291,27 +290,34 @@ class TradingAuthority:
                 "inserted": 0,
                 "matched": 0,
                 "unmatched": 0,
-                "offset_start": offset,
+                "cursor_page_start": bool(cursor),
                 "window_start": start_at,
                 "window_end": end_at,
             }
             max_pages = max(1, min(5, int(max_pages)))
             page_size = max(1, min(50, int(page_size)))
             for _ in range(max_pages):
-                response = self.gateway.spot_trades_history({
+                request_params: dict[str, Any] = {
                     "start": start_at,
                     "end": end_at,
-                    "ofs": offset,
-                })
+                    "with_cursor": True,
+                    "limit": page_size,
+                    "trades": True,
+                }
+                if cursor:
+                    request_params["cursor"] = cursor
+                response = self.gateway.spot_trades_history(request_params)
                 if not isinstance(response, dict):
                     raise KrakenError("SPOT_TRADES_HISTORY_INVALID_RESPONSE")
                 trades = response.get("trades")
                 if not isinstance(trades, dict):
                     raise KrakenError("SPOT_TRADES_HISTORY_MISSING_TRADES")
-                try:
-                    total_count = max(0, int(response.get("count") or 0))
-                except (TypeError, ValueError):
-                    total_count = 0
+                cursor_response = response.get("cursor")
+                next_cursor = (
+                    str(cursor_response.get("next") or "")
+                    if isinstance(cursor_response, dict)
+                    else ""
+                )
                 stats["pages"] += 1
                 for trade_id, payload in trades.items():
                     if not isinstance(payload, dict):
@@ -357,24 +363,21 @@ class TradingAuthority:
                     if inserted:
                         stats["inserted"] += 1
 
-                next_offset = offset + len(trades)
-                # Empty/short page means the pinned time window was exhausted.
-                done = not trades or len(trades) < page_size or (
-                    total_count > 0 and next_offset >= total_count
-                )
+                # With cursor pagination, an absent cursor.next marks the final
+                # page. Do not infer completion from count/offset values.
+                done = not trades or not next_cursor
                 if done:
                     stats["status"] = "COMPLETE"
                     set_metadata("core_spot_fill_sync_watermark", end_at)
                     self.db.execute(
                         """DELETE FROM metadata WHERE key IN (
                            'core_spot_fill_sync_start','core_spot_fill_sync_end',
-                           'core_spot_fill_sync_offset'
+                           'core_spot_fill_sync_cursor'
                         )"""
                     )
-                    stats["offset_end"] = next_offset
                     break
-                offset = next_offset
-                set_metadata("core_spot_fill_sync_offset", offset)
+                cursor = next_cursor
+                set_metadata("core_spot_fill_sync_cursor", cursor)
                 stats["status"] = "IN_PROGRESS"
             return stats
 
