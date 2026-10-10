@@ -5,7 +5,7 @@
 - Wire Kraken Spot TradesHistory into the live cycle so actual local Spot/Margin order fills are persisted; the pre-existing fill table is no longer an unused sink.
 - Match exchange fills only to known local Spot orders and preserve decision ID, order/client IDs, quote asset and the raw exchange payload for auditable attribution.
 - Add schema migration for fill attribution fields and indexes without deleting prior fill history; idempotent order/trade keys prevent duplicates after retries.
-- Use fixed time-window pagination with durable offsets, bounded pages per cycle, throttling, and non-blocking failure handling. The sync never changes live order decisions.
+- Use fixed time-window pagination with Kraken's `with_cursor`/`cursor.next` API (not deprecated `ofs`), persisting opaque cursors between cycles; bound pages per cycle and make failures non-blocking. The sync never changes live order decisions.
 - Kraken's Spot TradesHistory payload does not include an explicit fee-currency field; keep that currency marked UNVERIFIED and do not use those fee values to promote strategy policy until fee denomination and realized-PnL attribution are independently validated.
 - Futures fill and position-event attribution remains a separate package; this release does not yet claim full Normal strategy realized-PnL learning.
 - Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.49.
