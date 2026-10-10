@@ -135,7 +135,7 @@ def test_learning_promotes_validated_regime_specific_scales(db):
         auto_promotion_enabled=True, enabled=True, auto_calibration_enabled=True,
     )
     result = engine.process_feedback(now=now)
-    assert result["promoted"] is True, result
+    assert result["promoted"] is True, {key: result.get(key) for key in ("status", "best_scale", "regime_scales", "improvement", "brier", "candidate_brier", "ece", "candidate_ece", "candidate_version", "promoted")}
     assert "LOW_QUALITY" in result["regime_scales"]
     assert "HIGH_QUALITY" in result["regime_scales"]
     parameters = registry.parameters(registry.active(), family="decision")
