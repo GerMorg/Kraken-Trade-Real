@@ -74,7 +74,7 @@ class Database:
                     con.execute(f"ALTER TABLE fills ADD COLUMN {name} {definition}")
             con.execute("CREATE INDEX IF NOT EXISTS idx_fills_decision_time ON fills(decision_id, created_at)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_fills_client_order ON fills(client_order_id, created_at)")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','9')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','10')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -276,6 +276,153 @@ class Database:
                 ),
             )
             return cur.rowcount > 0
+
+    def active_core_exit_episode(self, symbol: str) -> dict[str, Any] | None:
+        return self.one(
+            """SELECT * FROM core_exit_episodes
+               WHERE symbol=? AND closed_at IS NULL
+               ORDER BY opened_at DESC LIMIT 1""",
+            (symbol,),
+        )
+
+    def core_exit_episodes(
+        self,
+        *,
+        eligible_only: bool = False,
+        since_timestamp: float | None = None,
+    ) -> list[dict[str, Any]]:
+        if eligible_only and since_timestamp is not None:
+            return self.query(
+                """SELECT * FROM core_exit_episodes
+                   WHERE eligible_for_learning=1 AND opened_at>=?
+                   ORDER BY opened_at ASC""",
+                (float(since_timestamp),),
+            )
+        if eligible_only:
+            return self.query(
+                """SELECT * FROM core_exit_episodes
+                   WHERE eligible_for_learning=1 ORDER BY opened_at ASC"""
+            )
+        if since_timestamp is not None:
+            return self.query(
+                "SELECT * FROM core_exit_episodes WHERE opened_at>=? ORDER BY opened_at ASC",
+                (float(since_timestamp),),
+            )
+        return self.query(
+            "SELECT * FROM core_exit_episodes ORDER BY opened_at ASC"
+        )
+
+    def create_core_exit_episode(
+        self,
+        *,
+        episode_id: str,
+        symbol: str,
+        direction: str,
+        opened_at: float,
+        observed_at: float,
+        order_ids: list[str] | tuple[str, ...],
+        decision_ids: list[str] | tuple[str, ...],
+        open_lot_count: int,
+        basis_eur: Any,
+        first_profit_pct: Any,
+        peak_profit_pct: Any,
+        eligible_for_learning: bool,
+        eligibility_reason: str,
+        exit_policy_snapshot: dict[str, Any],
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        self.execute(
+            """INSERT INTO core_exit_episodes(
+                 episode_id,symbol,direction,opened_at,last_seen_at,closed_at,
+                 open_order_ids_json,opening_decision_ids_json,open_lot_count,
+                 initial_basis_eur,first_profit_pct,last_profit_pct,peak_profit_pct,
+                 eligible_for_learning,eligibility_reason,exit_policy_snapshot_json,
+                 close_reason,detail_json
+               ) VALUES(?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                episode_id, symbol, direction, float(opened_at), float(observed_at),
+                json.dumps(list(order_ids), sort_keys=True),
+                json.dumps(list(decision_ids), sort_keys=True), int(open_lot_count),
+                str(basis_eur), str(first_profit_pct), str(first_profit_pct),
+                str(peak_profit_pct), int(bool(eligible_for_learning)),
+                str(eligibility_reason), json.dumps(exit_policy_snapshot, sort_keys=True, default=str),
+                "", json.dumps(detail or {}, sort_keys=True, default=str),
+            ),
+        )
+
+    def record_core_exit_observation(
+        self,
+        *,
+        episode_id: str,
+        cycle_id: str,
+        observed_at: float,
+        profit_pct: Any,
+        peak_profit_pct: Any,
+        basis_eur: Any,
+        quantity: Any,
+        position_pnl_eur: Any,
+        partial_taken: bool,
+        pending_order_id: str,
+        policy_snapshot: dict[str, Any],
+        quality: dict[str, Any] | None = None,
+    ) -> None:
+        """Upsert one cycle observation; final portfolio reconciliation wins over the early one."""
+        if not str(cycle_id or "").strip():
+            return
+        self.execute(
+            """INSERT INTO core_exit_path_points(
+                 episode_id,cycle_id,observed_at,profit_pct,peak_profit_pct,basis_eur,
+                 quantity,position_pnl_eur,partial_taken,pending_order_id,
+                 policy_snapshot_json,quality_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(episode_id,cycle_id) DO UPDATE SET
+                 observed_at=excluded.observed_at,
+                 profit_pct=excluded.profit_pct,
+                 peak_profit_pct=excluded.peak_profit_pct,
+                 basis_eur=excluded.basis_eur,
+                 quantity=excluded.quantity,
+                 position_pnl_eur=excluded.position_pnl_eur,
+                 partial_taken=excluded.partial_taken,
+                 pending_order_id=excluded.pending_order_id,
+                 policy_snapshot_json=excluded.policy_snapshot_json,
+                 quality_json=excluded.quality_json""",
+            (
+                episode_id, cycle_id, float(observed_at), str(profit_pct),
+                str(peak_profit_pct), str(basis_eur), str(quantity), str(position_pnl_eur),
+                int(bool(partial_taken)), str(pending_order_id or ""),
+                json.dumps(policy_snapshot, sort_keys=True, default=str),
+                json.dumps(quality or {}, sort_keys=True, default=str),
+            ),
+        )
+        self.execute(
+            """UPDATE core_exit_episodes
+               SET last_seen_at=?,last_profit_pct=?,peak_profit_pct=?
+               WHERE episode_id=? AND closed_at IS NULL""",
+            (float(observed_at), str(profit_pct), str(peak_profit_pct), episode_id),
+        )
+
+    def close_core_exit_episode(
+        self, episode_id: str, closed_at: float, close_reason: str
+    ) -> bool:
+        with self.connect() as con:
+            cur = con.execute(
+                """UPDATE core_exit_episodes
+                   SET closed_at=?,last_seen_at=?,close_reason=?
+                   WHERE episode_id=? AND closed_at IS NULL""",
+                (float(closed_at), float(closed_at), str(close_reason), episode_id),
+            )
+            return cur.rowcount > 0
+
+    def core_exit_path(
+        self, episode_id: str, *, until_timestamp: float | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM core_exit_path_points WHERE episode_id=?"
+        params: tuple[Any, ...] = (episode_id,)
+        if until_timestamp is not None:
+            sql += " AND observed_at<=?"
+            params += (float(until_timestamp),)
+        sql += " ORDER BY observed_at ASC,point_id ASC"
+        return self.query(sql, params)
 
     def save_portfolio(self,cycle_id:str,state:PortfolioState)->None:
         self.execute("""INSERT INTO portfolio_snapshots(cycle_id,captured_at,equity_eur,cash_eur,gross_eur,net_eur,

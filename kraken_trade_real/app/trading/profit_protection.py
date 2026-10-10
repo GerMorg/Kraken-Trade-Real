@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -29,6 +31,248 @@ class PositionProfitProtection:
         self.db = db
         self.audit = audit
 
+    def _exit_policy_snapshot(self) -> dict[str, str]:
+        """Capture the exact non-risk Core exit policy used for each episode observation."""
+        keys = (
+            "strategy_stop_loss_pct",
+            "strategy_partial_profit_trigger_pct",
+            "strategy_partial_profit_fraction_pct",
+            "strategy_profit_lock_trigger_pct",
+            "strategy_profit_giveback_pct",
+            "strategy_profit_lock_floor_pct",
+        )
+        defaults = {
+            "strategy_stop_loss_pct": 2.0,
+            "strategy_partial_profit_trigger_pct": 10.0,
+            "strategy_partial_profit_fraction_pct": 50.0,
+            "strategy_profit_lock_trigger_pct": 10.0,
+            "strategy_profit_giveback_pct": 35.0,
+            "strategy_profit_lock_floor_pct": 5.0,
+        }
+        return {
+            key: str(getattr(self.config, key, defaults[key]))
+            for key in keys
+        }
+
+    def _position_exit_close_reason(self, symbol: str, opened_at: float) -> str:
+        rows = self.db.query(
+            """SELECT o.created_at,d.rationale_json
+               FROM orders AS o
+               JOIN decisions AS d ON d.decision_id=o.decision_id
+               WHERE o.symbol=? AND o.reduce_only=1 AND o.created_at>=?
+               ORDER BY o.created_at DESC LIMIT 20""",
+            (symbol, float(opened_at)),
+        )
+        for row in rows:
+            try:
+                rationale = json.loads(row.get("rationale_json") or "{}")
+            except (TypeError, ValueError):
+                rationale = {}
+            if not isinstance(rationale, dict):
+                continue
+            action = str(rationale.get("position_management_action") or "")
+            if action in {"STOP_LOSS_EXIT", "TRAILING_PROFIT_EXIT"}:
+                return action
+            if action == "PARTIAL_TAKE_PROFIT":
+                # This can only close an episode if the actual remaining position
+                # disappeared; keep the specific trigger for later validation.
+                return action
+            if str(rationale.get("risk_profile") or "").lower() == "core":
+                return "STRATEGY_REDUCTION"
+        return "EXTERNAL_OR_UNATTRIBUTED_CLOSE"
+
+    def _ensure_core_exit_episode(
+        self,
+        portfolio: PortfolioState,
+        symbol: str,
+        cycle_id: str,
+        observed_at: float,
+        current_pct: D,
+    ) -> dict[str, Any] | None:
+        """Create or reuse a position epoch; never label an inherited/manual path learnable."""
+        order_ids = sorted({
+            str(value).strip()
+            for value in getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
+            if str(value).strip()
+        })
+        direction = str(
+            getattr(portfolio, "spot_margin_position_directions", {}).get(symbol, "MIXED")
+            or "MIXED"
+        ).upper()
+        lot_count = int(
+            getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, len(order_ids))
+            or 0
+        )
+        active = self.db.active_core_exit_episode(symbol)
+        same_identity = False
+        if active is not None:
+            try:
+                stored_ids = sorted(json.loads(active.get("open_order_ids_json") or "[]"))
+            except (TypeError, ValueError):
+                stored_ids = []
+            same_identity = (
+                stored_ids == order_ids
+                and str(active.get("direction") or "").upper() == direction
+            )
+            if not same_identity:
+                self.db.close_core_exit_episode(
+                    str(active["episode_id"]), observed_at, "POSITION_IDENTITY_CHANGED"
+                )
+                self.db.execute(
+                    "DELETE FROM position_profit_state WHERE symbol=?",
+                    (symbol,),
+                )
+                self.audit.emit(
+                    "CORE_EXIT_EPISODE_ROTATED",
+                    "INFO",
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    old_episode_id=str(active["episode_id"]),
+                    old_order_ids=stored_ids,
+                    new_order_ids=order_ids,
+                    old_direction=str(active.get("direction") or ""),
+                    new_direction=direction,
+                )
+                active = None
+        if active is not None and same_identity:
+            return active
+
+        cycle = self.db.one(
+            "SELECT started_at FROM cycles WHERE cycle_id=?",
+            (cycle_id,),
+        ) if cycle_id else None
+        try:
+            cycle_started_at = float(cycle["started_at"]) if cycle and cycle.get("started_at") is not None else None
+        except (TypeError, ValueError):
+            cycle_started_at = None
+
+        local_rows: list[dict[str, Any]] = []
+        for order_id in order_ids:
+            local_rows.extend(
+                self.db.query(
+                    """SELECT o.kraken_order_id,o.decision_id,o.direction,o.reduce_only,
+                              o.state,o.created_at,o.submitted_at,d.strategy_version
+                       FROM orders AS o
+                       JOIN decisions AS d ON d.decision_id=o.decision_id
+                       WHERE o.symbol=? AND o.kraken_order_id=?
+                       ORDER BY o.created_at DESC""",
+                    (symbol, order_id),
+                )
+            )
+        opening_rows = [
+            row for row in local_rows
+            if not bool(int(row.get("reduce_only") or 0))
+            and str(row.get("direction") or "").upper() == direction
+            and "tactical" not in str(row.get("strategy_version") or "").lower()
+        ]
+        decision_ids = sorted({
+            str(row.get("decision_id") or "")
+            for row in opening_rows if str(row.get("decision_id") or "")
+        })
+        matching_open_order = (
+            opening_rows[0]
+            if len(order_ids) == 1
+            and len(opening_rows) == 1
+            and str(opening_rows[0].get("kraken_order_id") or "") == order_ids[0]
+            else None
+        )
+        has_pnl = symbol in portfolio.position_pnl_pct
+        basis = _d(portfolio.position_basis_eur.get(symbol))
+        quantity = _d(portfolio.position_quantity.get(symbol))
+        data_complete = has_pnl and basis > 0 and quantity > 0
+        order_created_at = None
+        if matching_open_order is not None:
+            raw_order_created_at = (
+                matching_open_order.get("submitted_at")
+                or matching_open_order.get("created_at")
+            )
+            if raw_order_created_at is not None:
+                try:
+                    order_created_at = float(raw_order_created_at)
+                except (TypeError, ValueError):
+                    order_created_at = None
+        current_cycle_open = (
+            matching_open_order is not None
+            and order_created_at is not None
+            and cycle_started_at is not None
+            and float(matching_open_order.get("created_at") or 0.0) >= cycle_started_at - 1.0
+        )
+        eligible = bool(
+            direction in {"LONG", "SHORT"}
+            and len(order_ids) == 1
+            and lot_count == 1
+            and matching_open_order is not None
+            and len(decision_ids) == 1
+            and current_cycle_open
+            and data_complete
+        )
+        if eligible:
+            reason = "APP_MANAGED_SINGLE_ORDER_CAPTURED_FROM_ENTRY_CYCLE"
+            episode_opened_at = min(order_created_at or observed_at, observed_at)
+        elif direction not in {"LONG", "SHORT"}:
+            reason = "MIXED_OR_UNKNOWN_POSITION_DIRECTION"
+            episode_opened_at = observed_at
+        elif not data_complete:
+            reason = "POSITION_PNL_OR_BASIS_UNAVAILABLE"
+            episode_opened_at = observed_at
+        elif len(order_ids) != 1 or lot_count != 1:
+            reason = "MULTIPLE_OPEN_MARGIN_LOTS"
+            episode_opened_at = observed_at
+        elif matching_open_order is None or len(decision_ids) != 1:
+            reason = "EXTERNAL_OR_UNATTRIBUTED_POSITION"
+            episode_opened_at = observed_at
+        elif not current_cycle_open:
+            reason = "POSITION_PREDATES_PATH_CAPTURE"
+            episode_opened_at = observed_at
+        else:
+            reason = "PATH_NOT_ELIGIBLE"
+            episode_opened_at = observed_at
+
+        policy = self._exit_policy_snapshot()
+        previous_state = self._state(symbol)
+        peak = max(
+            current_pct,
+            _d(previous_state.get("peak_profit_pct")) if previous_state else D("0"),
+        )
+        episode_id = new_id("core_exit_episode")
+        self.db.create_core_exit_episode(
+            episode_id=episode_id,
+            symbol=symbol,
+            direction=direction,
+            opened_at=episode_opened_at,
+            observed_at=observed_at,
+            order_ids=order_ids,
+            decision_ids=decision_ids,
+            open_lot_count=lot_count,
+            basis_eur=basis,
+            first_profit_pct=current_pct,
+            peak_profit_pct=peak,
+            eligible_for_learning=eligible,
+            eligibility_reason=reason,
+            exit_policy_snapshot=policy,
+            detail={
+                "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
+                "cycle_id": cycle_id,
+                "cycle_started_at": cycle_started_at,
+                "order_created_at": order_created_at,
+                "position_quantity": str(quantity),
+                "position_pnl_eur": str(portfolio.position_pnl_eur.get(symbol, D("0"))),
+            },
+        )
+        self.audit.emit(
+            "CORE_EXIT_EPISODE_STARTED",
+            "INFO",
+            cycle_id=cycle_id,
+            episode_id=episode_id,
+            symbol=symbol,
+            direction=direction,
+            eligible_for_learning=eligible,
+            eligibility_reason=reason,
+            order_ids=order_ids,
+            open_lot_count=lot_count,
+        )
+        return self.db.active_core_exit_episode(symbol)
+
     def observe(self, portfolio: PortfolioState, cycle_id: str = "") -> None:
         """Persist PnL high-water marks and reconcile outstanding partial exits."""
         if not portfolio.spot_open_positions_read_ok:
@@ -41,6 +285,37 @@ class PositionProfitProtection:
             symbol for symbol in portfolio.position_pnl_pct
             if symbol and symbol in portfolio.positions and portfolio.positions.get(symbol, D("0")) != 0
         )
+        # A confirmed successful OpenPositions read is the only signal allowed
+        # to close old path episodes. An API failure returned above without erasing
+        # either high-water marks or learning evidence.
+        try:
+            for episode in self.db.query(
+                "SELECT episode_id,symbol,opened_at FROM core_exit_episodes WHERE closed_at IS NULL"
+            ):
+                episode_symbol = str(episode.get("symbol") or "")
+                if episode_symbol and episode_symbol not in active_symbols:
+                    episode_id = str(episode.get("episode_id") or "")
+                    opened_at = float(episode.get("opened_at") or 0.0)
+                    close_reason = self._position_exit_close_reason(episode_symbol, opened_at)
+                    if self.db.close_core_exit_episode(episode_id, time.time(), close_reason):
+                        self.audit.emit(
+                            "CORE_EXIT_EPISODE_CLOSED",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            episode_id=episode_id,
+                            symbol=episode_symbol,
+                            close_reason=close_reason,
+                        )
+        except Exception as exc:
+            # Path-ledger failures must not prevent live protection from continuing.
+            self.audit.emit(
+                "CORE_EXIT_EPISODE_CLOSE_FAILED",
+                "WARNING",
+                cycle_id=cycle_id,
+                error_type=type(exc).__name__,
+                error=str(exc)[:240],
+            )
+
         rows = self.db.query(
             "SELECT symbol FROM position_profit_state"
         )
@@ -59,8 +334,24 @@ class PositionProfitProtection:
                     reason="EXCHANGE_CONFIRMED_POSITION_ABSENT",
                 )
 
+        observation_time = float(portfolio.source_timestamp or time.time())
         for symbol in sorted(active_symbols):
             current_pct = _d(portfolio.position_pnl_pct.get(symbol))
+            episode = None
+            try:
+                episode = self._ensure_core_exit_episode(
+                    portfolio, symbol, cycle_id, observation_time, current_pct
+                )
+            except Exception as exc:
+                # Exit-learning bookkeeping is isolated from live stop/profit logic.
+                self.audit.emit(
+                    "CORE_EXIT_EPISODE_SETUP_FAILED",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:240],
+                )
             row = self._state(symbol)
             previous_peak = _d(row.get("peak_profit_pct")) if row else D("0")
             peak = max(previous_peak, current_pct)
@@ -135,6 +426,69 @@ class PositionProfitProtection:
                     peak_profit_pct=str(peak),
                     current_profit_pct=str(current_pct),
                 )
+
+            # One path sample per cycle; the later/final reconciliation upserts
+            # the same cycle row so a duplicate observation cannot bias training.
+            try:
+                episode = self.db.active_core_exit_episode(symbol) or episode
+            except Exception as exc:
+                self.audit.emit(
+                    "CORE_EXIT_EPISODE_LOOKUP_FAILED",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    error_type=type(exc).__name__,
+                )
+            if episode is not None:
+                final_state = self._state(symbol) or {}
+                basis = _d(portfolio.position_basis_eur.get(symbol))
+                quantity = _d(portfolio.position_quantity.get(symbol))
+                quality = {
+                    "open_positions_read_ok": bool(portfolio.spot_open_positions_read_ok),
+                    "pnl_present": symbol in portfolio.position_pnl_pct,
+                    "basis_positive": basis > 0,
+                    "quantity_positive": quantity > 0,
+                    "direction": str(
+                        getattr(portfolio, "spot_margin_position_directions", {}).get(
+                            symbol, "MIXED"
+                        )
+                    ),
+                    "open_order_ids": list(
+                        getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
+                    ),
+                    "open_lot_count": int(
+                        getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, 0)
+                        or 0
+                    ),
+                    "eligible_for_learning": bool(int(episode.get("eligible_for_learning") or 0)),
+                    "eligibility_reason": str(episode.get("eligibility_reason") or ""),
+                }
+                try:
+                    self.db.record_core_exit_observation(
+                        episode_id=str(episode["episode_id"]),
+                        cycle_id=cycle_id,
+                        observed_at=observation_time,
+                        profit_pct=current_pct,
+                        peak_profit_pct=_d(final_state.get("peak_profit_pct"), str(peak)),
+                        basis_eur=basis,
+                        quantity=quantity,
+                        position_pnl_eur=portfolio.position_pnl_eur.get(symbol, D("0")),
+                        partial_taken=bool(int(final_state.get("partial_taken") or 0)),
+                        pending_order_id=str(final_state.get("pending_order_id") or ""),
+                        policy_snapshot=self._exit_policy_snapshot(),
+                        quality=quality,
+                    )
+                except Exception as exc:
+                    # Path telemetry may never hold up a stop-loss or real exit.
+                    self.audit.emit(
+                        "CORE_EXIT_PATH_RECORD_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=symbol,
+                        episode_id=str(episode.get("episode_id") or ""),
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:240],
+                    )
 
     def apply(
         self,

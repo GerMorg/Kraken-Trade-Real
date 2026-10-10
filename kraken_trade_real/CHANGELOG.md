@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.52
+
+- Record restart-safe Normal/Core Spot Margin position episodes and per-cycle PnL paths, including the exact exit-policy snapshot, basis, quantity, pending partial-exit state and data-quality context.
+- Attribute only fresh, single-order positions captured from their opening cycle to app-managed Core decisions; inherited/manual positions, mixed directions and multiple open margin lots are explicitly ineligible for policy learning.
+- Persist one path point per runtime cycle and upsert the final portfolio reconciliation, preventing double-counting from the early and final snapshot in the same cycle.
+- Reset the Core profit high-water/partial-exit state when the exchange opening-order identity changes for a symbol; preserve state across failed OpenPositions reads.
+- Keep path-ledger operations non-blocking for live stop-loss and profit-protection logic. Exit parameters remain visible until replay and validation gates are implemented.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.52.
+
 ## 0.1.51
 
 - Add versioned, bounded adaptive management of Normal strategy entry thresholds using fully closed app-managed Spot/Margin position outcomes.

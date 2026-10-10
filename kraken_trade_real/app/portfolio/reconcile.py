@@ -209,6 +209,9 @@ class PortfolioReconciler:
         position_basis_eur: dict[str, D] = {}
         position_quantity: dict[str, D] = {}
         spot_margin_position_symbols: set[str] = set()
+        spot_margin_open_order_ids: dict[str, set[str]] = {}
+        spot_margin_position_direction_sets: dict[str, set[str]] = {}
+        spot_margin_open_lot_count: dict[str, int] = {}
         spot_open_positions_read_ok = False
         self.position_leverages = {}
         self.cash_balances = {}
@@ -296,7 +299,7 @@ class PortfolioReconciler:
             # Freeze wallet-origin symbols before adding margin rows: a later
             # OpenPositions lot must not be mistaken for an already-counted wallet asset.
             wallet_position_symbols = set(positions)
-            for item in open_positions.values():
+            for position_id, item in open_positions.items():
                 if not isinstance(item, dict):
                     continue
                 symbol = str(item.get("pair") or item.get("symbol") or "")
@@ -305,6 +308,25 @@ class PortfolioReconciler:
                 instrument = resolve_instrument_symbol(symbol, known_spot_instruments)
                 position_symbol = instrument.symbol if instrument is not None else symbol
                 spot_margin_position_symbols.add(position_symbol)
+                exchange_order_id = str(
+                    item.get("ordertxid") or item.get("order_id") or position_id or ""
+                ).strip()
+                if exchange_order_id:
+                    spot_margin_open_order_ids.setdefault(position_symbol, set()).add(
+                        exchange_order_id
+                    )
+                position_side = str(item.get("type") or "").strip().lower()
+                side_direction = (
+                    "SHORT" if position_side == "sell"
+                    else "LONG" if position_side == "buy"
+                    else "UNKNOWN"
+                )
+                spot_margin_position_direction_sets.setdefault(position_symbol, set()).add(
+                    side_direction
+                )
+                spot_margin_open_lot_count[position_symbol] = (
+                    spot_margin_open_lot_count.get(position_symbol, 0) + 1
+                )
                 position_leverage = dec(item.get("leverage"))
                 if position_leverage > 0:
                     self.position_leverages[position_symbol] = max(
@@ -495,6 +517,19 @@ class PortfolioReconciler:
             position_quantity=position_quantity,
             spot_open_positions_read_ok=spot_open_positions_read_ok,
             spot_margin_position_symbols=tuple(sorted(spot_margin_position_symbols)),
+            spot_margin_open_order_ids={
+                symbol: tuple(sorted(order_ids))
+                for symbol, order_ids in spot_margin_open_order_ids.items()
+            },
+            spot_margin_position_directions={
+                symbol: (
+                    next(iter(directions))
+                    if len(directions) == 1 and "UNKNOWN" not in directions
+                    else "MIXED"
+                )
+                for symbol, directions in spot_margin_position_direction_sets.items()
+            },
+            spot_margin_open_lot_count=spot_margin_open_lot_count,
         )
 
 def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:
