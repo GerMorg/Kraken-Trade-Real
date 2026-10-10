@@ -109,11 +109,6 @@ options:
   tactical_expected_slippage_bps: 25.0
   tactical_safety_buffer_bps: 30.0
   tactical_context_block_bps: 80.0
-  tactical_stop_loss_pct: 1.0
-  tactical_take_profit_pct: 2.2
-  tactical_trailing_trigger_bps: 100.0
-  tactical_trailing_stop_pct: 0.7
-  tactical_max_hold_seconds: 1800
   tactical_reversal_exit_bps: 120.0
   tactical_cooldown_seconds: 120
   tactical_max_trades_per_hour: 2
@@ -218,11 +213,6 @@ schema:
   tactical_expected_slippage_bps: float
   tactical_safety_buffer_bps: float
   tactical_context_block_bps: float
-  tactical_stop_loss_pct: float
-  tactical_take_profit_pct: float
-  tactical_trailing_trigger_bps: float
-  tactical_trailing_stop_pct: float
-  tactical_max_hold_seconds: int
   tactical_reversal_exit_bps: float
   tactical_cooldown_seconds: int
   tactical_max_trades_per_hour: int
