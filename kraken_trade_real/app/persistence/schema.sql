@@ -84,6 +84,50 @@ CREATE TABLE IF NOT EXISTS orders(
 );
 CREATE INDEX IF NOT EXISTS idx_orders_symbol_created ON orders(symbol,created_at);
 
+-- Normal/Core Spot Margin profit-protection episodes and their observed trigger path.
+-- Only fully attributable, single-order episodes are marked eligible for learning.
+CREATE TABLE IF NOT EXISTS core_exit_episodes(
+  episode_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  opened_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL,
+  closed_at REAL,
+  open_order_ids_json TEXT NOT NULL DEFAULT '[]',
+  opening_decision_ids_json TEXT NOT NULL DEFAULT '[]',
+  open_lot_count INTEGER NOT NULL DEFAULT 0,
+  initial_basis_eur TEXT NOT NULL DEFAULT '0',
+  first_profit_pct TEXT NOT NULL DEFAULT '0',
+  last_profit_pct TEXT NOT NULL DEFAULT '0',
+  peak_profit_pct TEXT NOT NULL DEFAULT '0',
+  eligible_for_learning INTEGER NOT NULL DEFAULT 0,
+  eligibility_reason TEXT NOT NULL DEFAULT '',
+  exit_policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  close_reason TEXT NOT NULL DEFAULT '',
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_core_exit_episodes_open
+  ON core_exit_episodes(symbol, closed_at, opened_at);
+
+CREATE TABLE IF NOT EXISTS core_exit_path_points(
+  point_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id TEXT NOT NULL,
+  cycle_id TEXT NOT NULL,
+  observed_at REAL NOT NULL,
+  profit_pct TEXT NOT NULL,
+  peak_profit_pct TEXT NOT NULL,
+  basis_eur TEXT NOT NULL,
+  quantity TEXT NOT NULL,
+  position_eur TEXT NOT NULL,
+  partial_taken INTEGER NOT NULL DEFAULT 0,
+  pending_order_id TEXT NOT NULL DEFAULT '',
+  policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  quality_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(episode_id, cycle_id)
+);
+CREATE INDEX IF NOT EXISTS idx_core_exit_path_episode_time
+  ON core_exit_path_points(episode_id, observed_at);
+
 CREATE TABLE IF NOT EXISTS position_profit_state(
   symbol TEXT PRIMARY KEY,
   peak_profit_pct TEXT NOT NULL DEFAULT '0',
