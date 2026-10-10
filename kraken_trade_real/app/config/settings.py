@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+# These options are now internal, versioned learning parameters. Ignore legacy HA
+# values even when an existing installation still has them in options.json.
+LEARNED_OPTION_KEYS = {
+    "tactical_min_expected_move_bps",
+    "tactical_min_momentum_bps",
+    "tactical_min_volume_ratio",
+    "tactical_min_breakout_bps",
+    "tactical_max_spread_bps",
+    "tactical_adaptive_min_expected_move_bps",
+    "tactical_portfolio_pct",
+}
+
+
 from dataclasses import dataclass
 from pathlib import Path
 import json
@@ -129,6 +142,8 @@ class Config:
             raw = json.loads(Path(path).read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             raw = {}
+        if isinstance(raw, dict):
+            raw = {key: value for key, value in raw.items() if key not in LEARNED_OPTION_KEYS}
 
         # v0.1.38 introduced these options with legacy defaults 3.5/5/2. If an
         # existing HA options file still has that untouched default triplet,
