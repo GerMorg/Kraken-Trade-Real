@@ -79,9 +79,22 @@ class LearningEngine:
                 "open_predictions": open_predictions, "status": "LEARNING_DISABLED",
             }
 
+        adaptive_core_policy: dict[str, Any] = {"status": "CORE_OPTIMIZER_NOT_CONFIGURED"}
         adaptive_policy: dict[str, Any] = {"status": "OPTIMIZER_NOT_CONFIGURED"}
         adaptive_exit_policy: dict[str, Any] = {"status": "EXIT_OPTIMIZER_NOT_CONFIGURED"}
         if self.optimizer is not None:
+            core_optimizer = getattr(self.optimizer, "optimize_core_entry_policy", None)
+            if callable(core_optimizer):
+                try:
+                    adaptive_core_policy = core_optimizer(now)
+                except Exception as exc:
+                    adaptive_core_policy = {
+                        "status": "CORE_OPTIMIZER_FAILED",
+                        "error": type(exc).__name__,
+                    }
+                    self.db.learning_event(
+                        "CORE_ENTRY_POLICY_FAILED", "strategy_core", adaptive_core_policy
+                    )
             try:
                 adaptive_policy = self.optimizer.optimize_tactical(now)
             except Exception as exc:
@@ -117,6 +130,7 @@ class LearningEngine:
                     "next_validation_in_seconds": max(
                         0, int(interval_seconds - (now - last_validation_at))
                     ),
+                    "adaptive_core_policy": adaptive_core_policy,
                     "adaptive_policy": adaptive_policy,
                     "adaptive_exit_policy": adaptive_exit_policy,
                 }
@@ -149,6 +163,9 @@ class LearningEngine:
                 "minimum_samples": minimum_samples,
                 "minimum_validation_samples": minimum_validation,
                 "status": "INSUFFICIENT_DATA",
+                "adaptive_core_policy": adaptive_core_policy,
+                "adaptive_policy": adaptive_policy,
+                "adaptive_exit_policy": adaptive_exit_policy,
             }
             self.db.learning_event("LEARNING_FEEDBACK", "decision", result)
             return result
@@ -161,6 +178,9 @@ class LearningEngine:
                 "minimum_samples": minimum_samples,
                 "minimum_validation_samples": minimum_validation,
                 "status": "INSUFFICIENT_VALIDATION_DATA",
+                "adaptive_core_policy": adaptive_core_policy,
+                "adaptive_policy": adaptive_policy,
+                "adaptive_exit_policy": adaptive_exit_policy,
             }
             self.db.learning_event("LEARNING_FEEDBACK", "decision", result)
             return result
@@ -286,6 +306,7 @@ class LearningEngine:
             "improvement": improvement,
             "validation_method": "chronological_70_30_holdout",
             "candidate_version": candidate_version, "promoted": promoted,
+            "adaptive_core_policy": adaptive_core_policy,
             "adaptive_policy": adaptive_policy,
             "adaptive_exit_policy": adaptive_exit_policy,
         }
