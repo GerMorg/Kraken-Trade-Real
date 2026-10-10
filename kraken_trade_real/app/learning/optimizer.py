@@ -396,11 +396,11 @@ class AdaptiveParameterOptimizer:
                 financing_bps = borrowed_share * (
                     margin_open_fee_bps + rollover_fee_bps * int(elapsed / 14400.0)
                 )
-            estimated_cost_bps = (
-                entry_fee_bps + exit_fee_bps + spread_bps + slippage_bps
-                + safety_bps + financing_bps
+            estimated_net_cost_bps = (
+                entry_fee_bps + exit_fee_bps + spread_bps + slippage_bps + financing_bps
             )
-            profit_floor_bps = estimated_cost_bps + 25.0
+            # Safety buffer is a trigger margin, not an actual cash cost.
+            profit_floor_bps = estimated_net_cost_bps + safety_bps + 25.0
             trailing_activation_bps = max(
                 trailing_trigger_bps,
                 profit_floor_bps + trailing_stop_pct * 100.0,
@@ -423,7 +423,7 @@ class AdaptiveParameterOptimizer:
                 reason = "TIME_STOP"
             if reason:
                 return {
-                    "net_bps": pnl_bps - estimated_cost_bps,
+                    "net_bps": pnl_bps - estimated_net_cost_bps,
                     "gross_bps": pnl_bps,
                     "reason": reason,
                     "exit_at": timestamp,
