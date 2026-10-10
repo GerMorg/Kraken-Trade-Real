@@ -39,6 +39,7 @@ class Config:
     strategy_entry_fee_bps: float
     strategy_exit_fee_bps: float
     strategy_execution_overhead_bps: float
+    strategy_stop_loss_pct: float
     strategy_partial_profit_trigger_pct: float
     strategy_partial_profit_fraction_pct: float
     strategy_profit_lock_trigger_pct: float
@@ -120,6 +121,7 @@ class Config:
     tactical_seed_history: bool
     tactical_diagnostics_interval_seconds: int
     profit_protection_legacy_defaults_overridden: bool = False
+    tactical_position_limit_legacy_default_overridden: bool = False
 
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
@@ -149,6 +151,14 @@ class Config:
             raw["strategy_partial_profit_trigger_pct"] = 10.0
             raw["strategy_profit_lock_trigger_pct"] = 10.0
             raw["strategy_profit_lock_floor_pct"] = 5.0
+
+        legacy_tactical_position_limit = (
+            "tactical_position_limit_pct" in raw
+            and raw_float("tactical_position_limit_pct", 25.0) == 25.0
+        )
+        if legacy_tactical_position_limit:
+            raw = dict(raw)
+            raw["tactical_position_limit_pct"] = 80.0
 
         def b(name: str, default: bool) -> bool:
             value = raw.get(name, default)
@@ -216,6 +226,7 @@ class Config:
             strategy_entry_fee_bps=f("strategy_entry_fee_bps", 40.0, 0.0, 1000.0),
             strategy_exit_fee_bps=f("strategy_exit_fee_bps", 80.0, 0.0, 1000.0),
             strategy_execution_overhead_bps=f("strategy_execution_overhead_bps", 8.0, 0.0, 1000.0),
+            strategy_stop_loss_pct=f("strategy_stop_loss_pct", 2.0, 0.1, 30.0),
             strategy_partial_profit_trigger_pct=f("strategy_partial_profit_trigger_pct", 10.0, 0.1, 100.0),
             strategy_partial_profit_fraction_pct=f("strategy_partial_profit_fraction_pct", 50.0, 10.0, 90.0),
             strategy_profit_lock_trigger_pct=f("strategy_profit_lock_trigger_pct", 10.0, 0.1, 100.0),
@@ -265,7 +276,7 @@ class Config:
             tactical_allow_short=b("tactical_allow_short", True),
             tactical_portfolio_pct=f("tactical_portfolio_pct", 25.0, 1.0, 25.0),
             tactical_max_capital_eur=f("tactical_max_capital_eur", 15.0, 5.0, 1000.0),
-            tactical_position_limit_pct=f("tactical_position_limit_pct", 25.0, 1.0, 25.0),
+            tactical_position_limit_pct=f("tactical_position_limit_pct", 80.0, 1.0, 80.0),
             tactical_max_positions=i("tactical_max_positions", 1, 1),
             tactical_candidate_limit=i("tactical_candidate_limit", 12, 4),
             tactical_poll_seconds=i("tactical_poll_seconds", 10, 2),
@@ -304,6 +315,7 @@ class Config:
             tactical_seed_history=b("tactical_seed_history", True),
             tactical_diagnostics_interval_seconds=i("tactical_diagnostics_interval_seconds", 60, 10),
             profit_protection_legacy_defaults_overridden=legacy_profit_defaults,
+            tactical_position_limit_legacy_default_overridden=legacy_tactical_position_limit,
         )
         cls.validate(cfg)
         return cfg
@@ -335,8 +347,8 @@ class Config:
             raise ValueError("tactical adaptive minimum net edge must be positive")
         if cfg.tactical_max_capital_eur < 5:
             raise ValueError("tactical_max_capital_eur must be at least 5 EUR")
-        if cfg.tactical_position_limit_pct > 25:
-            raise ValueError("tactical_position_limit_pct cannot exceed 25 percent")
+        if cfg.tactical_position_limit_pct > 80:
+            raise ValueError("tactical_position_limit_pct cannot exceed 80 percent")
         if cfg.tactical_short_leverage > min(cfg.risk_max_leverage, 5.0):
             raise ValueError("tactical_short_leverage exceeds the global leverage ceiling")
         if cfg.tactical_stop_loss_pct >= cfg.tactical_take_profit_pct:

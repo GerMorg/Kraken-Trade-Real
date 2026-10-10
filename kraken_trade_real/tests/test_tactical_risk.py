@@ -47,7 +47,7 @@ def make_instrument():
         price_decimals=2,
         tick_size=D("0.01"),
         margin_class="spot-margin",
-        metadata={"leverage_sell": ["1", "2", "3"]},
+        metadata={"leverage_buy": ["1", "2", "3"], "leverage_sell": ["1", "2", "3"]},
     )
 
 
@@ -217,3 +217,57 @@ def test_tactical_volatility_guard_still_blocks_extreme_market():
     result = engine.evaluate(d, p, make_snapshot(), {})
     assert result.allowed is False
     assert result.reason == "extreme_volatility"
+
+
+def test_high_conviction_tactical_exposure_respects_global_risk_gates():
+    cfg = make_config()
+    engine = RiskEngine(
+        cfg,
+        SimpleNamespace(
+            available=lambda account, amount: (
+                D(str(account["free_margin"])) >= amount, "OK"
+            )
+        ),
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    instrument = make_instrument()
+    signal = Signal(
+        "BTC/USD", Direction.LONG, D("400"), D("100"), D("0.95"),
+        "TACTICAL_VOLATILITY", D("0"), D("0"), {"volatility": D("50")},
+    )
+    decision = Decision(
+        "decision-high-conviction",
+        instrument,
+        signal,
+        D("37.5"),
+        D("3"),
+        {
+            "risk_profile": "tactical",
+            "risk_position_limit_pct": D("80"),
+            "risk_volatility_max": D("55"),
+            "min_cost_eur": "5",
+        },
+        "tactical-volatility-v1",
+        "tactical-v1",
+        "",
+        D("0"),
+        D("37.5"),
+        Direction.LONG,
+        False,
+    )
+    portfolio = PortfolioState(
+        equity_eur=D("50"), cash_eur=D("50"), positions={},
+        gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+        unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"), open_orders=0, source_timestamp=1.0,
+    )
+    result = engine.evaluate(
+        decision, portfolio, make_snapshot(),
+        {"free_margin": "20", "margin_level_pct": "500"},
+    )
+    assert result.allowed is True
+    assert result.checks["position_limit"] is True
+    assert result.checks["gross_limit"] is True
+    assert result.checks["net_limit"] is True
+    assert result.checks["margin_budget"] is True

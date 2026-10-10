@@ -772,25 +772,27 @@ class TacticalTrader:
             self._last_action = "ENTRY_BLOCKED_DUPLICATE_ASSET"
             return
 
-        notional = min(
-            portfolio.equity_eur
-            * D(str(getattr(self.config, "tactical_portfolio_pct", 25)))
-            / D("100"),
-            D(str(getattr(self.config, "tactical_max_capital_eur", 15))),
-        )
         min_cost_eur = self.portfolio.min_cost_eur(instrument)
-        if min_cost_eur is None or notional < min_cost_eur:
+        if min_cost_eur is None:
             self._last_action = "ENTRY_MINIMUM_COST"
             return
 
-        leverage = self._entry_leverage(instrument, signal.direction)
+        leverage = self._entry_leverage(instrument, signal.direction, signal)
         if leverage <= 0:
             self._last_action = "ENTRY_LEVERAGE_UNAVAILABLE"
+            return
+
+        # Capital budget becomes exposure through leverage; an independent
+        # equity exposure ceiling still applies before common risk gates.
+        notional = self._position_notional(portfolio.equity_eur, leverage)
+        if notional < min_cost_eur:
+            self._last_action = "ENTRY_MINIMUM_COST"
             return
 
         if (
             signal.direction == Direction.LONG
             and instrument.venue == "spot"
+            and leverage <= D("1")
             and not self._shadow_mode()
         ):
             available_quote = self.portfolio.cash_balance(instrument.quote)
@@ -892,6 +894,7 @@ class TacticalTrader:
             checks=risk.checks,
             leverage=str(leverage),
             notional_eur=str(notional),
+            margin_budget_eur=str(notional / leverage if leverage > 0 else D("0")),
         )
         if not risk.allowed:
             self._last_action = f"RISK_{risk.reason}"
@@ -1001,11 +1004,29 @@ class TacticalTrader:
                     * (D("1") + D(str(getattr(self.config, "tactical_trailing_stop_pct", 0.7))) / D("100"))
                 )
 
+            # Profit target arms trend-following instead of forcing a full close.
+            target_gain_bps = (
+                D(str(getattr(self.config, "tactical_take_profit_pct", 2.2)))
+                * D("100")
+            )
+            if peak_gain >= target_gain_bps and position.state != "TRAILING":
+                position.state = "TRAILING"
+                self.audit.emit(
+                    "TACTICAL_TREND_FOLLOWING_ARMED",
+                    "INFO",
+                    symbol=position.symbol,
+                    direction=position.direction.value,
+                    peak_gain_bps=str(peak_gain),
+                    current_pnl_bps=str(pnl_bps),
+                    take_profit_trigger_bps=str(target_gain_bps),
+                    trailing_stop_pct=str(
+                        getattr(self.config, "tactical_trailing_stop_pct", 0.7)
+                    ),
+                )
+
             reason = ""
             if pnl_bps <= -D(str(getattr(self.config, "tactical_stop_loss_pct", 1.0))) * D("100"):
                 reason = "STOP_LOSS"
-            elif pnl_bps >= D(str(getattr(self.config, "tactical_take_profit_pct", 2.2))) * D("100"):
-                reason = "TAKE_PROFIT"
             elif trailing_triggered:
                 reason = "TRAILING_STOP"
             elif now - position.opened_at >= float(
@@ -1448,26 +1469,86 @@ class TacticalTrader:
         state = self.websocket.market_snapshot(position.symbol)
         return self._build_signal(instrument, state, time.time())
 
-    def _entry_leverage(self, instrument: Instrument, direction: Direction) -> D:
-        if direction == Direction.LONG:
-            return D("1")
-        if instrument.product_type.value == "DERIVATIVE":
-            return D("1")
-        if instrument.product_type.value != "SPOT_MARGIN" or not instrument.short_available:
+    def _position_notional(self, equity_eur: D, leverage: D) -> D:
+        """Translate the Tactical capital budget into notional exposure."""
+        if equity_eur <= 0:
             return D("0")
-        levels = tuple(sorted(
-            D(str(value))
-            for value in instrument.metadata.get("leverage_sell", [])
-            if str(value)
-        ))
-        if not levels:
-            levels = instrument.leverage_levels
-        requested = max(
-            D("2"),
-            D(str(getattr(self.config, "tactical_short_leverage", 2.0))),
+        capital_budget = min(
+            equity_eur
+            * D(str(getattr(self.config, "tactical_portfolio_pct", 25)))
+            / D("100"),
+            D(str(getattr(self.config, "tactical_max_capital_eur", 15))),
         )
-        eligible = [level for level in levels if level >= requested]
-        return eligible[0] if eligible else D("0")
+        position_limit_pct = min(
+            D("80"),
+            max(D("0.1"), D(str(getattr(self.config, "tactical_position_limit_pct", 25)))),
+        )
+        exposure_cap = equity_eur * position_limit_pct / D("100")
+        return min(capital_budget * max(D("1"), leverage), exposure_cap)
+
+    def _entry_leverage(
+        self,
+        instrument: Instrument,
+        direction: Direction,
+        signal: TacticalSignal | None = None,
+    ) -> D:
+        """Select exchange-supported side leverage based on impulse conviction."""
+        product_type = str(getattr(instrument.product_type, "value", instrument.product_type))
+        if product_type != "SPOT_MARGIN":
+            return D("1")
+        if direction == Direction.SHORT and (
+            not bool(getattr(self.config, "tactical_allow_short", True))
+            or not instrument.short_available
+        ):
+            return D("0")
+        if direction == Direction.LONG and not instrument.long_available:
+            return D("0")
+
+        side_key = "leverage_buy" if direction == Direction.LONG else "leverage_sell"
+        metadata = instrument.metadata if isinstance(instrument.metadata, dict) else {}
+        raw_levels = metadata.get(side_key)
+        if not isinstance(raw_levels, (list, tuple)):
+            return D("1") if direction == Direction.LONG else D("0")
+
+        cap = min(
+            D(str(getattr(self.config, "risk_max_leverage", 3))),
+            D(str(instrument.max_leverage)),
+            D("5"),
+        )
+        levels: list[D] = []
+        for raw_level in raw_levels:
+            try:
+                level = D(str(raw_level))
+            except (ValueError, TypeError):
+                continue
+            if level >= D("2") and level <= cap:
+                levels.append(level)
+        levels = sorted(set(levels))
+        if not levels:
+            return D("1") if direction == Direction.LONG else D("0")
+
+        requested_medium = min(
+            cap,
+            max(D("2"), D(str(getattr(self.config, "tactical_short_leverage", 2.0)))),
+        )
+        strong_impulse = (
+            signal is not None
+            and signal.confidence >= D("0.90")
+            and signal.score >= D("200")
+            and signal.net_edge_bps >= max(D("75"), signal.expected_cost_bps * D("0.30"))
+        )
+        if strong_impulse:
+            return max(levels)
+
+        if direction == Direction.SHORT:
+            eligible = [level for level in levels if level >= requested_medium]
+            return min(eligible) if eligible else D("0")
+
+        if signal is not None and signal.confidence >= D("0.80") and signal.net_edge_bps > 0:
+            eligible = [level for level in levels if level <= requested_medium]
+            if eligible:
+                return max(eligible)
+        return D("1")
 
     def _daily_loss_blocked(self, portfolio: PortfolioState) -> bool:
         limit_pct = D(str(getattr(self.config, "tactical_max_daily_loss_pct", 1.5)))

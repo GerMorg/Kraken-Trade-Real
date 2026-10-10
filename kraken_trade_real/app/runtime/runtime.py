@@ -158,6 +158,13 @@ class TradingRuntime:
                 active_profit_lock_trigger_pct=str(config.strategy_profit_lock_trigger_pct),
                 active_profit_lock_floor_pct=str(config.strategy_profit_lock_floor_pct),
             )
+        if getattr(config, "tactical_position_limit_legacy_default_overridden", False):
+            self.audit.emit(
+                "TACTICAL_POSITION_LIMIT_LEGACY_DEFAULT_OVERRIDDEN",
+                "WARNING",
+                previous_position_limit_pct="25.0",
+                active_position_limit_pct=str(config.tactical_position_limit_pct),
+            )
         self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:

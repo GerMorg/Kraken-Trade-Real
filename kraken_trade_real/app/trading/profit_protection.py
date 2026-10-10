@@ -184,11 +184,14 @@ class PositionProfitProtection:
         profit_floor = D(str(getattr(self.config, "strategy_profit_lock_floor_pct", 2.0)))
         partial_trigger = D(str(getattr(self.config, "strategy_partial_profit_trigger_pct", 3.5)))
         partial_fraction = D(str(getattr(self.config, "strategy_partial_profit_fraction_pct", 50.0))) / D("100")
+        stop_loss_pct = D(str(getattr(self.config, "strategy_stop_loss_pct", 2.0)))
 
         action = ""
         lock_threshold = max(D("0"), peak_pct * (D("1") - giveback_pct / D("100")))
         lock_threshold = max(lock_threshold, profit_floor)
-        if peak_pct >= lock_activation and current_pct <= lock_threshold:
+        if current_pct <= -stop_loss_pct:
+            action = "STOP_LOSS_EXIT"
+        elif peak_pct >= lock_activation and current_pct <= lock_threshold:
             action = "TRAILING_PROFIT_EXIT"
         elif current_pct >= partial_trigger and not partial_taken and not pending_id:
             action = "PARTIAL_TAKE_PROFIT"
@@ -216,7 +219,11 @@ class PositionProfitProtection:
                     return None
             return decision
 
-        target = D("0") if action == "TRAILING_PROFIT_EXIT" else current * (D("1") - partial_fraction)
+        target = (
+            D("0")
+            if action in {"TRAILING_PROFIT_EXIT", "STOP_LOSS_EXIT"}
+            else current * (D("1") - partial_fraction)
+        )
         if action == "PARTIAL_TAKE_PROFIT" and decision is not None:
             desired = _d(decision.target_position_eur)
             # Keep an existing full exit or stronger reduction; a profit-taking
@@ -248,6 +255,7 @@ class PositionProfitProtection:
             "position_profit_peak_pct": str(peak_pct),
             "position_profit_lock_threshold_pct": str(lock_threshold),
             "position_profit_partial_fraction_pct": str(partial_fraction * D("100")),
+            "position_loss_stop_pct": str(stop_loss_pct),
             "risk_profile": "core",
             "min_cost_eur": str(min_cost_eur),
         })
@@ -279,7 +287,8 @@ class PositionProfitProtection:
                 reduce_only=True,
             )
         self.audit.emit(
-            "POSITION_PROFIT_PROTECTION_TRIGGERED",
+            "POSITION_STOP_LOSS_TRIGGERED" if action == "STOP_LOSS_EXIT"
+            else "POSITION_PROFIT_PROTECTION_TRIGGERED",
             "WARNING",
             cycle_id=cycle_id,
             symbol=symbol,

@@ -7,7 +7,7 @@ from app.domain.models import Instrument, MarketSnapshot, PortfolioState
 from app.domain.states import Direction, ProductType
 from app.domain.symbols import canonical_asset
 from app.trading.intent import OrderIntentBuilder
-from app.trading.tactical import TacticalPosition, TacticalTrader
+from app.trading.tactical import TacticalPosition, TacticalSignal, TacticalTrader
 
 
 D = Decimal
@@ -68,6 +68,9 @@ class DummyDB:
 
     def tactical_trade_count(self, since_timestamp):
         return 0
+
+    def save_tactical_position(self, *args, **kwargs):
+        return None
 
 
 def cfg(**overrides):
@@ -138,7 +141,10 @@ def instrument(
         price_decimals=2,
         tick_size=D("0.01"),
         margin_class="spot-margin",
-        metadata={"leverage_sell": [str(value) for value in leverage_levels]},
+        metadata={
+            "leverage_buy": [str(value) for value in leverage_levels],
+            "leverage_sell": [str(value) for value in leverage_levels],
+        },
     )
 
 
@@ -485,3 +491,95 @@ def test_canonical_asset_does_not_strip_real_x_or_z_prefixed_tickers():
     assert canonical_asset("ZETA") == "ZETA"
     assert canonical_asset("XCN") == "XCN"
     assert canonical_asset("ZRX") == "ZRX"
+
+
+def impulse_signal(
+    *,
+    direction=Direction.LONG,
+    score="250",
+    expected_move="400",
+    expected_cost="100",
+    confidence="0.95",
+):
+    return TacticalSignal(
+        symbol="BTC/USD",
+        direction=direction,
+        score=D(score),
+        expected_move_bps=D(expected_move),
+        expected_cost_bps=D(expected_cost),
+        spread_bps=D("2"),
+        momentum_60_bps=D("100"),
+        momentum_180_bps=D("300"),
+        volatility_bps=D("30"),
+        volume_ratio=D("3"),
+        breakout_bps=D("60"),
+        imbalance=D("0.3" if direction == Direction.LONG else "-0.3"),
+        confidence=D(confidence),
+        reason="TEST_IMPULSE",
+    )
+
+
+def test_tactical_leverage_scales_with_impulse_strength_and_exchange_side():
+    trader = TacticalTrader(
+        cfg(tactical_position_limit_pct=80, risk_max_leverage=3),
+        DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    inst = instrument()
+    assert trader._entry_leverage(inst, Direction.LONG, impulse_signal()) == D("3")
+    assert trader._entry_leverage(
+        inst,
+        Direction.LONG,
+        impulse_signal(score="180", expected_move="300", expected_cost="200", confidence="0.82"),
+    ) == D("2")
+    assert trader._entry_leverage(
+        inst,
+        Direction.LONG,
+        impulse_signal(score="100", expected_move="250", expected_cost="230", confidence="0.70"),
+    ) == D("1")
+    assert trader._entry_leverage(
+        inst, Direction.SHORT, impulse_signal(direction=Direction.SHORT)
+    ) == D("3")
+
+
+def test_tactical_notional_uses_margin_budget_and_respects_exposure_cap():
+    trader = TacticalTrader(
+        cfg(tactical_position_limit_pct=80),
+        DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    assert trader._position_notional(D("50"), D("3")) == D("37.5")
+    capped = TacticalTrader(
+        cfg(tactical_position_limit_pct=25),
+        DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    assert capped._position_notional(D("50"), D("3")) == D("12.5")
+
+
+def test_tactical_keeps_winner_running_after_take_profit_threshold():
+    audit = DummyAudit()
+    trader = TacticalTrader(
+        cfg(), DummyDB(), audit, None, DummyWS(), None, None, None, None,
+    )
+    inst = instrument()
+    trader._candidates[inst.symbol] = inst
+    trader._portfolio = PortfolioState(
+        equity_eur=D("50"), cash_eur=D("50"), positions={},
+        gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+        unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"), open_orders=0, source_timestamp=1000.0,
+    )
+    position = TacticalPosition(
+        symbol=inst.symbol, venue="spot", direction=Direction.LONG,
+        quantity=D("0.1"), entry_price=D("100"), peak_price=D("102"),
+        trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
+        opened_at=900.0, entry_client_order_id="test-order", setup_score=D("200"),
+        state="OPEN",
+    )
+    trader._positions[position.symbol] = position
+    trader._fresh_position_state = lambda position, now: {"price": D("102.3")}
+    trader._opposite_signal = lambda position: None
+    exits = []
+    trader._exit = lambda *args: exits.append(args)
+    trader._manage_positions(1000.0)
+    assert exits == []
+    assert position.state == "TRAILING"
+    assert any(event[0] == "TACTICAL_TREND_FOLLOWING_ARMED" for event in audit.events)
