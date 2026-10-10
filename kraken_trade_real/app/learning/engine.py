@@ -115,6 +115,10 @@ class LearningEngine:
         # before making the training/validation split.
         rows.reverse()
         pairs = [(float(r["probability"]), bool(r["success"])) for r in rows]
+        regime_rows = [
+            (float(r["probability"]), bool(r["success"]), str(r.get("regime") or "UNKNOWN"))
+            for r in rows
+        ]
         # Avoid repeated promotion decisions on a tiny, repeatedly reused holdout.
         minimum_samples = 300
         minimum_validation = 90
@@ -152,9 +156,49 @@ class LearningEngine:
             if float(metrics["brier"]) < best_train_brier:
                 best_train_brier, best_scale = float(metrics["brier"]), scale
 
+        training_regimes, validation_regimes = regime_rows[:split], regime_rows[split:]
+        regime_scales: dict[str, float] = {}
+        for regime in sorted({item[2] for item in training_regimes}):
+            regime_training = [(p, y) for p, y, r in training_regimes if r == regime]
+            regime_validation = [(p, y) for p, y, r in validation_regimes if r == regime]
+            if len(regime_training) < 60 or len(regime_validation) < 30:
+                continue
+            regime_train_base = self.calibration.evaluate(regime_training)
+            regime_best_scale = 1.0
+            regime_best_brier = float(regime_train_base["brier"])
+            for scale in (0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30):
+                scored = [
+                    (max(0.0, min(1.0, p * scale)), y)
+                    for p, y in regime_training
+                ]
+                candidate_metrics = self.calibration.evaluate(scored)
+                if float(candidate_metrics["brier"]) < regime_best_brier:
+                    regime_best_brier = float(candidate_metrics["brier"])
+                    regime_best_scale = scale
+            regime_validation_base = self.calibration.evaluate(regime_validation)
+            regime_validation_candidate = self.calibration.evaluate([
+                (max(0.0, min(1.0, p * regime_best_scale)), y)
+                for p, y in regime_validation
+            ])
+            regime_improvement = (
+                float(regime_validation_base["brier"])
+                - float(regime_validation_candidate["brier"])
+            )
+            if (
+                regime_best_scale != 1.0
+                and regime_improvement >= 0.005
+                and float(regime_validation_candidate["ece"])
+                <= float(regime_validation_base["ece"]) + 0.005
+            ):
+                regime_scales[regime] = regime_best_scale
+
         validation_base = self.calibration.evaluate(validation)
         validation_candidate = self.calibration.evaluate([
-            (max(0.0, min(1.0, p * best_scale)), y) for p, y in validation
+            (
+                max(0.0, min(1.0, p * regime_scales.get(regime, best_scale))),
+                y,
+            )
+            for p, y, regime in validation_regimes
         ])
         base_brier = float(validation_base["brier"])
         candidate_brier = float(validation_candidate["brier"])
@@ -164,7 +208,7 @@ class LearningEngine:
         ece_degradation = candidate_ece - base_ece
         promoted, candidate_version = False, ""
         if (
-            best_scale != 1.0
+            (best_scale != 1.0 or bool(regime_scales))
             and len(validation) >= minimum_validation
             and improvement >= 0.01
             and candidate_ece <= base_ece + 0.005
@@ -178,12 +222,14 @@ class LearningEngine:
                 "last_prediction": rows[-1]["prediction_id"],
                 "samples": len(rows),
                 "scale": best_scale,
+                "regime_scales": regime_scales,
             }, sort_keys=True)
             candidate_hash = hashlib.sha256(identity.encode()).hexdigest()[:12]
             candidate_version = f"decision-calibrated-{candidate_hash}"
             parameters = dict(parent_params)
             parameters.update({
                 "kind": "calibrated", "confidence_scale": best_scale,
+                "confidence_scale_by_regime": regime_scales,
                 "validation_method": "chronological_70_30_holdout",
             })
             metrics = {
@@ -192,6 +238,7 @@ class LearningEngine:
                 "improvement": improvement, "parent_brier": base_brier,
                 "parent_ece": base_ece, "ece_degradation": ece_degradation,
                 "selected_scale": best_scale,
+                "selected_regime_scales": regime_scales,
                 "validation_method": "chronological_70_30_holdout",
                 "dataset_hash": candidate_hash,
             }
@@ -215,7 +262,8 @@ class LearningEngine:
             "ece_degradation": ece_degradation,
             "minimum_samples": minimum_samples,
             "minimum_validation_samples": minimum_validation,
-            "best_scale": best_scale, "improvement": improvement,
+            "best_scale": best_scale, "regime_scales": regime_scales,
+            "improvement": improvement,
             "validation_method": "chronological_70_30_holdout",
             "candidate_version": candidate_version, "promoted": promoted,
             "adaptive_policy": adaptive_policy,
