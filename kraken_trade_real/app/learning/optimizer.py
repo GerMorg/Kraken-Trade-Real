@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from typing import Any
 
-from app.config.adaptive import TACTICAL_DEFAULTS
+from app.config.adaptive import CORE_DEFAULTS, TACTICAL_DEFAULTS
 
 
 class AdaptiveParameterOptimizer:
@@ -228,6 +229,312 @@ class AdaptiveParameterOptimizer:
     MIN_TRAIN_IMPROVEMENT_BPS = 10.0
     MIN_VALIDATION_IMPROVEMENT_BPS = 5.0
     MAX_DRAWDOWN_DETERIORATION = 0.01
+
+    CORE_WINDOW = 30
+    MIN_CORE_OUTCOMES = 60
+    CORE_POLICY_BOUNDS = {
+        "strategy_min_edge_bps": (25.0, 80.0),
+        "strategy_min_confidence": (0.58, 0.85),
+        "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
+        "strategy_adaptive_min_confidence": (0.75, 0.95),
+        "strategy_adaptive_cost_ratio": (1.10, 1.50),
+    }
+
+    def optimize_core_entry_policy(self, now: float | None = None) -> dict[str, Any]:
+        """Conservatively adapt Normal entry gates from fully closed Spot/Margin outcomes.
+
+        The label is directional gross return in basis points minus the cost
+        estimate stored with the opening decision. Exchange-reported fee amounts
+        and ledger net estimates are deliberately not read: fee currency is still
+        unverified. The controller only tightens after poor results or restores
+        earlier, tighter settings toward the documented defaults after a strong
+        subsequent window. It never relaxes below those defaults or changes risk caps.
+        """
+        now = time.time() if now is None else float(now)
+        rows = self.db.query(
+            """SELECT o.opening_decision_id,o.symbol,o.direction,o.last_closed_at,
+                      CAST(o.gross_return_bps AS REAL) AS gross_return_bps,
+                      CAST(d.expected_cost_bps AS REAL) AS expected_cost_bps
+               FROM core_realized_outcomes AS o
+               JOIN decisions AS d ON d.decision_id=o.opening_decision_id
+               WHERE o.last_closed_at >= ?
+                 AND lower(d.strategy_version) NOT LIKE '%tactical%'
+                 AND CAST(o.gross_return_bps AS REAL) IS NOT NULL
+                 AND CAST(d.expected_cost_bps AS REAL) > 0
+                 AND NOT EXISTS (
+                   SELECT 1 FROM core_inventory_lots AS l
+                   WHERE l.opening_decision_id=o.opening_decision_id
+                     AND l.symbol=o.symbol AND l.direction=o.direction
+                     AND CAST(l.remaining_quantity AS REAL) > 0
+                 )
+               ORDER BY o.last_closed_at DESC LIMIT 600""",
+            (now - 180 * 86400,),
+        )
+        rows.reverse()
+        if len(rows) < self.MIN_CORE_OUTCOMES:
+            return {
+                "status": "INSUFFICIENT_CLOSED_CORE_OUTCOMES",
+                "samples": len(rows),
+                "minimum_samples": self.MIN_CORE_OUTCOMES,
+                "data_scope": "APP_MANAGED_SPOT_MARGIN_ONLY",
+            }
+
+        last = self.db.one(
+            "SELECT value FROM metadata WHERE key='core_entry_policy_last_evaluated_closed_at'"
+        )
+        if last:
+            try:
+                last_at = float(last.get("value") or 0.0)
+            except (TypeError, ValueError):
+                last_at = 0.0
+            new_count_row = self.db.one(
+                """SELECT COUNT(*) AS n
+                   FROM core_realized_outcomes AS o
+                   JOIN decisions AS d ON d.decision_id=o.opening_decision_id
+                   WHERE o.last_closed_at > ?
+                     AND lower(d.strategy_version) NOT LIKE '%tactical%'
+                     AND CAST(o.gross_return_bps AS REAL) IS NOT NULL
+                     AND CAST(d.expected_cost_bps AS REAL) > 0
+                     AND NOT EXISTS (
+                       SELECT 1 FROM core_inventory_lots AS l
+                       WHERE l.opening_decision_id=o.opening_decision_id
+                         AND l.symbol=o.symbol AND l.direction=o.direction
+                         AND CAST(l.remaining_quantity AS REAL) > 0
+                     )""",
+                (last_at,),
+            )
+            new_count = int(new_count_row.get("n") or 0) if new_count_row else 0
+            if new_count < 10:
+                return {
+                    "status": "WAITING_FOR_NEW_CORE_OUTCOMES",
+                    "samples": len(rows),
+                    "new_closed_outcomes_since_last_evaluation": new_count,
+                    "minimum_new_outcomes": 10,
+                }
+
+        clean: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                gross = float(row["gross_return_bps"])
+                cost = float(row["expected_cost_bps"])
+                closed_at = float(row["last_closed_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(math.isfinite(value) for value in (gross, cost, closed_at)):
+                continue
+            if cost < 0 or closed_at <= 0:
+                continue
+            clean.append({
+                "opening_decision_id": str(row["opening_decision_id"]),
+                "symbol": str(row["symbol"]),
+                "direction": str(row["direction"]),
+                "closed_at": closed_at,
+                "gross_return_bps": gross,
+                "expected_cost_bps": cost,
+                "after_expected_cost_bps": gross - cost,
+            })
+        if len(clean) < self.MIN_CORE_OUTCOMES:
+            return {
+                "status": "INSUFFICIENT_VALID_CORE_OUTCOMES",
+                "samples": len(clean),
+                "minimum_samples": self.MIN_CORE_OUTCOMES,
+            }
+
+        previous = clean[-2 * self.CORE_WINDOW:-self.CORE_WINDOW]
+        recent = clean[-self.CORE_WINDOW:]
+        if len(previous) < self.CORE_WINDOW or len(recent) < self.CORE_WINDOW:
+            return {
+                "status": "INSUFFICIENT_CORE_COMPARISON_WINDOWS",
+                "samples": len(clean),
+                "previous_samples": len(previous),
+                "recent_samples": len(recent),
+            }
+
+        def stats(items: list[dict[str, Any]]) -> dict[str, float]:
+            gross = [float(item["gross_return_bps"]) for item in items]
+            cost = [float(item["expected_cost_bps"]) for item in items]
+            adjusted = [float(item["after_expected_cost_bps"]) for item in items]
+            return {
+                "samples": float(len(items)),
+                "mean_gross_return_bps": sum(gross) / len(gross),
+                "mean_decision_cost_estimate_bps": sum(cost) / len(cost),
+                "mean_after_expected_cost_bps": sum(adjusted) / len(adjusted),
+                "positive_after_expected_cost_rate": (
+                    sum(1 for value in adjusted if value > 0) / len(adjusted)
+                ),
+            }
+
+        before = stats(previous)
+        after = stats(recent)
+        active_version = self.registry.active("strategy_core")
+        current = dict(CORE_DEFAULTS)
+        active_params = self.registry.parameters(active_version, family="strategy_core")
+        if isinstance(active_params, dict):
+            current.update({
+                key: active_params[key]
+                for key in CORE_DEFAULTS
+                if key in active_params
+            })
+        # Re-apply controller bounds before calculating a neighbour candidate.
+        for key, (low, high) in self.CORE_POLICY_BOUNDS.items():
+            try:
+                current[key] = max(low, min(high, float(current[key])))
+            except (TypeError, ValueError, KeyError):
+                current[key] = CORE_DEFAULTS[key]
+        current["strategy_adaptive_edge_floor_bps"] = min(
+            current["strategy_min_edge_bps"],
+            current["strategy_adaptive_edge_floor_bps"],
+        )
+        current["strategy_adaptive_min_confidence"] = max(
+            current["strategy_min_confidence"],
+            current["strategy_adaptive_min_confidence"],
+        )
+        current["strategy_adaptive_cost_ratio"] = max(
+            1.10, current["strategy_adaptive_cost_ratio"]
+        )
+
+        candidate = dict(current)
+        action = "NO_ADJUSTMENT"
+        reason = "OUTCOMES_WITHIN_POLICY_GUARD_BANDS"
+        if (
+            after["mean_after_expected_cost_bps"] <= -10.0
+            and after["positive_after_expected_cost_rate"] < 0.45
+        ):
+            action = "TIGHTEN"
+            reason = "NEGATIVE_RECENT_CORE_RETURN_AFTER_DECISION_COST_ESTIMATE"
+            candidate["strategy_min_edge_bps"] = min(
+                80.0, max(current["strategy_min_edge_bps"] + 2.0,
+                           current["strategy_min_edge_bps"] * 1.08)
+            )
+            candidate["strategy_min_confidence"] = min(
+                0.85, current["strategy_min_confidence"] + 0.02
+            )
+            candidate["strategy_adaptive_edge_floor_bps"] = min(
+                candidate["strategy_min_edge_bps"],
+                25.0,
+                max(current["strategy_adaptive_edge_floor_bps"] + 1.0,
+                    current["strategy_adaptive_edge_floor_bps"] * 1.08),
+            )
+            candidate["strategy_adaptive_min_confidence"] = min(
+                0.95, current["strategy_adaptive_min_confidence"] + 0.02
+            )
+            candidate["strategy_adaptive_cost_ratio"] = min(
+                1.50, current["strategy_adaptive_cost_ratio"] + 0.05
+            )
+        elif (
+            after["mean_after_expected_cost_bps"] >= 15.0
+            and after["positive_after_expected_cost_rate"] >= 0.60
+            and after["mean_after_expected_cost_bps"]
+                >= before["mean_after_expected_cost_bps"] + 5.0
+        ):
+            action = "RESTORE_TOWARD_DEFAULTS"
+            reason = "STRONG_IMPROVING_CORE_RETURN_RESTORE_TOWARD_BASELINE"
+            # Positive observed outcomes only restore previous extra strictness;
+            # no setting can become looser than the documented baseline defaults.
+            candidate["strategy_min_edge_bps"] = max(
+                CORE_DEFAULTS["strategy_min_edge_bps"],
+                current["strategy_min_edge_bps"] - max(
+                    1.0, current["strategy_min_edge_bps"] * 0.03
+                ),
+            )
+            candidate["strategy_min_confidence"] = max(
+                CORE_DEFAULTS["strategy_min_confidence"],
+                current["strategy_min_confidence"] - 0.01,
+            )
+            candidate["strategy_adaptive_edge_floor_bps"] = max(
+                CORE_DEFAULTS["strategy_adaptive_edge_floor_bps"],
+                current["strategy_adaptive_edge_floor_bps"] - 0.5,
+            )
+            candidate["strategy_adaptive_min_confidence"] = max(
+                CORE_DEFAULTS["strategy_adaptive_min_confidence"],
+                current["strategy_adaptive_min_confidence"] - 0.01,
+            )
+            candidate["strategy_adaptive_cost_ratio"] = max(
+                CORE_DEFAULTS["strategy_adaptive_cost_ratio"],
+                current["strategy_adaptive_cost_ratio"] - 0.02,
+            )
+
+        changed = {
+            key: round(float(candidate[key]), 6)
+            for key in CORE_DEFAULTS
+            if abs(float(candidate[key]) - float(current[key])) > 1e-9
+        }
+        last_closed_at = max(float(item["closed_at"]) for item in clean)
+
+        def mark_evaluated() -> None:
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('core_entry_policy_last_evaluated_closed_at',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(last_closed_at),),
+            )
+
+        metrics = {
+            "kind": "bounded_core_outcome_controller",
+            "action": action,
+            "reason": reason,
+            "samples": len(clean),
+            "previous_samples": int(before["samples"]),
+            "recent_samples": int(after["samples"]),
+            "previous_mean_after_expected_cost_bps": before["mean_after_expected_cost_bps"],
+            "recent_mean_after_expected_cost_bps": after["mean_after_expected_cost_bps"],
+            "previous_positive_after_expected_cost_rate": before["positive_after_expected_cost_rate"],
+            "recent_positive_after_expected_cost_rate": after["positive_after_expected_cost_rate"],
+            "data_basis": "gross_return_bps_minus_decision_expected_cost_bps",
+            "exchange_fee_estimates_used": False,
+            "verified_net_pnl_used": False,
+            "data_scope": "APP_MANAGED_SPOT_MARGIN_ONLY",
+            "changed_parameters": changed,
+        }
+        if not changed:
+            result = {
+                "status": "NO_SAFE_CORE_ADJUSTMENT",
+                "active_version": active_version,
+                "samples": len(clean),
+                "previous": before,
+                "recent": after,
+                "action": action,
+                "data_basis": metrics["data_basis"],
+            }
+            mark_evaluated()
+            self.db.learning_event("CORE_ENTRY_POLICY_EVALUATED", active_version, result)
+            return result
+
+        candidate_id = hashlib.sha256(json.dumps({
+            "parent": active_version,
+            "parameters": candidate,
+            "last_closed_at": last_closed_at,
+            "samples": len(clean),
+            "action": action,
+        }, sort_keys=True, default=str).encode()).hexdigest()[:14]
+        version = f"core-entry-policy-{candidate_id}"
+        existing = self.db.one(
+            "SELECT status FROM model_versions WHERE version=?", (version,)
+        )
+        if existing is None:
+            self.registry.register_candidate(
+                version, "strategy_core", active_version, candidate, metrics
+            )
+        promoted = self.registry.promote_adaptive_policy(
+            version, minimum_samples=self.MIN_CORE_OUTCOMES
+        )
+        result = {
+            "status": "PROMOTED" if promoted else "CANDIDATE_NOT_PROMOTED",
+            "samples": len(clean),
+            "previous": before,
+            "recent": after,
+            "action": action,
+            "reason": reason,
+            "changed_parameters": changed,
+            "candidate_version": version,
+            "active_version": self.registry.active("strategy_core"),
+            "promoted": promoted,
+            "data_basis": metrics["data_basis"],
+            "exchange_fee_estimates_used": False,
+            "verified_net_pnl_used": False,
+        }
+        mark_evaluated()
+        self.db.learning_event("CORE_ENTRY_POLICY_EVALUATED", version, result)
+        return result
 
     def _prepare_exit_policy_trades(self, now: float) -> list[dict[str, Any]]:
         """Aggregate partial closes into position episodes and load only path-complete live trades."""
