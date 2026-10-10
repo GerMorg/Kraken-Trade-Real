@@ -1,5 +1,7 @@
 from decimal import Decimal
+import json
 
+from app.config import Config
 from app.domain.models import Decision, PortfolioState, Signal
 from app.domain.states import Direction
 from app.trading.profit_protection import PositionProfitProtection
@@ -48,7 +50,7 @@ def portfolio_for(instrument, position, pnl_pct, *, read_ok=True):
 def test_partial_take_profit_reduces_short_by_configured_fraction(db, config, instrument):
     audit = FakeAudit()
     manager = PositionProfitProtection(config, db, audit)
-    portfolio = portfolio_for(instrument, "-20", "4.0")
+    portfolio = portfolio_for(instrument, "-20", "10.0")
     manager.observe(portfolio, "cycle-partial")
 
     decision = manager.apply(
@@ -76,9 +78,9 @@ def test_partial_take_profit_reduces_short_by_configured_fraction(db, config, in
 def test_trailing_profit_exit_uses_persisted_peak_not_current_profit(db, config, instrument):
     audit = FakeAudit()
     manager = PositionProfitProtection(config, db, audit)
-    peak_portfolio = portfolio_for(instrument, "-20", "8.0")
+    peak_portfolio = portfolio_for(instrument, "-20", "12.0")
     manager.observe(peak_portfolio, "cycle-peak")
-    faded_portfolio = portfolio_for(instrument, "-20", "4.0")
+    faded_portfolio = portfolio_for(instrument, "-20", "7.0")
     manager.observe(faded_portfolio, "cycle-fade")
 
     decision = manager.apply(
@@ -102,7 +104,7 @@ def test_trailing_profit_exit_uses_persisted_peak_not_current_profit(db, config,
         "SELECT peak_profit_pct FROM position_profit_state WHERE symbol=?",
         (instrument.symbol,),
     )
-    assert D(state["peak_profit_pct"]) == D("8.0")
+    assert D(state["peak_profit_pct"]) == D("12.0")
 
 
 def test_partial_profit_prevents_immediate_rebuild_of_same_margin_position(
@@ -169,7 +171,7 @@ def test_stronger_signal_reduction_is_tagged_for_partial_profit_reconciliation(
     db, config, instrument
 ):
     manager = PositionProfitProtection(config, db, FakeAudit())
-    portfolio = portfolio_for(instrument, "-20", "4.0")
+    portfolio = portfolio_for(instrument, "-20", "10.0")
     manager.observe(portfolio, "cycle-stronger-reduction")
     signal = signal_for(instrument, Direction.LONG)
     stronger_reduction = Decision(
@@ -204,3 +206,52 @@ def test_stronger_signal_reduction_is_tagged_for_partial_profit_reconciliation(
     assert decision.target_position_eur == D("-5")
     assert decision.reduce_only is True
     assert decision.rationale["position_management_action"] == "PARTIAL_TAKE_PROFIT"
+
+
+
+def test_profit_protection_defaults_use_ten_percent_with_matching_trailing_activation(config):
+    assert config.strategy_partial_profit_trigger_pct == 10.0
+    assert config.strategy_partial_profit_fraction_pct == 50.0
+    assert config.strategy_profit_lock_trigger_pct == 10.0
+    assert config.strategy_profit_giveback_pct == 35.0
+    assert config.strategy_profit_lock_floor_pct == 5.0
+
+
+def test_config_migrates_untouched_legacy_profit_defaults(tmp_path):
+    path = tmp_path / "legacy-options.json"
+    path.write_text(
+        json.dumps({
+            "strategy_partial_profit_trigger_pct": 3.5,
+            "strategy_partial_profit_fraction_pct": 50.0,
+            "strategy_profit_lock_trigger_pct": 5.0,
+            "strategy_profit_giveback_pct": 35.0,
+            "strategy_profit_lock_floor_pct": 2.0,
+        }),
+        encoding="utf-8",
+    )
+
+    config = Config.load(str(path))
+
+    assert config.strategy_partial_profit_trigger_pct == 10.0
+    assert config.strategy_profit_lock_trigger_pct == 10.0
+    assert config.strategy_profit_lock_floor_pct == 5.0
+    assert config.profit_protection_legacy_defaults_overridden is True
+
+
+def test_config_preserves_custom_profit_protection_triplet(tmp_path):
+    path = tmp_path / "custom-options.json"
+    path.write_text(
+        json.dumps({
+            "strategy_partial_profit_trigger_pct": 7.0,
+            "strategy_profit_lock_trigger_pct": 9.0,
+            "strategy_profit_lock_floor_pct": 3.0,
+        }),
+        encoding="utf-8",
+    )
+
+    config = Config.load(str(path))
+
+    assert config.strategy_partial_profit_trigger_pct == 7.0
+    assert config.strategy_profit_lock_trigger_pct == 9.0
+    assert config.strategy_profit_lock_floor_pct == 3.0
+    assert config.profit_protection_legacy_defaults_overridden is False

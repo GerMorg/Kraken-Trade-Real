@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.39
+
+- Raise the Spot Margin partial take-profit threshold from 3.5% to 10% of Kraken-reported opening cost; the configured reduction remains 50% of the then-open position.
+- Activate the persistent trailing-profit lock at the same 10% peak threshold so the old 5% full-exit rule cannot close the entire position before the intended partial take-profit; retain the 35% peak giveback and set the minimum locked-profit floor to 5%.
+- Migrate the untouched v0.1.38 default option triplet (3.5% partial / 5% trailing / 2% floor) to the new 10% / 10% / 5% policy at runtime, and emit an audit event; preserve customized triplets.
+- Add regression tests for the 10% trigger, trailing interaction, legacy migration and custom-option preservation.
+- Bump Home Assistant app, Python package, Docker build and Kraken User-Agent to 0.1.39.
+
 ## 0.1.38
 
 - Add exchange-reported Kraken Spot Margin PnL, quote-currency-converted PnL in EUR, cost-basis profit percentage and open quantity to portfolio reconciliation, with explicit audit events and a successful-read flag.

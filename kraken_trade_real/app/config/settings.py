@@ -119,6 +119,7 @@ class Config:
     tactical_adaptive_min_net_edge_bps: float
     tactical_seed_history: bool
     tactical_diagnostics_interval_seconds: int
+    profit_protection_legacy_defaults_overridden: bool = False
 
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
@@ -126,6 +127,28 @@ class Config:
             raw = json.loads(Path(path).read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             raw = {}
+
+        # v0.1.38 introduced these options with legacy defaults 3.5/5/2. If an
+        # existing HA options file still has that untouched default triplet,
+        # move it to the new 10/10/5 policy in memory. Preserve other customized
+        # thresholds, and make the migration explicit in the runtime audit log.
+        def raw_float(name: str, default: float) -> float:
+            try:
+                return float(raw.get(name, default))
+            except (TypeError, ValueError):
+                return default
+
+        legacy_profit_defaults = (
+            "strategy_partial_profit_trigger_pct" in raw
+            and raw_float("strategy_partial_profit_trigger_pct", 3.5) == 3.5
+            and raw_float("strategy_profit_lock_trigger_pct", 5.0) == 5.0
+            and raw_float("strategy_profit_lock_floor_pct", 2.0) == 2.0
+        )
+        if legacy_profit_defaults:
+            raw = dict(raw)
+            raw["strategy_partial_profit_trigger_pct"] = 10.0
+            raw["strategy_profit_lock_trigger_pct"] = 10.0
+            raw["strategy_profit_lock_floor_pct"] = 5.0
 
         def b(name: str, default: bool) -> bool:
             value = raw.get(name, default)
@@ -193,11 +216,11 @@ class Config:
             strategy_entry_fee_bps=f("strategy_entry_fee_bps", 40.0, 0.0, 1000.0),
             strategy_exit_fee_bps=f("strategy_exit_fee_bps", 80.0, 0.0, 1000.0),
             strategy_execution_overhead_bps=f("strategy_execution_overhead_bps", 8.0, 0.0, 1000.0),
-            strategy_partial_profit_trigger_pct=f("strategy_partial_profit_trigger_pct", 3.5, 0.1, 100.0),
+            strategy_partial_profit_trigger_pct=f("strategy_partial_profit_trigger_pct", 10.0, 0.1, 100.0),
             strategy_partial_profit_fraction_pct=f("strategy_partial_profit_fraction_pct", 50.0, 10.0, 90.0),
-            strategy_profit_lock_trigger_pct=f("strategy_profit_lock_trigger_pct", 5.0, 0.1, 100.0),
+            strategy_profit_lock_trigger_pct=f("strategy_profit_lock_trigger_pct", 10.0, 0.1, 100.0),
             strategy_profit_giveback_pct=f("strategy_profit_giveback_pct", 35.0, 5.0, 90.0),
-            strategy_profit_lock_floor_pct=f("strategy_profit_lock_floor_pct", 2.0, 0.1, 100.0),
+            strategy_profit_lock_floor_pct=f("strategy_profit_lock_floor_pct", 5.0, 0.1, 100.0),
             risk_max_position_pct=f("risk_max_position_pct", 15.0, 0.1, 100.0),
             risk_max_gross_pct=f("risk_max_gross_pct", 80.0, 0.1, 100.0),
             risk_max_net_pct=f("risk_max_net_pct", 50.0, 0.1, 100.0),
@@ -280,6 +303,7 @@ class Config:
             tactical_adaptive_min_net_edge_bps=f("tactical_adaptive_min_net_edge_bps", 15.0, 1.0, 1000.0),
             tactical_seed_history=b("tactical_seed_history", True),
             tactical_diagnostics_interval_seconds=i("tactical_diagnostics_interval_seconds", 60, 10),
+            profit_protection_legacy_defaults_overridden=legacy_profit_defaults,
         )
         cls.validate(cfg)
         return cfg
@@ -298,8 +322,8 @@ class Config:
             raise ValueError("tax_provider_classification must be FOREIGN, DOMESTIC or UNVERIFIED")
         if cfg.strategy_adaptive_cost_ratio < 1:
             raise ValueError("strategy_adaptive_cost_ratio must be at least 1")
-        if cfg.strategy_partial_profit_trigger_pct >= cfg.strategy_profit_lock_trigger_pct:
-            raise ValueError("partial-profit trigger must be below the trailing-profit activation")
+        if cfg.strategy_partial_profit_trigger_pct > cfg.strategy_profit_lock_trigger_pct:
+            raise ValueError("partial-profit trigger cannot exceed trailing-profit activation")
         if cfg.strategy_profit_lock_floor_pct >= cfg.strategy_profit_lock_trigger_pct:
             raise ValueError("profit-lock floor must be below trailing-profit activation")
         if cfg.tactical_adaptive_min_expected_move_bps <= (
