@@ -1,6 +1,6 @@
 import json
 
-from app.learning.policy_optimizer import DEFAULT_WEIGHTS, StrategyPolicyOptimizer
+from app.learning.policy_optimizer import DEFAULT_SHAPE, DEFAULT_WEIGHTS, StrategyPolicyOptimizer
 
 
 def _row(bucket, direction, *, net_return, trend, confidence=0.9, available=True):
@@ -130,7 +130,7 @@ def test_optimizer_requires_independent_time_buckets_even_with_many_symbols():
     assert result["status"] == "INSUFFICIENT_DATA"
     assert result["groups"] == 400
     assert result["time_buckets"] == 4
-    assert result["minimum_time_buckets"] == 20
+    assert result["minimum_time_buckets"] == 80
 
 
 def test_sizing_confidence_power_is_bounded_and_changes_position_notional(config, instrument):

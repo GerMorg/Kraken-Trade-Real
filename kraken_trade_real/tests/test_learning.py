@@ -46,6 +46,12 @@ def test_policy_family_is_separate_and_keeps_its_own_active_version(db):
             "test_improvement_bps": 3.0,
             "test_mean_net_bps": 4.0,
             "validation_mean_net_bps": 3.0,
+            "test_median_net_bps": 2.0,
+            "validation_median_net_bps": 2.0,
+            "test_profit_factor": 1.5,
+            "validation_profit_factor": 1.4,
+            "test_exposure_weighted_net_bps": 4.0,
+            "validation_exposure_weighted_net_bps": 3.0,
             "validation_improvement_bps": 2.0,
         },
     )
@@ -58,3 +64,35 @@ def test_policy_family_is_separate_and_keeps_its_own_active_version(db):
     assert registry.parameters(
         "candidate-policy", family="strategy_policy"
     ) == {"strategy_min_edge_bps": 20.0}
+
+
+def test_strategy_policy_registry_rejects_mean_profit_with_poor_median(db):
+    registry = ModelRegistry(db)
+    registry.ensure_family_baseline(
+        "strategy_policy", "baseline-policy-risk-test-v1",
+        {"strategy_min_edge_bps": 25.0}, "test baseline",
+    )
+    registry.register_candidate(
+        "candidate-policy-fat-tail-only",
+        "strategy_policy",
+        "baseline-policy-risk-test-v1",
+        {"strategy_min_edge_bps": 20.0},
+        {
+            "samples": 100,
+            "improvement": 5.0,
+            "test_mean_net_bps": 10.0,
+            "validation_mean_net_bps": 8.0,
+            "test_median_net_bps": -2.0,
+            "validation_median_net_bps": 1.0,
+            "test_profit_factor": 1.4,
+            "validation_profit_factor": 1.3,
+            "test_exposure_weighted_net_bps": 8.0,
+            "validation_exposure_weighted_net_bps": 6.0,
+            "validation_improvement_bps": 3.0,
+        },
+    )
+
+    assert registry.promote(
+        "candidate-policy-fat-tail-only", min_improvement=2.0, min_samples=20
+    ) is False
+    assert registry.active("strategy_policy") == "baseline-policy-risk-test-v1"
