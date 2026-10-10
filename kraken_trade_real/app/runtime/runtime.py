@@ -1359,7 +1359,7 @@ class TradingRuntime:
                     continue
 
                 quantity = (
-                    portfolio.position_quantity.get(instrument.symbol, D("0"))
+                    D("0")
                     if full_margin_settlement
                     else self.portfolio.quantity_for_eur(
                         instrument,
@@ -1430,7 +1430,7 @@ class TradingRuntime:
                             action="NO_ORDER_UNTIL_DELTA_IS_ORDERABLE",
                         )
                         continue
-                if quantity is None or quantity <= 0:
+                if quantity is None or (quantity <= 0 and not full_margin_settlement):
                     reason = (
                         "MARGIN_POSITION_QUANTITY_UNAVAILABLE"
                         if full_margin_settlement
@@ -1553,7 +1553,10 @@ class TradingRuntime:
                         settlement_side=settlement_side,
                         current_position_eur=str(decision.current_position_eur),
                         target_position_eur=str(decision.target_position_eur),
-                        order_quantity=str(quantity),
+                        order_volume=str(quantity),
+                        exchange_reported_open_quantity=str(
+                            portfolio.position_quantity.get(instrument.symbol, D("0"))
+                        ),
                         leverage=str(lev),
                         reason=str(decision.rationale.get("rebalance_action", "FULL_EXIT")),
                     )

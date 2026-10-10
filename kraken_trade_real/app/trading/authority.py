@@ -567,7 +567,7 @@ class TradingAuthority:
             intent.reduce_only
             and intent.instrument.venue == "spot"
             and intent.instrument.product_type.value == "SPOT_MARGIN"
-            and intent.quantity > D("0")
+            and intent.quantity == D("0")
             and intent.limit_price is None
             and intent.leverage > D("1")
             and not intent.post_only

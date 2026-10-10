@@ -50,7 +50,7 @@ def test_settlement_builder_uses_buy_side_for_a_margin_long(instrument):
     assert intent.direction == Direction.LONG
 
 
-def test_spot_gateway_sends_settle_position_with_explicit_open_volume():
+def test_spot_gateway_sends_documented_zero_volume_settle_all_order():
     gateway = KrakenGateway("", "")
     captured = {}
 
@@ -62,25 +62,25 @@ def test_spot_gateway_sends_settle_position_with_explicit_open_volume():
     gateway.spot_private = fake_private
     gateway.submit_spot_order(
         instrument_id="MINAZUSD", side="sell", order_type="settle-position",
-        quantity=D("89.53229885"), price=None,
+        quantity=D("0"), price=None,
         client_order_id="11111111-2222-4333-8444-555555555580",
         leverage=D("2"), margin=True, reduce_only=True,
     )
     assert captured["method"] == "AddOrder"
     assert captured["params"]["ordertype"] == "settle-position"
-    assert captured["params"]["volume"] == "89.53229885"
+    assert captured["params"]["volume"] == "0"
     assert captured["params"]["type"] == "sell"
     assert captured["params"]["leverage"] == "2"
     assert "reduce_only" not in captured["params"]
     assert "price" not in captured["params"]
 
 
-def test_spot_gateway_rejects_zero_volume_settlement():
+def test_spot_gateway_rejects_negative_volume_settlement():
     gateway = KrakenGateway("", "")
     with pytest.raises(KrakenError, match="INVALID_SETTLE_POSITION_PARAMETERS"):
         gateway.submit_spot_order(
             instrument_id="MINAZUSD", side="sell", order_type="settle-position",
-            quantity=D("0"), price=None,
+            quantity=D("-1"), price=None,
             client_order_id="11111111-2222-4333-8444-555555555581",
             leverage=D("2"), margin=True, reduce_only=True,
         )
@@ -101,7 +101,7 @@ def test_authority_preflight_allows_valid_settlement_below_trade_cost_minimum(
     intent = OrderIntent(
         "intent-settle", "11111111-2222-4333-8444-555555555582",
         "decision-settle", instrument, Direction.SHORT, "sell",
-        "settle-position", D("0.0001"), None, D("2"), True, True,
+        "settle-position", D("0"), None, D("2"), True, True,
         D("0"), D("40"), 45, state=OrderState.INTENT_CREATED,
     )
     check = authority._preflight(intent, market)
