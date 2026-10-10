@@ -52,76 +52,77 @@ class LearningEngine:
         open_predictions = int(open_row["n"]) if open_row else 0
         settled_total = int(settled_row["n"]) if settled_row else 0
 
+        # Chronological split: older rows select a scale, newest rows validate it.
         rows = self.db.query(
             """SELECT p.probability, o.success
                FROM predictions p
                JOIN prediction_outcomes o ON o.prediction_id=p.prediction_id
                WHERE p.outcome_status='SETTLED'
-               ORDER BY o.measured_at DESC LIMIT 1000"""
+               ORDER BY o.measured_at ASC LIMIT 1000"""
         )
         pairs = [(float(r["probability"]), bool(r["success"])) for r in rows]
-        if len(pairs) < 20:
+        if len(pairs) < 100:
             result = {
-                "settled": settled,
-                "settled_total": settled_total,
-                "open_predictions": open_predictions,
-                "samples": len(pairs),
-                "status": "INSUFFICIENT_DATA",
+                "settled": settled, "settled_total": settled_total,
+                "open_predictions": open_predictions, "samples": len(pairs),
+                "minimum_samples": 100, "status": "INSUFFICIENT_DATA",
             }
             self.db.learning_event("LEARNING_FEEDBACK", "decision", result)
             return result
 
+        split = min(len(pairs) - 30, max(70, int(len(pairs) * 0.70)))
+        training, validation = pairs[:split], pairs[split:]
         parent = self.registry.active()
         parent_params = self.registry.parameters(parent)
-        base = self.calibration.evaluate(pairs)
-        base_brier = float(base["brier"])
-        base_ece = float(base["ece"])
+        train_base = self.calibration.evaluate(training)
         best_scale = 1.0
-        best_brier = base_brier
-        best_metrics = base
+        best_train_brier = float(train_base["brier"])
         for scale in (0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30):
-            candidate = [
-                (max(0.0, min(1.0, p * scale)), y)
-                for p, y in pairs
-            ]
+            candidate = [(max(0.0, min(1.0, p * scale)), y) for p, y in training]
             metrics = self.calibration.evaluate(candidate)
-            if float(metrics["brier"]) < best_brier:
-                best_brier = float(metrics["brier"])
-                best_scale = scale
-                best_metrics = metrics
-        improvement = base_brier - best_brier
+            if float(metrics["brier"]) < best_train_brier:
+                best_train_brier, best_scale = float(metrics["brier"]), scale
 
-        promoted = False
-        candidate_version = ""
-        if best_scale != 1.0 and improvement > 0:
+        validation_base = self.calibration.evaluate(validation)
+        validation_candidate = self.calibration.evaluate([
+            (max(0.0, min(1.0, p * best_scale)), y) for p, y in validation
+        ])
+        base_brier = float(validation_base["brier"])
+        candidate_brier = float(validation_candidate["brier"])
+        improvement = base_brier - candidate_brier
+        promoted, candidate_version = False, ""
+        if (
+            best_scale != 1.0 and len(validation) >= 30 and improvement >= 0.005
+            and bool(getattr(self, "auto_promotion_enabled", True))
+        ):
             candidate_version = f"decision-calibrated-{int(time.time())}"
             parameters = dict(parent_params)
-            parameters.update(
-                {"kind": "calibrated", "confidence_scale": best_scale}
-            )
+            parameters.update({
+                "kind": "calibrated", "confidence_scale": best_scale,
+                "validation_method": "chronological_70_30_holdout",
+            })
             metrics = {
-                "samples": len(pairs),
-                "brier": float(best_metrics["brier"]),
-                "ece": float(best_metrics["ece"]),
-                "improvement": improvement,
-                "parent_brier": base_brier,
-                "parent_ece": base_ece,
+                "samples": len(validation), "training_samples": len(training),
+                "brier": candidate_brier, "ece": float(validation_candidate["ece"]),
+                "improvement": improvement, "parent_brier": base_brier,
+                "parent_ece": float(validation_base["ece"]), "selected_scale": best_scale,
+                "validation_method": "chronological_70_30_holdout",
             }
             self.proposal(candidate_version, parent, metrics, parameters)
-            promoted = self.registry.promote(candidate_version)
+            promoted = self.registry.promote(
+                candidate_version, min_improvement=0.005, min_samples=30
+            )
 
         result = {
-            "settled": settled,
-            "settled_total": settled_total,
-            "open_predictions": open_predictions,
-            "samples": len(pairs),
-            "status": "OK",
-            "brier": base_brier,
-            "ece": base_ece,
-            "best_scale": best_scale,
-            "improvement": improvement,
-            "candidate_version": candidate_version,
-            "promoted": promoted,
+            "settled": settled, "settled_total": settled_total,
+            "open_predictions": open_predictions, "samples": len(pairs),
+            "training_samples": len(training), "validation_samples": len(validation),
+            "status": "OK", "brier": base_brier,
+            "candidate_brier": candidate_brier, "ece": float(validation_base["ece"]),
+            "candidate_ece": float(validation_candidate["ece"]),
+            "best_scale": best_scale, "improvement": improvement,
+            "validation_method": "chronological_70_30_holdout",
+            "candidate_version": candidate_version, "promoted": promoted,
         }
         self.db.learning_event("LEARNING_FEEDBACK", parent, result)
         return result

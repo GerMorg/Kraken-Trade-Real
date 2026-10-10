@@ -51,7 +51,18 @@ class Database:
             ocols={row[1] for row in con.execute("PRAGMA table_info(orders)")}
             if "post_only" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN post_only INTEGER NOT NULL DEFAULT 0")
             if "submitted_at" not in ocols: con.execute("ALTER TABLE orders ADD COLUMN submitted_at REAL")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','5')")
+            # Legacy OPEN predictions don't carry direction, so migration marks
+            # them UNKNOWN rather than incorrectly scoring shorts as longs.
+            pcols={row[1] for row in con.execute("PRAGMA table_info(predictions)")}
+            for name,definition in {
+                "predicted_direction":"TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "regime":"TEXT NOT NULL DEFAULT ''",
+                "expected_cost_bps":"TEXT NOT NULL DEFAULT '0'",
+                "raw_confidence":"REAL NOT NULL DEFAULT 0.5",
+            }.items():
+                if name not in pcols:
+                    con.execute(f"ALTER TABLE predictions ADD COLUMN {name} {definition}")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','6')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -228,28 +239,48 @@ class Database:
             str(state.daily_pnl_eur),str(state.drawdown_pct),json.dumps({k:str(v) for k,v in state.positions.items()}),
             state.open_orders))
 
-    def save_prediction(self, prediction_id: str, decision: Any, probability: float, horizon: str = "15m") -> None:
+    @staticmethod
+    def prediction_probability_from_confidence(confidence: float) -> float:
+        """Shrink a rule-derived score toward 0.5 until outcomes calibrate it.
+
+        Signal confidence is not a measured event probability. This conservative
+        transform prevents a score of 1.0 from being recorded as certainty.
+        The result is a calibration input, not a claim of proven probability.
+        """
+        raw = max(0.0, min(1.0, float(confidence)))
+        return max(0.05, min(0.95, 0.5 + (raw - 0.5) * 0.5))
+
+    def save_prediction(
+        self, prediction_id: str, decision: Any, probability: float, horizon: str = "15m"
+    ) -> float:
         import hashlib
         feature_hash = hashlib.sha256(
             json.dumps(decision.rationale, sort_keys=True, default=str).encode()
         ).hexdigest()
+        raw_confidence = max(0.0, min(1.0, float(probability)))
+        stored_probability = self.prediction_probability_from_confidence(raw_confidence)
+        signal = decision.signal
         self.execute(
             """INSERT OR IGNORE INTO predictions(
               prediction_id,created_at,decision_id,symbol,horizon,probability,
-              expected_return_bps,model_version,feature_hash,outcome_status
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+              expected_return_bps,model_version,feature_hash,outcome_status,
+              predicted_direction,regime,expected_cost_bps,raw_confidence
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 prediction_id, time.time(), decision.decision_id, decision.instrument.symbol,
-                horizon, float(probability), str(decision.signal.expected_return_bps),
+                horizon, stored_probability, str(signal.expected_return_bps),
                 decision.model_version, feature_hash, "OPEN",
+                str(getattr(signal.direction, "value", signal.direction)).upper(),
+                str(signal.regime or ""),
+                str(max(Decimal("0"), Decimal(str(signal.expected_cost_bps)))),
+                raw_confidence,
             ),
         )
+        return stored_probability
 
     def settle_predictions(self, now: float | None = None) -> int:
         now = time.time() if now is None else now
-        rows = self.query(
-            "SELECT * FROM predictions WHERE outcome_status='OPEN'"
-        )
+        rows = self.query("SELECT * FROM predictions WHERE outcome_status='OPEN'")
         settled = 0
         for row in rows:
             horizon_seconds = 900 if row["horizon"] == "15m" else 3600
@@ -273,19 +304,41 @@ class Database:
             end_price = Decimal(str(end["price"]))
             if start_price <= 0:
                 continue
+            direction = str(row.get("predicted_direction") or "UNKNOWN").upper()
+            if direction not in {"LONG", "SHORT"}:
+                self.execute(
+                    "UPDATE predictions SET outcome_status='UNSCORABLE' WHERE prediction_id=?",
+                    (row["prediction_id"],),
+                )
+                self.learning_event(
+                    "PREDICTION_UNSCORABLE", str(row["prediction_id"]),
+                    {"reason": "LEGACY_DIRECTION_UNKNOWN"},
+                )
+                continue
             realized = (end_price / start_price - Decimal("1")) * Decimal("10000")
-            expected = Decimal(str(row["expected_return_bps"]))
-            signed = realized if expected >= 0 else -realized
-            success = int(signed > 0)
+            directional = realized if direction == "LONG" else -realized
+            cost_bps = max(Decimal("0"), Decimal(str(row.get("expected_cost_bps") or "0")))
+            net_directional = directional - cost_bps
+            success = int(net_directional > 0)
             error = Decimal(str(row["probability"])) - Decimal(success)
+            detail = {
+                "start_price": str(start_price), "end_price": str(end_price),
+                "predicted_direction": direction,
+                "raw_realized_return_bps": str(realized),
+                "directional_return_bps": str(directional),
+                "expected_cost_bps": str(cost_bps),
+                "net_directional_return_bps": str(net_directional),
+                "success_definition": "directional_return_after_expected_costs_gt_zero",
+                "raw_confidence": float(row.get("raw_confidence") or 0.5),
+                "regime": str(row.get("regime") or ""),
+            }
             self.execute(
                 """INSERT OR REPLACE INTO prediction_outcomes(
                    prediction_id,measured_at,realized_return_bps,success,error_bps,detail_json
                 ) VALUES(?,?,?,?,?,?)""",
                 (
                     row["prediction_id"], now, str(realized), success,
-                    str(error * Decimal("10000")),
-                    json.dumps({"start_price": str(start_price), "end_price": str(end_price)}),
+                    str(error * Decimal("10000")), json.dumps(detail, sort_keys=True),
                 ),
             )
             self.execute(
