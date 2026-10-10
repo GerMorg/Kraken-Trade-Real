@@ -47,7 +47,7 @@ def test_prediction_outcome_is_directional_and_net_of_costs(
     db.save_market(_snapshot(instrument.symbol, start_price, created_at - 1), {})
     db.save_market(_snapshot(instrument.symbol, end_price, created_at + 901), {})
 
-    assert stored_p == pytest.approx(0.745)
+    assert stored_p == pytest.approx(0.99)
     assert db.settle_predictions(now=created_at + 902) == 1
     outcome = db.one(
         "SELECT success,detail_json FROM prediction_outcomes WHERE prediction_id=?",

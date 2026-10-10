@@ -62,7 +62,7 @@ class LearningEngine:
                FROM predictions p
                JOIN prediction_outcomes o ON o.prediction_id=p.prediction_id
                WHERE p.outcome_status='SETTLED'
-               ORDER BY o.measured_at ASC LIMIT 1000"""
+               ORDER BY p.created_at ASC, o.measured_at ASC LIMIT 1000"""
         )
         pairs = [(float(r["probability"]), bool(r["success"])) for r in rows]
         if len(pairs) < 100:

@@ -1322,7 +1322,7 @@ class TradingRuntime:
                     horizon="15m",
                     probability=str(stored_probability),
                     raw_confidence=str(decision.signal.confidence),
-                    probability_source="SHRUNK_RULE_SCORE",
+                    probability_source="CAPPED_RULE_CONFIDENCE_SCORE",
                     predicted_direction=decision.signal.direction.value,
                     expected_cost_bps=str(decision.signal.expected_cost_bps),
                     model_version=decision.model_version,

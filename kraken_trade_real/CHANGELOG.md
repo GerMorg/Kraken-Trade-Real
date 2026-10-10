@@ -4,7 +4,7 @@
 
 - Aggregate all Kraken OpenPositions lots per pair for quantity, PnL, cost basis, exposure and leverage instead of silently dropping later lots.
 - Use Kraken's native Spot Margin `settle-position` order for confirmed full exits with the aggregate Kraken-reported open quantity; strictly validate this reduce-only path and avoid irrelevant minimum-cost/FX-funding checks.
-- Score forecasts using their explicit LONG/SHORT direction and net directional outcome after expected costs; preserve regime and raw confidence, and shrink the heuristic score away from false certainty.
+- Score forecasts using their explicit LONG/SHORT direction and net directional outcome after expected costs; preserve regime and raw confidence, and cap the heuristic score away from false certainty.
 - Exclude legacy forecasts with unknown direction from calibration and require at least 100 outcomes plus chronological hold-out validation before promoting a confidence scale.
 - Include time-dependent Spot Margin opening and completed four-hour rollover costs in Tactical's trailing profit floor.
 - Synchronize Home Assistant app, Python package, Docker build and API User-Agent to 0.1.42.

@@ -241,14 +241,14 @@ class Database:
 
     @staticmethod
     def prediction_probability_from_confidence(confidence: float) -> float:
-        """Shrink a rule-derived score toward 0.5 until outcomes calibrate it.
+        """Cap a rule-derived confidence away from false 0%/100% certainty.
 
-        Signal confidence is not a measured event probability. This conservative
-        transform prevents a score of 1.0 from being recorded as certainty.
-        The result is a calibration input, not a claim of proven probability.
+        Keep this score on the same scale that DecisionEngine multiplies by the
+        learned confidence_scale. It is a calibration input, not a proven event
+        probability; only observed, cost-adjusted outcomes can validate it.
         """
         raw = max(0.0, min(1.0, float(confidence)))
-        return max(0.05, min(0.95, 0.5 + (raw - 0.5) * 0.5))
+        return max(0.01, min(0.99, raw))
 
     def save_prediction(
         self, prediction_id: str, decision: Any, probability: float, horizon: str = "15m"
