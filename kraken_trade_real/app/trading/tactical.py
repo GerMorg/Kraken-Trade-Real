@@ -1233,6 +1233,45 @@ class TacticalTrader:
             1.0, float(getattr(self.config, "tactical_order_confirm_seconds", 5))
         )
         last_payload: dict[str, Any] | None = None
+
+        def fill_from(payload: dict[str, Any], *, state: str) -> tuple[D, D] | None:
+            executed = D(str(
+                payload.get("vol_exec") or payload.get("executed_volume") or "0"
+            ))
+            requested = D(str(payload.get("vol") or payload.get("volume") or intent.quantity))
+            if executed <= 0 and state == "FILLED":
+                executed = requested if requested > 0 else D(str(intent.quantity))
+            price = D("0")
+            for key in ("avg_price", "avgPrice", "price"):
+                candidate = D(str(payload.get(key) or "0"))
+                if candidate > 0:
+                    price = candidate
+                    break
+            if price <= 0 and intent.limit_price is not None:
+                price = D(str(intent.limit_price))
+            if executed > 0 and price > 0:
+                return executed, price
+            return None
+
+        def terminal_state(payload: dict[str, Any], resolved_state: Any) -> str | None:
+            raw = str(payload.get("status") or payload.get("state") or "").strip().lower()
+            executed = D(str(payload.get("vol_exec") or payload.get("executed_volume") or "0"))
+            requested = D(str(payload.get("vol") or payload.get("volume") or intent.quantity))
+            if requested > 0 and executed >= requested:
+                return "FILLED"
+            if raw == "expired":
+                return "EXPIRED"
+            if raw == "rejected":
+                return "REJECTED"
+            if raw in {"canceled", "cancelled"}:
+                return "CANCELED"
+            if raw == "closed" and requested > 0 and executed < requested:
+                return "CANCELED"
+            state_value = str(getattr(resolved_state, "value", resolved_state))
+            if state_value in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
+                return state_value
+            return None
+
         while time.monotonic() < deadline:
             try:
                 rows = self.gateway.lookup_order(
@@ -1240,27 +1279,25 @@ class TacticalTrader:
                     instrument=instrument,
                     kraken_order_id=kraken_order_id,
                 )
-                if rows:
+                if rows and isinstance(rows[0], dict):
                     last_payload = rows[0]
-                    status = self.authority.reconciler.state_from_exchange(rows[0])
-                    if status.value == "FILLED":
-                        quantity = D(str(rows[0].get("vol_exec") or rows[0].get("executed_volume") or intent.quantity))
-                        price = D(
-                            str(
-                                rows[0].get("price")
-                                or rows[0].get("avg_price")
-                                or rows[0].get("avgPrice")
-                                or intent.limit_price
-                                or "0"
-                            )
+                    status = self.authority.reconciler.state_from_exchange(last_payload)
+                    final = terminal_state(last_payload, status)
+                    if final is not None:
+                        self.db.update_order_state(
+                            intent.client_order_id,
+                            final,
+                            kraken_order_id=str(
+                                last_payload.get("txid") or last_payload.get("order_id") or kraken_order_id or ""
+                            ) or None,
                         )
-                        if quantity > 0 and price > 0:
-                            self.db.update_order_state(
-                                intent.client_order_id,
-                                status.value,
-                                kraken_order_id=str(rows[0].get("txid") or rows[0].get("order_id") or "") or None,
-                            )
-                            return quantity, price
+                        if final == "FILLED" or D(str(
+                            last_payload.get("vol_exec") or last_payload.get("executed_volume") or "0"
+                        )) > 0:
+                            return fill_from(last_payload, state=final)
+                        return None
+                    # A partial live order is not a completed fill. Keep it live
+                    # until it completes or we cancel and reconcile its remainder.
             except Exception as exc:
                 self.audit.emit(
                     "TACTICAL_FILL_CHECK_FAILED",
@@ -1269,6 +1306,34 @@ class TacticalTrader:
                     error_type=type(exc).__name__,
                 )
             time.sleep(0.5)
+
+        cancel_reconcile = getattr(self.authority, "cancel_and_reconcile", None)
+        if callable(cancel_reconcile):
+            final_result = cancel_reconcile(
+                intent,
+                kraken_order_id=kraken_order_id,
+                timeout_seconds=3.0,
+            )
+            payload = final_result.get("payload")
+            state = str(final_result.get("state") or "UNKNOWN_RECONCILING")
+            if isinstance(payload, dict) and bool(final_result.get("terminal")):
+                fill = fill_from(payload, state=state)
+                if fill is not None:
+                    self.audit.emit(
+                        "TACTICAL_PARTIAL_FILL_RECONCILED",
+                        "WARNING" if state != "FILLED" else "INFO",
+                        symbol=instrument.symbol,
+                        client_order_id=intent.client_order_id,
+                        terminal_state=state,
+                        executed_volume=str(fill[0]),
+                        requested_volume=str(
+                            payload.get("vol") or payload.get("volume") or intent.quantity
+                        ),
+                        action="APPLY_CUMULATIVE_CONFIRMED_FILL",
+                    )
+                    return fill
+                return None
+
         self.audit.emit(
             "TACTICAL_FILL_PENDING",
             "WARNING",
@@ -1279,8 +1344,10 @@ class TacticalTrader:
                 if last_payload
                 else "UNKNOWN"
             ),
+            cancellation_terminal_confirmed=False,
         )
         return None
+
 
     def _open_position(
         self,
@@ -1291,6 +1358,12 @@ class TacticalTrader:
         client_order_id: str,
         now: float,
     ) -> None:
+        requested_quantity = D(str(kwargs_requested_quantity)) if False else quantity
+        quote_rate = self.portfolio.quote_to_eur_rate(decision.instrument.quote)
+        if quote_rate is not None and D(str(quote_rate)) > 0:
+            filled_notional_eur = abs(quantity * price * D(str(quote_rate)))
+        else:
+            filled_notional_eur = abs(decision.target_notional_eur)
         position = TacticalPosition(
             decision.instrument.symbol,
             decision.instrument.venue,
@@ -1299,7 +1372,7 @@ class TacticalTrader:
             price,
             price,
             price,
-            abs(decision.target_notional_eur),
+            filled_notional_eur,
             decision.leverage,
             now,
             client_order_id,

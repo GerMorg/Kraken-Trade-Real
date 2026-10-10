@@ -439,6 +439,215 @@ class TradingAuthority:
                 "reconciled": True,
             }
 
+    def cancel_and_reconcile(
+        self,
+        intent: OrderIntent,
+        *,
+        kraken_order_id: str | None = None,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        """Cancel a tactical order remainder and return only exchange-confirmed fills.
+
+        A cancel acknowledgement alone is not terminal proof. This method queries
+        the exact client/order id before and after cancellation, preserves ambiguous
+        orders as blockers, and returns cumulative executed volume when cancellation
+        leaves a genuine partial fill.
+        """
+        order_id = str(kraken_order_id or "") or None
+
+        def status_of(payload: dict[str, Any]) -> str:
+            return str(payload.get("status") or payload.get("state") or "").strip().lower()
+
+        def quantities(payload: dict[str, Any]) -> tuple[Decimal, Decimal]:
+            executed = D(str(
+                payload.get("vol_exec") or payload.get("executed_volume") or "0"
+            ))
+            requested = D(str(
+                payload.get("vol") or payload.get("volume") or intent.quantity
+            ))
+            return max(D("0"), executed), max(D("0"), requested)
+
+        def resolved_terminal(payload: dict[str, Any]) -> OrderState | None:
+            status = status_of(payload)
+            executed, requested = quantities(payload)
+            if requested > 0 and executed >= requested:
+                return OrderState.FILLED
+            if status in {"expired"}:
+                return OrderState.EXPIRED
+            if status in {"rejected"}:
+                return OrderState.REJECTED
+            if status in {"cancelled", "canceled"}:
+                return OrderState.CANCELED
+            if status == "closed" and requested > 0 and executed < requested:
+                return OrderState.CANCELED
+            resolved = self.reconciler.state_from_exchange(payload)
+            if resolved in {
+                OrderState.FILLED, OrderState.CANCELED, OrderState.EXPIRED,
+                OrderState.REJECTED,
+            }:
+                return resolved
+            return None
+
+        def record(payload: dict[str, Any], state: OrderState, resolved_id: str | None) -> dict[str, Any]:
+            self.db.update_order_state(
+                intent.client_order_id,
+                state.value,
+                kraken_order_id=resolved_id or order_id,
+                **({
+                    "last_error": (
+                        f"TERMINAL_AFTER_PARTIAL_FILL:{quantities(payload)[0]}/"
+                        f"{quantities(payload)[1]}"
+                    )
+                } if state != OrderState.FILLED and quantities(payload)[0] > 0 else {}),
+            )
+            return {
+                "state": state.value,
+                "terminal": True,
+                "payload": payload,
+                "kraken_order_id": resolved_id or order_id,
+                "executed_volume": str(quantities(payload)[0]),
+                "requested_volume": str(quantities(payload)[1]),
+            }
+
+        try:
+            found = self.gateway.lookup_order(
+                client_order_id=intent.client_order_id,
+                instrument=intent.instrument,
+                kraken_order_id=order_id,
+            )
+            if not found or not isinstance(found[0], dict):
+                self.db.update_order_state(
+                    intent.client_order_id,
+                    OrderState.UNKNOWN_RECONCILING.value,
+                    last_error="TACTICAL_CANCEL_LOOKUP_NOT_CONFIRMED",
+                )
+                return {"state": OrderState.UNKNOWN_RECONCILING.value, "terminal": False}
+            payload = found[0]
+            resolved_state, resolved_id = self.reconciler.reconcile(found)
+            order_id = resolved_id or str(payload.get("txid") or payload.get("order_id") or "") or order_id
+            final_state = resolved_terminal(payload)
+            if final_state is not None:
+                return record(payload, final_state, order_id)
+            if not order_id:
+                self.db.update_order_state(
+                    intent.client_order_id,
+                    resolved_state.value,
+                    last_error="TACTICAL_CANCEL_ORDER_ID_MISSING",
+                )
+                return {
+                    "state": resolved_state.value,
+                    "terminal": False,
+                    "reason": "KRAKEN_ORDER_ID_MISSING",
+                }
+            if status_of(payload) not in {
+                "open", "pending", "new", "partially_filled", "partiallyfilled",
+                "placed", "received", "acknowledged",
+            }:
+                self.db.update_order_state(
+                    intent.client_order_id,
+                    OrderState.UNKNOWN_RECONCILING.value,
+                    kraken_order_id=order_id,
+                    last_error=f"TACTICAL_CANCEL_UNRECOGNIZED_STATUS:{status_of(payload)}",
+                )
+                return {
+                    "state": OrderState.UNKNOWN_RECONCILING.value,
+                    "terminal": False,
+                    "reason": "UNRECOGNIZED_EXCHANGE_STATUS",
+                }
+            self.audit.emit(
+                "TACTICAL_CANCEL_REQUESTED",
+                "WARNING",
+                symbol=intent.instrument.symbol,
+                client_order_id=intent.client_order_id,
+                kraken_order_id=order_id,
+                pre_cancel_state=resolved_state.value,
+                executed_volume=str(quantities(payload)[0]),
+                requested_volume=str(quantities(payload)[1]),
+            )
+            try:
+                self.gateway.cancel_order(
+                    instrument=intent.instrument,
+                    kraken_order_id=order_id,
+                    client_order_id=intent.client_order_id,
+                )
+            except Exception as exc:
+                # Keep checking exact order state. A timeout on CancelOrder does not
+                # prove that cancellation failed or that the order is still live.
+                cancel_error = f"{type(exc).__name__}:{str(exc)[:300]}"
+            else:
+                cancel_error = ""
+
+            deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+            last_payload = payload
+            last_state = resolved_state
+            last_id = order_id
+            while time.monotonic() < deadline:
+                try:
+                    after = self.gateway.lookup_order(
+                        client_order_id=intent.client_order_id,
+                        instrument=intent.instrument,
+                        kraken_order_id=order_id,
+                    )
+                    if after and isinstance(after[0], dict):
+                        last_payload = after[0]
+                        last_state, found_id = self.reconciler.reconcile(after)
+                        last_id = found_id or order_id
+                        final_state = resolved_terminal(last_payload)
+                        if final_state is not None:
+                            result = record(last_payload, final_state, last_id)
+                            self.audit.emit(
+                                "TACTICAL_CANCEL_CONFIRMED",
+                                "INFO",
+                                symbol=intent.instrument.symbol,
+                                client_order_id=intent.client_order_id,
+                                kraken_order_id=last_id or "",
+                                state=final_state.value,
+                                executed_volume=result["executed_volume"],
+                                requested_volume=result["requested_volume"],
+                                cancel_error=cancel_error,
+                            )
+                            return result
+                except Exception as exc:
+                    cancel_error = cancel_error or f"{type(exc).__name__}:{str(exc)[:300]}"
+                time.sleep(0.25)
+
+            self.db.update_order_state(
+                intent.client_order_id,
+                OrderState.UNKNOWN_RECONCILING.value,
+                kraken_order_id=last_id,
+                last_error="TACTICAL_CANCEL_TERMINAL_STATE_UNCONFIRMED",
+            )
+            self.audit.emit(
+                "TACTICAL_CANCEL_UNCONFIRMED",
+                "ERROR",
+                symbol=intent.instrument.symbol,
+                client_order_id=intent.client_order_id,
+                kraken_order_id=last_id or "",
+                last_exchange_status=status_of(last_payload),
+                executed_volume=str(quantities(last_payload)[0]),
+                requested_volume=str(quantities(last_payload)[1]),
+                cancel_error=cancel_error,
+            )
+            return {
+                "state": OrderState.UNKNOWN_RECONCILING.value,
+                "terminal": False,
+                "payload": last_payload,
+                "kraken_order_id": last_id,
+                "executed_volume": str(quantities(last_payload)[0]),
+                "requested_volume": str(quantities(last_payload)[1]),
+            }
+        except Exception as exc:
+            self.db.update_order_state(
+                intent.client_order_id,
+                OrderState.UNKNOWN_RECONCILING.value,
+                last_error=f"TACTICAL_CANCEL_RECONCILIATION_FAILED:{type(exc).__name__}",
+            )
+            return {
+                "state": OrderState.UNKNOWN_RECONCILING.value,
+                "terminal": False,
+                "reason": type(exc).__name__,
+            }
+
     def submit_funding_order(self, intent: OrderIntent, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
         """Submit a preparatory funding order and confirm its exchange-side fill."""
         if not is_valid_kraken_client_order_id(intent.client_order_id):
