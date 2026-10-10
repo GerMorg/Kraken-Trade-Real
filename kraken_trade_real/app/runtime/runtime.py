@@ -143,7 +143,8 @@ class TradingRuntime:
         self._learning_summary: dict[str,Any] = {"status":"UNKNOWN","samples":0,"settled":0,"settled_total":0,"open_predictions":0}
         self.state=__import__("app.runtime.state",fromlist=["RuntimeState"]).RuntimeState()
         self.watchdog=RuntimeWatchdog(self._handle_watchdog_timeout)
-        self.config_hash=digest_config(config.__dict__)
+        config_snapshot = config.as_dict() if callable(getattr(config, "as_dict", None)) else config.__dict__
+        self.config_hash=digest_config(config_snapshot)
         self.instruments: list[Any]=[]
         self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
         self.profit_protection = PositionProfitProtection(config, db, audit)
