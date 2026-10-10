@@ -207,6 +207,7 @@ class PortfolioReconciler:
         position_pnl_pct: dict[str, D] = {}
         position_basis_eur: dict[str, D] = {}
         position_quantity: dict[str, D] = {}
+        spot_margin_position_symbols: set[str] = set()
         spot_open_positions_read_ok = False
         self.position_leverages = {}
         self.cash_balances = {}
@@ -298,6 +299,7 @@ class PortfolioReconciler:
                     continue
                 instrument = resolve_instrument_symbol(symbol, known_spot_instruments)
                 position_symbol = instrument.symbol if instrument is not None else symbol
+                spot_margin_position_symbols.add(position_symbol)
                 position_leverage = dec(item.get("leverage"))
                 if position_leverage > 0:
                     self.position_leverages[position_symbol] = position_leverage
@@ -463,6 +465,7 @@ class PortfolioReconciler:
             position_basis_eur=position_basis_eur,
             position_quantity=position_quantity,
             spot_open_positions_read_ok=spot_open_positions_read_ok,
+            spot_margin_position_symbols=tuple(sorted(spot_margin_position_symbols)),
         )
 
 def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:
