@@ -975,15 +975,18 @@ class TacticalTrader:
         with self._lock:
             positions = list(self._positions.values())
         for position in positions:
-            pending = self.db.one(
-                """SELECT o.client_order_id,o.state FROM orders o
-                   JOIN decisions d ON d.decision_id=o.decision_id
-                   WHERE d.strategy_version=? AND o.symbol=?
-                     AND o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE',
-                                     'PARTIALLY_FILLED','UNKNOWN_RECONCILING')
-                   LIMIT 1""",
-                (self.STRATEGY_VERSION, position.symbol),
-            )
+            pending = None
+            query_one = getattr(self.db, "one", None)
+            if callable(query_one):
+                pending = query_one(
+                    """SELECT o.client_order_id,o.state FROM orders o
+                       JOIN decisions d ON d.decision_id=o.decision_id
+                       WHERE d.strategy_version=? AND o.symbol=?
+                         AND o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE',
+                                         'PARTIALLY_FILLED','UNKNOWN_RECONCILING')
+                       LIMIT 1""",
+                    (self.STRATEGY_VERSION, position.symbol),
+                )
             if pending is not None:
                 # Do not issue a competing exit while a Tactical entry/exit can
                 # still fill; pending quantities are reconciled before management.
