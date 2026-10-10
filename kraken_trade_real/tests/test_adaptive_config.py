@@ -16,6 +16,8 @@ class FakeRegistry:
         return "policy-v2" if family == "strategy_tactical" else "baseline-v1"
 
     def parameters(self, version=None, family="decision"):
+        if family == "strategy_core":
+            return {"strategy_min_edge_bps": 33.0}
         if family == "strategy_tactical":
             return {
                 "tactical_min_expected_move_bps": 350,
@@ -51,7 +53,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.tactical_trailing_trigger_bps == 150
     assert config.tactical_trailing_stop_pct == 0.55
     assert config.tactical_max_hold_seconds == 900
-    # The adaptive overlay must not silently replace parameters it does not own.
+    # Core policy values are supplied by its own versioned model; unrelated settings remain base-config owned.
     assert config.strategy_min_edge_bps == 33.0
     assert config.as_dict()["strategy_min_edge_bps"] == 33.0
 
