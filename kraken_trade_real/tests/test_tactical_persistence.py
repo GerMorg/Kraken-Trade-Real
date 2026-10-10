@@ -29,3 +29,24 @@ def test_tactical_position_and_trade_persistence(tmp_path):
     assert db.tactical_today_net_pnl() >= Decimal("0")
     db.delete_tactical_position("BTC/USD")
     assert db.tactical_positions() == []
+
+
+
+def test_tactical_order_fill_progress_is_cumulative_and_durable(tmp_path):
+    db = Database(str(tmp_path / "trader.db"))
+    db.save_tactical_order_progress(
+        "tactical-order-1", Decimal("0.25"), Decimal("100"), terminal=False,
+    )
+    first = db.tactical_order_progress("tactical-order-1")
+    assert first is not None
+    assert first["last_filled_quantity"] == "0.25"
+    assert first["terminal"] == 0
+
+    db.save_tactical_order_progress(
+        "tactical-order-1", Decimal("0.60"), Decimal("101"), terminal=True,
+    )
+    second = db.tactical_order_progress("tactical-order-1")
+    assert second is not None
+    assert second["last_filled_quantity"] == "0.60"
+    assert second["last_average_price"] == "101"
+    assert second["terminal"] == 1
