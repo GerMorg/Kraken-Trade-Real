@@ -84,8 +84,8 @@ class PositionProfitProtection:
                     )
                     order_state = str(order.get("state") or "") if order else ""
                     current_position = (
-                        _d(portfolio.spot_margin_position_eur.get(symbol))
-                        if symbol in portfolio.spot_margin_position_symbols
+                        _d(portfolio.spot_margin_position_eur[symbol])
+                        if symbol in portfolio.spot_margin_position_eur
                         else _d(portfolio.positions.get(symbol))
                     )
                     material_reduction = (
@@ -163,8 +163,8 @@ class PositionProfitProtection:
 
         symbol = instrument.symbol
         current = (
-            _d(portfolio.spot_margin_position_eur.get(symbol))
-            if symbol in portfolio.spot_margin_position_symbols
+            _d(portfolio.spot_margin_position_eur[symbol])
+            if symbol in portfolio.spot_margin_position_eur
             else _d(portfolio.positions.get(symbol))
         )
         pnl_pct_value = portfolio.position_pnl_pct.get(symbol)

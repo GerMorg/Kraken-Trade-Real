@@ -57,7 +57,7 @@ class RiskEngine:
         if (
             d.instrument.product_type.value == "SPOT_MARGIN"
             and not p.spot_open_positions_read_ok
-            and not (risk_profile == "tactical" and valid_reduction)
+            and not d.reduce_only
         ):
             return RiskResult(
                 False,

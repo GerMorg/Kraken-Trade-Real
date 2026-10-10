@@ -27,6 +27,7 @@ def test_negative_edge_on_held_position_creates_reduce_only_flatten(config, inst
         positions={instrument.symbol: Decimal("8")},
         gross_eur=Decimal("8"),
         net_eur=Decimal("8"),
+        spot_open_positions_read_ok=True,
     )
     long_signal = _signal(instrument.symbol, Direction.LONG, 10, 40, "0.9")
     short_signal = _signal(instrument.symbol, Direction.SHORT, 0, 50, "0.1")

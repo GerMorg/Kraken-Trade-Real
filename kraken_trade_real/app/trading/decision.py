@@ -93,8 +93,8 @@ class DecisionEngine:
     def _current_position(instrument: Instrument, portfolio: PortfolioState) -> D:
         # A Kraken Spot Margin position is an independent exposure leg; do not
         # let an offsetting ordinary wallet holding hide its direction or sizing.
-        if instrument.symbol in portfolio.spot_margin_position_symbols:
-            return portfolio.spot_margin_position_eur.get(instrument.symbol, D("0"))
+        if instrument.symbol in portfolio.spot_margin_position_eur:
+            return portfolio.spot_margin_position_eur[instrument.symbol]
         return portfolio.positions.get(instrument.symbol, D("0"))
 
     @staticmethod
@@ -215,7 +215,7 @@ class DecisionEngine:
     ) -> str:
         scale = self._confidence_scale(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
-        current = portfolio.positions.get(instrument.symbol, D("0"))
+        current = self._current_position(instrument, portfolio)
         if current != 0:
             held_signal = long_signal if current > 0 else short_signal
             if self._held_position_needs_exit(held_signal, scale, strategy_parameters):

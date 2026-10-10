@@ -515,6 +515,7 @@ def test_valid_reduce_only_exit_bypasses_entry_only_margin_and_loss_gates(
         net_eur=Decimal("-100"),
         daily_pnl_eur=Decimal("-100"),
         drawdown_pct=Decimal("99"),
+        spot_open_positions_read_ok=True,
     )
     risk = RiskEngine(config, MarginEngine(), LeverageEngine(), CostModel())
     result = risk.evaluate(decision, portfolio, object(), margin_account=None)
@@ -561,6 +562,7 @@ def test_reduce_only_cannot_flip_or_increase_a_position(config, instrument):
         positions={instrument.symbol: Decimal("-100")},
         gross_eur=Decimal("100"),
         net_eur=Decimal("-100"),
+        spot_open_positions_read_ok=True,
     )
     risk = RiskEngine(config, MarginEngine(), LeverageEngine(), CostModel())
     result = risk.evaluate(decision, portfolio, object(), margin_account=None)

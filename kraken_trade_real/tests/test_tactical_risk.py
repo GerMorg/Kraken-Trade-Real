@@ -113,6 +113,7 @@ def test_tactical_position_limit_can_use_25_percent_without_changing_core_limit(
         drawdown_pct=D("0"),
         open_orders=0,
         source_timestamp=1.0,
+        spot_open_positions_read_ok=True,
     )
     result = engine.evaluate(decision, portfolio, make_snapshot(), {})
     assert result.allowed is True
@@ -213,7 +214,10 @@ def test_tactical_volatility_guard_still_blocks_extreme_market():
         Direction.LONG,
         False,
     )
-    p = PortfolioState(D("50"), D("50"), {}, D("0"), D("0"), D("0"), D("0"), D("0"), D("0"), D("0"), 0, 1)
+    p = PortfolioState(
+        D("50"), D("50"), {}, D("0"), D("0"), D("0"), D("0"), D("0"),
+        D("0"), D("0"), 0, 1, spot_open_positions_read_ok=True,
+    )
     result = engine.evaluate(d, p, make_snapshot(), {})
     assert result.allowed is False
     assert result.reason == "extreme_volatility"
