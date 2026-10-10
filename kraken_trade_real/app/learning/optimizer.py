@@ -442,33 +442,58 @@ class AdaptiveParameterOptimizer:
             max_drawdown = max(max_drawdown, (peak - equity) / peak)
         return max_drawdown
 
+    def _mark_exit_policy_evaluated(self, closed_at: float) -> None:
+        self.db.execute(
+            "INSERT INTO metadata(key,value) VALUES('tactical_exit_policy_last_evaluated_closed_at',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(float(closed_at)),),
+        )
+
     def optimize_tactical_exits(self, now: float | None = None) -> dict[str, Any]:
         """Promote exit settings only after chronological path replay clears strict holdout gates."""
         now = time.time() if now is None else float(now)
-        trades = self._prepare_exit_policy_trades(now)
-        if len(trades) < self.MIN_EXIT_TRADES:
-            return {
-                "status": "INSUFFICIENT_VALIDATED_EXIT_PATHS",
-                "samples": len(trades),
-                "minimum_samples": self.MIN_EXIT_TRADES,
-            }
-
         last = self.db.one(
             "SELECT value FROM metadata WHERE key='tactical_exit_policy_last_evaluated_closed_at'"
         )
+        last_at: float | None = None
         if last:
             try:
                 last_at = float(last["value"])
             except (TypeError, ValueError):
                 last_at = 0.0
-            fresh = sum(1 for trade in trades if trade["closed_at"] > last_at)
-            if fresh < 10:
+            # Count position episodes, not partial-close rows. Do this cheap
+            # preflight before reconstructing thousands of price-path records.
+            fresh_episodes = self.db.query(
+                "SELECT symbol,opened_at FROM tactical_trades WHERE closed_at>? "
+                "GROUP BY symbol,opened_at",
+                (last_at,),
+            )
+            if len(fresh_episodes) < 10:
                 return {
                     "status": "WAITING_FOR_NEW_EXIT_PATHS",
-                    "samples": len(trades),
-                    "new_trades_since_last_evaluation": fresh,
+                    "samples": None,
+                    "new_trades_since_last_evaluation": len(fresh_episodes),
                     "minimum_new_trades": 10,
                 }
+
+        watermark_row = self.db.one(
+            "SELECT MAX(closed_at) AS closed_at FROM tactical_trades WHERE closed_at>=?",
+            (now - 180 * 86400,),
+        )
+        watermark = (
+            float(watermark_row["closed_at"])
+            if watermark_row and watermark_row.get("closed_at") is not None
+            else None
+        )
+        trades = self._prepare_exit_policy_trades(now)
+        if len(trades) < self.MIN_EXIT_TRADES:
+            if watermark is not None and (last_at is None or watermark > last_at):
+                self._mark_exit_policy_evaluated(watermark)
+            return {
+                "status": "INSUFFICIENT_VALIDATED_EXIT_PATHS",
+                "samples": len(trades),
+                "minimum_samples": self.MIN_EXIT_TRADES,
+            }
 
         active_version = self.registry.active("strategy_tactical")
         current = dict(TACTICAL_DEFAULTS)
@@ -493,6 +518,8 @@ class AdaptiveParameterOptimizer:
             aligned.append(trade)
             current_replay[trade["key"]] = outcome
         if len(aligned) < self.MIN_EXIT_TRADES:
+            if watermark is not None and (last_at is None or watermark > last_at):
+                self._mark_exit_policy_evaluated(watermark)
             return {
                 "status": "INSUFFICIENT_BASELINE_ALIGNED_PATHS",
                 "samples": len(aligned),
@@ -500,16 +527,7 @@ class AdaptiveParameterOptimizer:
                 "minimum_samples": self.MIN_EXIT_TRADES,
             }
 
-        last_closed_at = float(aligned[-1]["closed_at"])
-        if not last:
-            fresh = len(aligned)
-        if last and fresh < 10:
-            return {
-                "status": "WAITING_FOR_NEW_EXIT_PATHS",
-                "samples": len(aligned),
-                "new_trades_since_last_evaluation": fresh,
-                "minimum_new_trades": 10,
-            }
+        last_closed_at = watermark or max(float(trade["closed_at"]) for trade in aligned)
 
         split = max(1, int(len(aligned) * 0.70))
         training = aligned[:split]
@@ -587,11 +605,7 @@ class AdaptiveParameterOptimizer:
                 "validation_samples": len(validation),
                 "baseline_training_mean_net_bps": baseline_train_mean,
             }
-            self.db.execute(
-                "INSERT INTO metadata(key,value) VALUES('tactical_exit_policy_last_evaluated_closed_at',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(last_closed_at),),
-            )
+            self._mark_exit_policy_evaluated(last_closed_at)
             self.db.learning_event("TACTICAL_EXIT_POLICY_EVALUATED", active_version, result)
             return result
 
@@ -668,11 +682,7 @@ class AdaptiveParameterOptimizer:
                     "metrics": metrics,
                     "promoted": promoted,
                 }
-                self.db.execute(
-                    "INSERT INTO metadata(key,value) VALUES('tactical_exit_policy_last_evaluated_closed_at',?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (str(last_closed_at),),
-                )
+                self._mark_exit_policy_evaluated(last_closed_at)
                 self.db.learning_event("TACTICAL_EXIT_POLICY_EVALUATED", version, result)
                 return result
             result = {
@@ -688,10 +698,6 @@ class AdaptiveParameterOptimizer:
                 "validation_coverage": validation_coverage,
             }
 
-        self.db.execute(
-            "INSERT INTO metadata(key,value) VALUES('tactical_exit_policy_last_evaluated_closed_at',?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (str(last_closed_at),),
-        )
+        self._mark_exit_policy_evaluated(last_closed_at)
         self.db.learning_event("TACTICAL_EXIT_POLICY_EVALUATED", active_version, result)
         return result
