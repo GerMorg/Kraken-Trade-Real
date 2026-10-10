@@ -85,4 +85,7 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
     assert result["changed_parameters"]["tactical_portfolio_pct"] < 25
     active = registry.parameters(registry.active("strategy_tactical"), family="strategy_tactical")
     assert active["tactical_min_expected_move_bps"] <= 1200
-    assert active["tactical_portfolio_pct"] >= 1
+    assert 1 <= active["tactical_portfolio_pct"] <= 25
+    repeated = optimizer.optimize_tactical(now + 1)
+    assert repeated["status"] == "WAITING_FOR_NEW_TRADE_DATA"
+    assert repeated["new_trades_since_last_evaluation"] == 0
