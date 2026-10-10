@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
+import json
 import time
 
 
 class LearningEngine:
     def __init__(
         self, db: Any, calibration: Any, registry: Any, research: Any,
-        auto_promotion_enabled: bool = True,
+        auto_promotion_enabled: bool = True, enabled: bool = True,
+        auto_calibration_enabled: bool = True, lookback_days: int = 365,
+        validation_interval_hours: int = 24,
     ) -> None:
         self.db = db
         self.calibration = calibration
         self.registry = registry
         self.research = research
         self.auto_promotion_enabled = bool(auto_promotion_enabled)
+        self.enabled = bool(enabled)
+        self.auto_calibration_enabled = bool(auto_calibration_enabled)
+        self.lookback_days = max(1, int(lookback_days))
+        self.validation_interval_hours = max(1, int(validation_interval_hours))
 
     def record_cycle(self, cycle_id: str, decisions: int, orders: int, blockers: list[str]) -> None:
         self.db.learning_event(
@@ -46,6 +54,7 @@ class LearningEngine:
         return metrics
 
     def process_feedback(self, now: float | None = None) -> dict:
+        now = time.time() if now is None else float(now)
         settled = self.db.settle_predictions(now)
         open_row = self.db.one(
             "SELECT COUNT(*) AS n FROM predictions WHERE outcome_status='OPEN'"
@@ -56,25 +65,70 @@ class LearningEngine:
         open_predictions = int(open_row["n"]) if open_row else 0
         settled_total = int(settled_row["n"]) if settled_row else 0
 
+        if not self.enabled:
+            return {
+                "settled": settled, "settled_total": settled_total,
+                "open_predictions": open_predictions, "status": "LEARNING_DISABLED",
+            }
+
+        last_run = self.db.one(
+            "SELECT value FROM metadata WHERE key='learning_last_validation_at'"
+        )
+        if last_run:
+            try:
+                last_validation_at = float(last_run["value"])
+            except (TypeError, ValueError):
+                last_validation_at = 0.0
+            interval_seconds = self.validation_interval_hours * 3600
+            if now - last_validation_at < interval_seconds:
+                return {
+                    "settled": settled, "settled_total": settled_total,
+                    "open_predictions": open_predictions,
+                    "status": "VALIDATION_INTERVAL_NOT_ELAPSED",
+                    "next_validation_in_seconds": max(
+                        0, int(interval_seconds - (now - last_validation_at))
+                    ),
+                }
+
         # Chronological split: older rows select a scale, newest rows validate it.
         rows = self.db.query(
-            """SELECT p.probability, o.success
+            """SELECT p.prediction_id, p.created_at, p.probability, o.success, o.measured_at
                FROM predictions p
                JOIN prediction_outcomes o ON o.prediction_id=p.prediction_id
-               WHERE p.outcome_status='SETTLED'
-               ORDER BY p.created_at ASC, o.measured_at ASC LIMIT 1000"""
+               WHERE p.outcome_status='SETTLED' AND o.success IS NOT NULL
+                 AND p.created_at >= ?
+               ORDER BY p.created_at DESC, o.measured_at DESC LIMIT 2000""",
+            (now - self.lookback_days * 86400,),
         )
+        # Select the most recent bounded window, then restore chronological order
+        # before making the training/validation split.
+        rows.reverse()
         pairs = [(float(r["probability"]), bool(r["success"])) for r in rows]
-        if len(pairs) < 100:
+        # Avoid repeated promotion decisions on a tiny, repeatedly reused holdout.
+        minimum_samples = 300
+        minimum_validation = 90
+        if len(pairs) < minimum_samples:
             result = {
                 "settled": settled, "settled_total": settled_total,
                 "open_predictions": open_predictions, "samples": len(pairs),
-                "minimum_samples": 100, "status": "INSUFFICIENT_DATA",
+                "minimum_samples": minimum_samples,
+                "minimum_validation_samples": minimum_validation,
+                "status": "INSUFFICIENT_DATA",
             }
             self.db.learning_event("LEARNING_FEEDBACK", "decision", result)
             return result
 
-        split = min(len(pairs) - 30, max(70, int(len(pairs) * 0.70)))
+        split = int(len(pairs) * 0.70)
+        if len(pairs) - split < minimum_validation:
+            result = {
+                "settled": settled, "settled_total": settled_total,
+                "open_predictions": open_predictions, "samples": len(pairs),
+                "minimum_samples": minimum_samples,
+                "minimum_validation_samples": minimum_validation,
+                "status": "INSUFFICIENT_VALIDATION_DATA",
+            }
+            self.db.learning_event("LEARNING_FEEDBACK", "decision", result)
+            return result
         training, validation = pairs[:split], pairs[split:]
         parent = self.registry.active()
         parent_params = self.registry.parameters(parent)
@@ -94,12 +148,28 @@ class LearningEngine:
         base_brier = float(validation_base["brier"])
         candidate_brier = float(validation_candidate["brier"])
         improvement = base_brier - candidate_brier
+        base_ece = float(validation_base["ece"])
+        candidate_ece = float(validation_candidate["ece"])
+        ece_degradation = candidate_ece - base_ece
         promoted, candidate_version = False, ""
         if (
-            best_scale != 1.0 and len(validation) >= 30 and improvement >= 0.005
+            best_scale != 1.0
+            and len(validation) >= minimum_validation
+            and improvement >= 0.01
+            and candidate_ece <= base_ece + 0.005
+            and candidate_brier <= 0.25
+            and candidate_ece <= 0.15
+            and self.auto_calibration_enabled
             and self.auto_promotion_enabled
         ):
-            candidate_version = f"decision-calibrated-{int(time.time())}"
+            identity = json.dumps({
+                "parent": parent,
+                "last_prediction": rows[-1]["prediction_id"],
+                "samples": len(rows),
+                "scale": best_scale,
+            }, sort_keys=True)
+            candidate_hash = hashlib.sha256(identity.encode()).hexdigest()[:12]
+            candidate_version = f"decision-calibrated-{candidate_hash}"
             parameters = dict(parent_params)
             parameters.update({
                 "kind": "calibrated", "confidence_scale": best_scale,
@@ -107,15 +177,22 @@ class LearningEngine:
             })
             metrics = {
                 "samples": len(validation), "training_samples": len(training),
-                "brier": candidate_brier, "ece": float(validation_candidate["ece"]),
+                "brier": candidate_brier, "ece": candidate_ece,
                 "improvement": improvement, "parent_brier": base_brier,
-                "parent_ece": float(validation_base["ece"]), "selected_scale": best_scale,
+                "parent_ece": base_ece, "ece_degradation": ece_degradation,
+                "selected_scale": best_scale,
                 "validation_method": "chronological_70_30_holdout",
+                "dataset_hash": candidate_hash,
             }
-            self.proposal(candidate_version, parent, metrics, parameters)
-            promoted = self.registry.promote(
-                candidate_version, min_improvement=0.005, min_samples=30
+            existing = self.db.one(
+                "SELECT status FROM model_versions WHERE version=?", (candidate_version,)
             )
+            if existing is None:
+                self.proposal(candidate_version, parent, metrics, parameters)
+                promoted = self.registry.promote(
+                    candidate_version, min_improvement=0.01,
+                    min_samples=minimum_validation,
+                )
 
         result = {
             "settled": settled, "settled_total": settled_total,
@@ -123,11 +200,19 @@ class LearningEngine:
             "training_samples": len(training), "validation_samples": len(validation),
             "status": "OK", "brier": base_brier,
             "candidate_brier": candidate_brier, "ece": float(validation_base["ece"]),
-            "candidate_ece": float(validation_candidate["ece"]),
+            "candidate_ece": candidate_ece,
+            "ece_degradation": ece_degradation,
+            "minimum_samples": minimum_samples,
+            "minimum_validation_samples": minimum_validation,
             "best_scale": best_scale, "improvement": improvement,
             "validation_method": "chronological_70_30_holdout",
             "candidate_version": candidate_version, "promoted": promoted,
         }
+        self.db.execute(
+            "INSERT INTO metadata(key,value) VALUES('learning_last_validation_at',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(now),),
+        )
         self.db.learning_event("LEARNING_FEEDBACK", parent, result)
         return result
 
