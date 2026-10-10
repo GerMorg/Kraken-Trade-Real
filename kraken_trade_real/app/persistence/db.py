@@ -291,18 +291,25 @@ class Database:
         eligible_only: bool = False,
         since_timestamp: float | None = None,
     ) -> list[dict[str, Any]]:
-        clauses = ["1=1"]
-        params: list[Any] = []
+        if eligible_only and since_timestamp is not None:
+            return self.query(
+                """SELECT * FROM core_exit_episodes
+                   WHERE eligible_for_learning=1 AND opened_at>=?
+                   ORDER BY opened_at ASC""",
+                (float(since_timestamp),),
+            )
         if eligible_only:
-            clauses.append("eligible_for_learning=1")
+            return self.query(
+                """SELECT * FROM core_exit_episodes
+                   WHERE eligible_for_learning=1 ORDER BY opened_at ASC"""
+            )
         if since_timestamp is not None:
-            clauses.append("opened_at>=?")
-            params.append(float(since_timestamp))
+            return self.query(
+                "SELECT * FROM core_exit_episodes WHERE opened_at>=? ORDER BY opened_at ASC",
+                (float(since_timestamp),),
+            )
         return self.query(
-            "SELECT * FROM core_exit_episodes WHERE "
-            + " AND ".join(clauses)
-            + " ORDER BY opened_at ASC",
-            tuple(params),
+            "SELECT * FROM core_exit_episodes ORDER BY opened_at ASC"
         )
 
     def create_core_exit_episode(
