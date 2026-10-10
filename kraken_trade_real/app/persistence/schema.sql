@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS signal_observations(
   net_return_bps TEXT,
   success INTEGER,
   outcome_detail_json TEXT NOT NULL DEFAULT '{}',
-  UNIQUE(symbol,horizon_bucket,direction)
+  UNIQUE(symbol,horizon_seconds,horizon_bucket,direction)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_observation_status_time
   ON signal_observations(outcome_status,created_at);

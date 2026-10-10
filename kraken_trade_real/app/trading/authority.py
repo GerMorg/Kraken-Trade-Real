@@ -467,9 +467,15 @@ class TradingAuthority:
             ))
             return max(D("0"), executed), max(D("0"), requested)
 
-        def resolved_terminal(payload: dict[str, Any]) -> OrderState | None:
+        def resolved_terminal(
+            payload: dict[str, Any], exchange_state: OrderState
+        ) -> OrderState | None:
             status = status_of(payload)
             executed, requested = quantities(payload)
+            # A terminal reconciliation is more authoritative than a sparse
+            # "closed" response which omits vol_exec.
+            if exchange_state == OrderState.FILLED:
+                return OrderState.FILLED
             if requested > 0 and executed >= requested:
                 return OrderState.FILLED
             if status in {"expired"}:
@@ -480,12 +486,10 @@ class TradingAuthority:
                 return OrderState.CANCELED
             if status == "closed" and requested > 0 and executed < requested:
                 return OrderState.CANCELED
-            resolved = self.reconciler.state_from_exchange(payload)
-            if resolved in {
-                OrderState.FILLED, OrderState.CANCELED, OrderState.EXPIRED,
-                OrderState.REJECTED,
+            if exchange_state in {
+                OrderState.CANCELED, OrderState.EXPIRED, OrderState.REJECTED,
             }:
-                return resolved
+                return exchange_state
             return None
 
         def record(payload: dict[str, Any], state: OrderState, resolved_id: str | None) -> dict[str, Any]:
@@ -525,7 +529,7 @@ class TradingAuthority:
             payload = found[0]
             resolved_state, resolved_id = self.reconciler.reconcile(found)
             order_id = resolved_id or str(payload.get("txid") or payload.get("order_id") or "") or order_id
-            final_state = resolved_terminal(payload)
+            final_state = resolved_terminal(payload, resolved_state)
             if final_state is not None:
                 return record(payload, final_state, order_id)
             if not order_id:
@@ -592,7 +596,7 @@ class TradingAuthority:
                         last_payload = after[0]
                         last_state, found_id = self.reconciler.reconcile(after)
                         last_id = found_id or order_id
-                        final_state = resolved_terminal(last_payload)
+                        final_state = resolved_terminal(last_payload, last_state)
                         if final_state is not None:
                             result = record(last_payload, final_state, last_id)
                             self.audit.emit(

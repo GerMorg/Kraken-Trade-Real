@@ -1258,7 +1258,10 @@ class TacticalTrader:
             raw = str(payload.get("status") or payload.get("state") or "").strip().lower()
             executed = D(str(payload.get("vol_exec") or payload.get("executed_volume") or "0"))
             requested = D(str(payload.get("vol") or payload.get("volume") or intent.quantity))
-            if requested > 0 and executed >= requested:
+            state_value = str(getattr(resolved_state, "value", resolved_state))
+            # Prefer terminal FILLED from the exchange reconciler when a sparse
+            # closed response omits vol_exec.
+            if state_value == "FILLED" or (requested > 0 and executed >= requested):
                 return "FILLED"
             if raw == "expired":
                 return "EXPIRED"
@@ -1268,8 +1271,7 @@ class TacticalTrader:
                 return "CANCELED"
             if raw == "closed" and requested > 0 and executed < requested:
                 return "CANCELED"
-            state_value = str(getattr(resolved_state, "value", resolved_state))
-            if state_value in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
+            if state_value in {"CANCELED", "EXPIRED", "REJECTED"}:
                 return state_value
             return None
 
@@ -1361,7 +1363,10 @@ class TacticalTrader:
         requested_quantity: D | None = None,
     ) -> None:
         requested = max(D("0"), D(str(requested_quantity or quantity)))
-        quote_rate = self.portfolio.quote_to_eur_rate(decision.instrument.quote)
+        quote_rate = (
+            self.portfolio.quote_to_eur_rate(decision.instrument.quote)
+            if self.portfolio is not None else None
+        )
         if quote_rate is not None and D(str(quote_rate)) > 0:
             filled_notional_eur = abs(quantity * price * D(str(quote_rate)))
         else:
@@ -1475,7 +1480,27 @@ class TacticalTrader:
         now: float,
         client_order_id: str,
     ) -> None:
-        ratio = min(D("1"), fill_qty / position.quantity) if position.quantity > 0 else D("1")
+        if position.quantity <= 0 or fill_qty <= 0:
+            self.audit.emit(
+                "TACTICAL_EXIT_FILL_IGNORED",
+                "WARNING",
+                symbol=position.symbol,
+                position_quantity=str(position.quantity),
+                reported_fill_quantity=str(fill_qty),
+                reason="NON_POSITIVE_POSITION_OR_FILL",
+            )
+            return
+        applied_fill_qty = min(fill_qty, position.quantity)
+        if applied_fill_qty < fill_qty:
+            self.audit.emit(
+                "TACTICAL_EXIT_FILL_CLAMPED",
+                "WARNING",
+                symbol=position.symbol,
+                position_quantity=str(position.quantity),
+                reported_fill_quantity=str(fill_qty),
+                applied_fill_quantity=str(applied_fill_qty),
+            )
+        ratio = applied_fill_qty / position.quantity
         closed_notional = abs(position.notional_eur) * ratio
         gross = self._trade_gross_pnl(
             position.direction, closed_notional, position.entry_price, fill_price
@@ -1489,7 +1514,7 @@ class TacticalTrader:
             position.direction.value,
             position.entry_price,
             fill_price,
-            fill_qty,
+            applied_fill_qty,
             gross,
             fees,
             net,
@@ -1505,7 +1530,7 @@ class TacticalTrader:
             with self._lock:
                 self._positions.pop(position.symbol, None)
         else:
-            position.quantity -= fill_qty
+            position.quantity -= applied_fill_qty
             position.notional_eur *= (D("1") - ratio)
             self.db.save_tactical_position(
                 position.symbol,

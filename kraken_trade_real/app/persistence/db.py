@@ -374,8 +374,8 @@ class Database:
         features = getattr(signal, "features", {}) or {}
         cursor_before = self.one(
             "SELECT 1 AS found FROM signal_observations "
-            "WHERE symbol=? AND horizon_bucket=? AND direction=?",
-            (str(signal.symbol), bucket, direction),
+            "WHERE symbol=? AND horizon_seconds=? AND horizon_bucket=? AND direction=?",
+            (str(signal.symbol), horizon, bucket, direction),
         )
         self.execute(
             """INSERT OR IGNORE INTO signal_observations(
