@@ -62,7 +62,19 @@ class Database:
             }.items():
                 if name not in pcols:
                     con.execute(f"ALTER TABLE predictions ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','7')")
+            fcols={row[1] for row in con.execute("PRAGMA table_info(fills)")}
+            for name,definition in {
+                "client_order_id":"TEXT NOT NULL DEFAULT ''",
+                "decision_id":"TEXT NOT NULL DEFAULT ''",
+                "venue":"TEXT NOT NULL DEFAULT 'spot'",
+                "quote_asset":"TEXT NOT NULL DEFAULT ''",
+                "raw_json":"TEXT NOT NULL DEFAULT '{}'",
+            }.items():
+                if name not in fcols:
+                    con.execute(f"ALTER TABLE fills ADD COLUMN {name} {definition}")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_fills_decision_time ON fills(decision_id, created_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_fills_client_order ON fills(client_order_id, created_at)")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','8')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -230,6 +242,41 @@ class Database:
     def save_fill(self,f:Fill)->None:
         self.execute("INSERT OR IGNORE INTO fills(order_id,trade_id,created_at,symbol,side,quantity,price,fee,fee_currency) VALUES(?,?,?,?,?,?,?,?,?)",
                      (f.order_id,f.trade_id,f.timestamp,f.symbol,f.side,str(f.quantity),str(f.price),str(f.fee),f.fee_currency))
+
+    def save_attributed_fill(
+        self,
+        *,
+        order_id: str,
+        trade_id: str,
+        created_at: float,
+        symbol: str,
+        side: str,
+        quantity: Any,
+        price: Any,
+        fee: Any,
+        fee_currency: str,
+        client_order_id: str,
+        decision_id: str,
+        venue: str,
+        quote_asset: str,
+        raw_payload: dict[str, Any],
+    ) -> bool:
+        """Persist an exchange fill exactly once with its originating local decision."""
+        with self.connect() as con:
+            cur = con.execute(
+                """INSERT OR IGNORE INTO fills(
+                     order_id,trade_id,created_at,symbol,side,quantity,price,fee,fee_currency,
+                     client_order_id,decision_id,venue,quote_asset,raw_json
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(order_id), str(trade_id), float(created_at), str(symbol), str(side).lower(),
+                    str(quantity), str(price), str(fee), str(fee_currency),
+                    str(client_order_id), str(decision_id), str(venue), str(quote_asset),
+                    json.dumps(raw_payload, sort_keys=True, default=str),
+                ),
+            )
+            return cur.rowcount > 0
+
     def save_portfolio(self,cycle_id:str,state:PortfolioState)->None:
         self.execute("""INSERT INTO portfolio_snapshots(cycle_id,captured_at,equity_eur,cash_eur,gross_eur,net_eur,
         margin_used_eur,unrealized_pnl_eur,realized_pnl_eur,daily_pnl_eur,drawdown_pct,positions_json,open_orders)

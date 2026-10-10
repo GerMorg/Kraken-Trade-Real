@@ -508,6 +508,28 @@ class TradingRuntime:
                         cycle_id=cycle_id,
                         error=f"{type(exc).__name__}:{str(exc)[:500]}",
                     )
+            sync_spot_fills = getattr(self.authority, "sync_spot_fills", None)
+            if callable(sync_spot_fills):
+                try:
+                    fill_sync = sync_spot_fills(self.instruments)
+                    if fill_sync.get("status") not in {"THROTTLED", "UP_TO_DATE"}:
+                        self.audit.emit(
+                            "CORE_SPOT_FILL_HISTORY_SYNC",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            **fill_sync,
+                        )
+                except Exception as exc:
+                    # History permissions or rate limits must be visible but can
+                    # never block live order management for the cycle.
+                    self.audit.emit(
+                        "CORE_SPOT_FILL_HISTORY_SYNC_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:300],
+                    )
+
             self._watchdog_heartbeat(cycle_id, stage)
 
             ticker_snapshots={}
