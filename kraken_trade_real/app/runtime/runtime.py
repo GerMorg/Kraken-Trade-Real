@@ -20,6 +20,7 @@ from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
 from app.trading.fx import FXConversionManager
+from app.trading.profit_protection import PositionProfitProtection
 
 
 D=Decimal
@@ -145,6 +146,7 @@ class TradingRuntime:
         self.config_hash=digest_config(config.__dict__)
         self.instruments: list[Any]=[]
         self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
+        self.profit_protection = PositionProfitProtection(config, db, audit)
         self._startup_instrument_operation = "IDLE"
 
     def startup(self) -> bool:
@@ -429,6 +431,7 @@ class TradingRuntime:
             self.portfolio.set_market_context(self.instruments,spot_payload)
             self.fx.set_instruments(self.instruments)
             portfolio=self.portfolio.reconcile()
+            self.profit_protection.observe(portfolio, cycle_id)
             self.audit.emit(
                 "CYCLE_PORTFOLIO_RECONCILED",
                 "INFO",
@@ -1056,6 +1059,17 @@ class TradingRuntime:
                     model_parameters,
                     min_cost_eur,
                 )
+                decision = self.profit_protection.apply(
+                    cycle_id=cycle_id,
+                    instrument=instrument,
+                    portfolio=portfolio,
+                    decision=decision,
+                    long_signal=long_signal,
+                    short_signal=short_signal,
+                    model_version=model_version,
+                    config_hash=self.config_hash,
+                    min_cost_eur=min_cost_eur,
+                )
                 if not decision:
                     reason=self.decisions.rejection_reason(
                         instrument,
@@ -1506,6 +1520,12 @@ class TradingRuntime:
                     "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
                 }:
                     placed+=1
+                    if decision.rationale.get("position_management_action") == "PARTIAL_TAKE_PROFIT":
+                        self.profit_protection.record_pending(
+                            instrument.symbol,
+                            intent.client_order_id,
+                            decision.current_position_eur,
+                        )
                 else:
                     order_blocked+=1
                     gate_reason=str(
@@ -1541,6 +1561,7 @@ class TradingRuntime:
             self._watchdog_arm(cycle_id, stage)
             self.portfolio.set_market_context(self.instruments,latest_spot_payload)
             final_portfolio=self.portfolio.reconcile()
+            self.profit_protection.observe(final_portfolio, cycle_id)
             self.db.save_portfolio(cycle_id,final_portfolio)
             if self.tactical is not None:
                 try:
