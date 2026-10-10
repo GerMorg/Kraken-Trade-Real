@@ -109,6 +109,88 @@ CREATE TABLE IF NOT EXISTS fills(
   PRIMARY KEY(order_id,trade_id)
 );
 
+CREATE TABLE IF NOT EXISTS core_realized_legs(
+  leg_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  venue TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  opened_at REAL NOT NULL,
+  closed_at REAL NOT NULL,
+  entry_order_id TEXT NOT NULL,
+  entry_trade_id TEXT NOT NULL,
+  close_order_id TEXT NOT NULL,
+  close_trade_id TEXT NOT NULL,
+  opening_decision_id TEXT NOT NULL,
+  closing_decision_id TEXT NOT NULL,
+  quantity TEXT NOT NULL,
+  entry_price TEXT NOT NULL,
+  exit_price TEXT NOT NULL,
+  entry_notional_quote TEXT NOT NULL,
+  gross_pnl_quote TEXT NOT NULL,
+  entry_fee_est_quote TEXT NOT NULL,
+  exit_fee_est_quote TEXT NOT NULL,
+  estimated_net_pnl_quote TEXT NOT NULL,
+  quote_asset TEXT NOT NULL,
+  gross_return_bps TEXT NOT NULL,
+  estimated_net_return_bps TEXT NOT NULL,
+  fee_status TEXT NOT NULL,
+  detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_core_realized_legs_opening
+  ON core_realized_legs(opening_decision_id, closed_at);
+CREATE INDEX IF NOT EXISTS idx_core_realized_legs_symbol
+  ON core_realized_legs(symbol, closed_at);
+
+CREATE TABLE IF NOT EXISTS core_realized_outcomes(
+  opening_decision_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  first_opened_at REAL NOT NULL,
+  last_closed_at REAL NOT NULL,
+  matched_legs INTEGER NOT NULL,
+  closed_quantity TEXT NOT NULL,
+  closed_notional_quote TEXT NOT NULL,
+  gross_pnl_quote TEXT NOT NULL,
+  fees_est_quote TEXT NOT NULL,
+  estimated_net_pnl_quote TEXT NOT NULL,
+  gross_return_bps TEXT NOT NULL,
+  estimated_net_return_bps TEXT NOT NULL,
+  quote_asset TEXT NOT NULL,
+  fee_status TEXT NOT NULL,
+  net_verified INTEGER NOT NULL DEFAULT 0,
+  detail_json TEXT NOT NULL,
+  PRIMARY KEY(opening_decision_id,symbol,direction)
+);
+CREATE INDEX IF NOT EXISTS idx_core_realized_outcomes_closed
+  ON core_realized_outcomes(last_closed_at);
+
+CREATE TABLE IF NOT EXISTS core_inventory_lots(
+  lot_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  opened_at REAL NOT NULL,
+  entry_order_id TEXT NOT NULL,
+  entry_trade_id TEXT NOT NULL,
+  opening_decision_id TEXT NOT NULL,
+  entry_price TEXT NOT NULL,
+  remaining_quantity TEXT NOT NULL,
+  remaining_entry_fee_est_quote TEXT NOT NULL,
+  quote_asset TEXT NOT NULL,
+  detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_core_inventory_open
+  ON core_inventory_lots(symbol,direction,opened_at);
+
+CREATE TABLE IF NOT EXISTS core_fill_anomalies(
+  anomaly_id TEXT PRIMARY KEY,
+  detected_at REAL NOT NULL,
+  symbol TEXT NOT NULL,
+  order_id TEXT NOT NULL,
+  trade_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  detail_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS positions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, captured_at REAL NOT NULL, venue TEXT NOT NULL,
   symbol TEXT NOT NULL, direction TEXT NOT NULL, quantity TEXT NOT NULL, notional_eur TEXT NOT NULL,
