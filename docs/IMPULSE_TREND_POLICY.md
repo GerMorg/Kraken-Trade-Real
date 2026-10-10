@@ -1,4 +1,4 @@
-# Impulse entries and trend-following exits (v0.1.42)
+# Impulse entries and trend-following exits (v0.1.43)
 
 ## Which trading model owns what?
 
@@ -31,3 +31,13 @@ Regression tests cover confidence-tiered leverage, side-specific support, exposu
 - Confidence-scale promotion requires 100 observations, selects on an earlier chronological segment, validates on the newest 30%, and requires hold-out Brier improvement of at least 0.005.
 - Tactical's trailing break-even floor includes estimated Spot Margin opening fees and completed four-hour rollover fees in proportion to the borrowed share. Rates remain estimates if exchange/instrument-specific values are unavailable.
 - App-managed stops cannot guarantee a maximum fill loss across app/network outages. Live trading still requires explicit enablement and the kill switch to be disabled; CI is not evidence of trading profitability.
+
+
+## v0.1.43 learning and execution architecture
+
+- Core decision-policy tuning is isolated in a separate `strategy_policy` registry family. Legacy confidence-scale candidates from earlier releases remain stored for audit but are not applied to live confidence or target sizing.
+- The optimizer uses independently grouped symbol/time buckets and a chronological 60/20/20 train/validation/test split. It tunes signal feature weights, news/Gemini weights, volatility-cost multiplier, spread/liquidity quality scales, confidence transformation scales, and edge/confidence/cost-ratio thresholds within bounded ranges. It cannot mutate leverage ceilings, account loss limits, kill switches, execution authority, or order mechanics.
+- Candidate promotion requires at least 300 independent symbol/time groups, enough selected outcomes in both validation and test sets, positive net expectancy in both, at least 1 bps validation mean-net improvement, and at least 2 bps test mean-net improvement. These thresholds are safeguards, not a guarantee of future profitability.
+- Both accepted and rejected directional signals are recorded once per symbol/direction/15-minute bucket. Labels use the observed directional price change minus the expected transaction costs. Missing price history remains pending only for a bounded period and then becomes unscorable.
+- Tactical order timeouts no longer silently discard partial fills. The exact exchange order must be terminally reconciled after a cancellation request; cumulative filled quantity is applied to the local position only after confirmation. Unknown cancellation status remains a blocker.
+- Stop-loss and trailing behaviour are still monitored by the running app, not guaranteed server-side conditional orders. Their parameter family should only be optimized after reliable high-frequency path and actual-fill records can replay the full exit path; this release deliberately does not tune those risk controls from incomplete trade summaries.

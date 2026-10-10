@@ -86,3 +86,27 @@ def test_optimizer_excludes_exchange_unavailable_directions():
     score = optimizer.score(optimizer.grouped(rows), _params())
 
     assert score["samples"] == 0
+
+
+def test_optimizer_can_search_bounded_cost_and_confidence_parameters():
+    optimizer = StrategyPolicyOptimizer()
+    defaults = {
+        **DEFAULT_WEIGHTS,
+        "signal_cost_volatility_multiplier": 1.5,
+        "signal_quality_spread_scale_bps": 200.0,
+        "signal_quality_liquidity_scale": 1000.0,
+        "signal_confidence_return_scale_bps": 45.0,
+        "signal_confidence_volatility_scale": 120.0,
+        "strategy_min_edge_bps": 25.0,
+        "strategy_min_confidence": 0.58,
+        "strategy_adaptive_edge_floor_bps": 15.0,
+        "strategy_adaptive_min_confidence": 0.75,
+        "strategy_adaptive_cost_ratio": 1.1,
+    }
+    assert optimizer._variants(
+        "signal_quality_spread_scale_bps", 200.0, defaults
+    ) == [150.0, 200.0, 225.0]
+    profile = optimizer.normalize_profile(
+        {"signal_quality_spread_scale_bps": 1.0}, defaults
+    )
+    assert profile["signal_quality_spread_scale_bps"] == 75.0

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.43
+
+- Separate the strategy policy from forecast diagnostics. The historical confidence-scale calibration is now diagnostic-only and can no longer inflate entry confidence or position sizing.
+- Record both directional candidate signals in a separate 15-minute shadow-outcome table, including rejected signals, regime, news/Gemini effects, exchange direction availability, features and expected costs; deduplicate observations by symbol, horizon and direction.
+- Add a bounded chronological 60/20/20 optimizer for signal weights, news/Gemini influence, cost volatility multiplier, spread/liquidity quality scales, confidence transform scales, and core entry-policy thresholds. Candidates need enough independent buckets and trades, positive net expectancy, validation improvement and a separate test-set improvement before promotion.
+- Keep learned strategy-policy versions separate from execution, leverage, loss-limit and kill-switch controls; add post-promotion monitoring and rollback on material out-of-sample degradation.
+- Reconcile Tactical partial orders after timeout: cancel the known remainder, verify the exact exchange order reaches a terminal state, and apply confirmed cumulative fills only. Keep uncertain orders blocking further orders; clamp anomalous reported exit fill sizes to remaining local quantity.
+- Add regression tests for policy-family isolation, signal-observation idempotency and net-of-cost directional settlement, policy optimizer sample sufficiency, and Tactical partial fills.
+- Bump Home Assistant app, package, container and Kraken API User-Agent to 0.1.43.
+
+
 ## 0.1.42
 
 - Aggregate all Kraken OpenPositions lots per pair for quantity, PnL, cost basis, exposure and leverage instead of silently dropping later lots.

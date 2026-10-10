@@ -57,7 +57,7 @@ def _number(value: Any, fallback: float = 0.0) -> float:
 
 
 class StrategyPolicyOptimizer:
-    """Bounded walk-forward tuner for signal weights and entry-policy thresholds.
+    """Bounded chronological-holdout tuner for signal, cost and entry-policy parameters.
 
     It only tunes alpha/policy values. Execution controls, loss limits, leverage
     ceilings, kill switches and account permissions are deliberately out of scope.
@@ -189,7 +189,7 @@ class StrategyPolicyOptimizer:
         )
         expected_return = max(0.0, raw) * quality
         fixed_fee = features.get("signal_fee_cost_bps")
-        if fixed_fee <= 0:
+        if "signal_fee_cost_bps" not in features:
             fixed_fee = max(
                 0.0,
                 _number(row.get("expected_cost_bps"))
@@ -270,6 +270,17 @@ class StrategyPolicyOptimizer:
             else:
                 step = max(0.25, abs(base) * 0.25)
                 low, high = max(0.1, base * 0.5), base * 1.5
+        elif key in SHAPE_KEYS:
+            if key == "signal_cost_volatility_multiplier":
+                step, low, high = 0.25, 0.25, 5.0
+            elif key == "signal_quality_spread_scale_bps":
+                step, low, high = 25.0, 75.0, 500.0
+            elif key == "signal_quality_liquidity_scale":
+                step, low, high = 250.0, 250.0, 10000.0
+            elif key == "signal_confidence_return_scale_bps":
+                step, low, high = 10.0, 20.0, 150.0
+            else:
+                step, low, high = 20.0, 50.0, 300.0
         elif key in {"strategy_min_edge_bps", "strategy_adaptive_edge_floor_bps"}:
             step = 5.0
             low, high = (5.0, 100.0) if key == "strategy_min_edge_bps" else (3.0, 50.0)
