@@ -1223,62 +1223,235 @@ class TacticalTrader:
             return
         self._close_live(position, fill_qty, fill_price, reason, now, intent.client_order_id)
 
+    @staticmethod
+    def _exchange_order_id(payload: dict[str, Any], fallback: str | None = None) -> str | None:
+        raw = payload.get("txid") or payload.get("order_id") or payload.get("orderId")
+        return str(raw or fallback or "").strip() or None
+
+    @staticmethod
+    def _executed_volume(payload: dict[str, Any], intended_quantity: D, state: Any) -> D:
+        raw = payload.get("vol_exec")
+        if raw in (None, ""):
+            raw = payload.get("executed_volume")
+        if raw in (None, ""):
+            # Only an explicit completed/filled state permits this legacy fallback.
+            status = str(payload.get("status") or payload.get("state") or "").strip().lower()
+            if status in {"filled", "complete", "completed"} or getattr(state, "value", "") == "FILLED":
+                return max(D("0"), D(str(intended_quantity)))
+            return D("0")
+        try:
+            return max(D("0"), D(str(raw)))
+        except Exception:
+            return D("0")
+
+    @staticmethod
+    def _executed_average_price(payload: dict[str, Any], fallback_price: Any) -> D:
+        # QueryOrders' executed average price is preferred to the order's limit.
+        for key in ("avg_price", "avgPrice", "price"):
+            raw = payload.get(key)
+            try:
+                value = D(str(raw)) if raw not in (None, "") else D("0")
+            except Exception:
+                value = D("0")
+            if value > 0:
+                return value
+        try:
+            fallback = D(str(fallback_price)) if fallback_price not in (None, "") else D("0")
+        except Exception:
+            fallback = D("0")
+        return fallback if fallback > 0 else D("0")
+
     def _wait_for_fill(
         self,
         intent: Any,
         instrument: Instrument,
         kraken_order_id: str | None = None,
     ) -> tuple[D, D] | None:
+        """Wait for terminal execution state and account only exchange-confirmed fills.
+
+        A partial fill is not a completed order. On timeout, cancel the exact known
+        exchange order and re-query it. A cancel acknowledgement by itself is not
+        treated as proof; if the exchange still reports an open/unknown order, leave
+        it persisted as a blocker rather than submitting overlapping orders.
+        """
+        order_id = str(kraken_order_id or "").strip() or None
         deadline = time.monotonic() + max(
             1.0, float(getattr(self.config, "tactical_order_confirm_seconds", 5))
         )
         last_payload: dict[str, Any] | None = None
+        last_state = "UNKNOWN_RECONCILING"
+
+        def terminal_result(payload: dict[str, Any]) -> tuple[bool, tuple[D, D] | None, str]:
+            nonlocal order_id, last_state
+            status_text = str(payload.get("status") or payload.get("state") or "").strip().lower()
+            resolved = self.authority.reconciler.state_from_exchange(payload)
+            order_id = self._exchange_order_id(payload, order_id)
+            executed = self._executed_volume(payload, D(str(intent.quantity)), resolved)
+            requested = max(D("0"), D(str(intent.quantity)))
+            closed = status_text in {
+                "closed", "filled", "complete", "completed",
+                "canceled", "cancelled", "expired", "rejected",
+            } or getattr(resolved, "value", "") == "FILLED"
+            if not closed:
+                last_state = (
+                    "PARTIALLY_FILLED" if executed > 0 else
+                    getattr(resolved, "value", "UNKNOWN_RECONCILING")
+                )
+                return False, None, last_state
+
+            if executed > 0 and requested > 0 and executed >= requested * D("0.999999"):
+                final_state = "FILLED"
+            elif status_text in {"rejected"}:
+                final_state = "REJECTED"
+            elif status_text in {"expired"}:
+                final_state = "EXPIRED"
+            elif status_text in {"canceled", "cancelled", "closed"}:
+                # Kraken can report status=closed when a cancellation has retained
+                # some executed volume. That is a terminal partial fill, not FILLED.
+                final_state = "CANCELED"
+            elif getattr(resolved, "value", "") in {"CANCELED", "EXPIRED", "REJECTED"}:
+                final_state = getattr(resolved, "value")
+            elif status_text in {"filled", "complete", "completed"} or getattr(
+                resolved, "value", ""
+            ) == "FILLED":
+                final_state = "FILLED"
+            else:
+                final_state = "CANCELED"
+
+            average = self._executed_average_price(
+                payload, getattr(intent, "limit_price", None)
+            )
+            self.db.update_order_state(
+                intent.client_order_id,
+                final_state,
+                kraken_order_id=order_id,
+                last_error=(
+                    "TACTICAL_TERMINAL_PARTIAL_FILL"
+                    if executed > 0 and final_state != "FILLED"
+                    else ""
+                ),
+            )
+            last_state = final_state
+            if executed > 0 and average > 0:
+                return True, (min(executed, requested) if requested > 0 else executed, average), final_state
+            return True, None, final_state
+
         while time.monotonic() < deadline:
             try:
                 rows = self.gateway.lookup_order(
                     client_order_id=intent.client_order_id,
                     instrument=instrument,
-                    kraken_order_id=kraken_order_id,
+                    kraken_order_id=order_id,
                 )
-                if rows:
+                if rows and isinstance(rows[0], dict):
                     last_payload = rows[0]
-                    status = self.authority.reconciler.state_from_exchange(rows[0])
-                    if status.value == "FILLED":
-                        quantity = D(str(rows[0].get("vol_exec") or rows[0].get("executed_volume") or intent.quantity))
-                        price = D(
-                            str(
-                                rows[0].get("price")
-                                or rows[0].get("avg_price")
-                                or rows[0].get("avgPrice")
-                                or intent.limit_price
-                                or "0"
+                    is_terminal, fill, state = terminal_result(last_payload)
+                    if is_terminal:
+                        if fill is None and state == "FILLED":
+                            self.audit.emit(
+                                "TACTICAL_FILL_PRICE_UNAVAILABLE",
+                                "ERROR",
+                                symbol=instrument.symbol,
+                                client_order_id=intent.client_order_id,
+                                kraken_order_id=order_id or "",
+                                executed_volume=str(
+                                    self._executed_volume(
+                                        last_payload, D(str(intent.quantity)),
+                                        self.authority.reconciler.state_from_exchange(last_payload),
+                                    )
+                                ),
                             )
-                        )
-                        if quantity > 0 and price > 0:
-                            self.db.update_order_state(
-                                intent.client_order_id,
-                                status.value,
-                                kraken_order_id=str(rows[0].get("txid") or rows[0].get("order_id") or "") or None,
-                            )
-                            return quantity, price
+                        return fill
             except Exception as exc:
                 self.audit.emit(
                     "TACTICAL_FILL_CHECK_FAILED",
                     "WARNING",
                     symbol=instrument.symbol,
+                    client_order_id=intent.client_order_id,
                     error_type=type(exc).__name__,
                 )
             time.sleep(0.5)
+
+        # The order did not reach a terminal state inside the confirmation window.
+        # Cancel only when an exact exchange order id is known; then verify by lookup.
+        if last_payload is not None:
+            order_id = self._exchange_order_id(last_payload, order_id)
+        cancel_error = ""
+        if order_id:
+            try:
+                self.gateway.cancel_order(
+                    instrument=instrument,
+                    kraken_order_id=order_id,
+                    client_order_id=intent.client_order_id,
+                )
+            except Exception as exc:
+                cancel_error = f"{type(exc).__name__}:{str(exc)[:300]}"
+        else:
+            cancel_error = "TACTICAL_ORDER_ID_UNAVAILABLE_NO_SAFE_CANCEL"
         self.audit.emit(
-            "TACTICAL_FILL_PENDING",
+            "TACTICAL_ORDER_CANCEL_REQUESTED" if order_id else "TACTICAL_ORDER_CANCEL_SKIPPED",
             "WARNING",
             symbol=instrument.symbol,
             client_order_id=intent.client_order_id,
-            state=(
-                str(last_payload.get("status") or last_payload.get("state") or "UNKNOWN")
-                if last_payload
-                else "UNKNOWN"
+            kraken_order_id=order_id or "",
+            reason=cancel_error or "CONFIRMATION_TIMEOUT",
+            prior_state=last_state,
+        )
+
+        for attempt in range(4):
+            try:
+                rows = self.gateway.lookup_order(
+                    client_order_id=intent.client_order_id,
+                    instrument=instrument,
+                    kraken_order_id=order_id,
+                )
+                if rows and isinstance(rows[0], dict):
+                    last_payload = rows[0]
+                    is_terminal, fill, state = terminal_result(last_payload)
+                    if is_terminal:
+                        self.audit.emit(
+                            "TACTICAL_ORDER_CANCEL_RECONCILED",
+                            "INFO",
+                            symbol=instrument.symbol,
+                            client_order_id=intent.client_order_id,
+                            kraken_order_id=order_id or "",
+                            terminal_state=state,
+                            attempt=attempt + 1,
+                            filled_quantity=str(fill[0]) if fill else "0",
+                        )
+                        return fill
+                    last_state = state
+            except Exception as exc:
+                cancel_error = f"{type(exc).__name__}:{str(exc)[:300]}"
+            if attempt < 3:
+                time.sleep(0.25)
+
+        final_state = (
+            "PARTIALLY_FILLED"
+            if last_payload is not None and self._executed_volume(
+                last_payload, D(str(intent.quantity)),
+                self.authority.reconciler.state_from_exchange(last_payload),
+            ) > 0
+            else "UNKNOWN_RECONCILING"
+        )
+        self.db.update_order_state(
+            intent.client_order_id,
+            final_state,
+            kraken_order_id=order_id,
+            last_error=(
+                "TACTICAL_CANCEL_UNCONFIRMED:"
+                + (cancel_error or "EXCHANGE_ORDER_STILL_OPEN_OR_UNKNOWN")
             ),
+        )
+        self.audit.emit(
+            "TACTICAL_FILL_PENDING",
+            "ERROR",
+            symbol=instrument.symbol,
+            client_order_id=intent.client_order_id,
+            kraken_order_id=order_id or "",
+            state=final_state,
+            cancel_error=cancel_error,
+            action="KEEP_ORDER_BLOCKER_UNTIL_RECONCILED",
         )
         return None
 
