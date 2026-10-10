@@ -53,8 +53,7 @@ class AdaptiveConfig:
         object.__setattr__(self, "_lock", RLock())
         self.refresh()
 
-    @property
-    def __dict__(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, Any]:
         # Keep config hashing and diagnostics compatible with the original dataclass.
         with self._lock:
             return {**self._base.__dict__, **self._overrides}
