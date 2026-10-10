@@ -29,3 +29,32 @@ def test_learning_promotion_respects_configuration_flag(db):
         auto_promotion_enabled=False,
     )
     assert engine.auto_promotion_enabled is False
+
+
+def test_policy_family_is_separate_and_keeps_its_own_active_version(db):
+    registry = ModelRegistry(db)
+    registry.ensure_family_baseline(
+        "strategy_policy", "baseline-policy-v1",
+        {"strategy_min_edge_bps": 25.0}, "test baseline",
+    )
+    registry.register_candidate(
+        "candidate-policy", "strategy_policy", "baseline-policy-v1",
+        {"strategy_min_edge_bps": 20.0},
+        {
+            "samples": 30,
+            "improvement": 3.0,
+            "test_improvement_bps": 3.0,
+            "test_mean_net_bps": 4.0,
+            "validation_mean_net_bps": 3.0,
+            "validation_improvement_bps": 2.0,
+        },
+    )
+
+    assert registry.promote(
+        "candidate-policy", min_improvement=2.0, min_samples=20
+    ) is True
+    assert registry.active("strategy_policy") == "candidate-policy"
+    assert registry.active("decision") == "baseline-v1"
+    assert registry.parameters(
+        "candidate-policy", family="strategy_policy"
+    ) == {"strategy_min_edge_bps": 20.0}

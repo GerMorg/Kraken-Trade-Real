@@ -154,3 +154,41 @@ def test_core_new_short_requires_exchange_direction_availability(config, instrum
     assert DecisionEngine(config).rejection_reason(
         blocked, long_signal, short_signal, portfolio, {}, Decimal("0.5")
     ) == "INSTRUMENT_DIRECTION"
+
+
+def test_learned_policy_weights_and_thresholds_apply_without_legacy_confidence_scaling(
+    config, instrument
+):
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("100"),
+        positions={}, gross_eur=Decimal("0"), net_eur=Decimal("0"),
+    )
+    long_signal = _signal(instrument.symbol, Direction.LONG, 150, 130, "0.4")
+    short_signal = _signal(instrument.symbol, Direction.SHORT, 0, 130, "0.1")
+    strategy_parameters = {
+        "policy_version": "candidate-policy-test",
+        "strategy_min_edge_bps": 25.0,
+        "strategy_min_confidence": 0.35,
+        "strategy_adaptive_edge_floor_bps": 15.0,
+        "strategy_adaptive_min_confidence": 0.4,
+        "strategy_adaptive_cost_ratio": 1.1,
+    }
+
+    decision = DecisionEngine(config).choose(
+        instrument,
+        long_signal,
+        short_signal,
+        portfolio,
+        "model-test",
+        "config-test",
+        {"confidence_scale": 1.5},
+        Decimal("1"),
+        strategy_parameters=strategy_parameters,
+    )
+
+    assert decision is not None
+    assert decision.rationale["edge_tier"] == "ADAPTIVE"
+    # The old Brier-selected confidence_scale must not inflate trade sizing.
+    assert decision.target_notional_eur == Decimal("6.00")
+    assert decision.rationale["strategy_policy_version"] == "candidate-policy-test"
+    assert decision.rationale["legacy_confidence_scale_ignored"] is True
