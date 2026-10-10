@@ -1415,6 +1415,31 @@ class TacticalTrader:
             position.setup_score,
             position.state,
         )
+        self._record_entry_price_point(position)
+
+    def _record_entry_price_point(self, position: TacticalPosition) -> None:
+        """Seed the path with the known entry price, including after a restart."""
+        try:
+            self.db.record_tactical_price_point(
+                position.symbol,
+                position.opened_at,
+                position.opened_at,
+                position.direction.value,
+                position.entry_price,
+                D("0"),
+                position.entry_price,
+                position.entry_price,
+                position.state,
+            )
+        except Exception as exc:
+            # Entry persistence and risk handling must not depend on telemetry writes.
+            self.audit.emit(
+                "TACTICAL_PRICE_PATH_RECORD_FAILED",
+                "WARNING",
+                symbol=position.symbol,
+                error_type=type(exc).__name__,
+                error=str(exc)[:240],
+            )
 
     def _trade_learning_context(
         self, position: TacticalPosition, mode: str, client_order_id: str = ""
@@ -1773,6 +1798,7 @@ class TacticalTrader:
                     position.opened_at, position.entry_client_order_id,
                     position.setup_score, position.state,
                 )
+                self._record_entry_price_point(position)
             except Exception:
                 self.db.delete_tactical_position(str(row.get("symbol", "")))
 
@@ -1946,6 +1972,7 @@ class TacticalTrader:
             position.notional_eur, position.leverage, position.opened_at,
             position.entry_client_order_id, position.setup_score, position.state,
         )
+        self._record_entry_price_point(position)
 
     def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:
         self._last_signal_reason = reason
