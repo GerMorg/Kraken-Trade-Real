@@ -23,8 +23,14 @@ class ExecutionReconciler:
                     executed = Decimal(str(payload.get("vol_exec") or "0"))
                 except (TypeError, ValueError):
                     requested = executed = Decimal("0")
-                if requested > 0 and 0 < executed < requested:
-                    return OrderState.PARTIALLY_FILLED
+                if requested <= 0:
+                    return OrderState.UNKNOWN_RECONCILING
+                if executed <= 0:
+                    return OrderState.CANCELED
+                if executed < requested:
+                    # A closed partial fill is terminal. Its executed quantity is
+                    # separately accounted for by consumers that track cumulative fills.
+                    return OrderState.CANCELED
                 return OrderState.FILLED
             if status in {"filled", "complete", "completed"}:
                 return OrderState.FILLED
