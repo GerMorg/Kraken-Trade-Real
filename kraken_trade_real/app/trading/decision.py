@@ -15,9 +15,15 @@ class DecisionEngine:
     def __init__(self, config: Any) -> None:
         self.config = config
 
-    def _confidence_scale(self, model_parameters: dict[str, Any] | None) -> D:
+    def _confidence_scale(
+        self, model_parameters: dict[str, Any] | None, regime: str | None = None
+    ) -> D:
         parameters = model_parameters or {}
-        scale = D(str(parameters.get("confidence_scale", "1")))
+        scale_value = parameters.get("confidence_scale", "1")
+        by_regime = parameters.get("confidence_scale_by_regime", {})
+        if regime and isinstance(by_regime, dict) and regime in by_regime:
+            scale_value = by_regime[regime]
+        scale = D(str(scale_value))
         return max(D("0.5"), min(D("1.5"), scale))
 
     def _target_position(self, equity: D, confidence: D, signal_direction: Direction) -> D:
