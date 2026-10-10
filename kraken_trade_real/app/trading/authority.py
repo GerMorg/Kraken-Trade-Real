@@ -323,7 +323,7 @@ class TradingAuthority:
                         continue
                     instrument = instrument_map[str(order.get("symbol") or "")]
                     try:
-                        trade_time = float(payload.get("time"))
+                        trade_time = float(str(payload.get("time") or "0"))
                         price = D(str(payload.get("price")))
                         quantity = D(str(payload.get("vol")))
                         fee = D(str(payload.get("fee") or "0"))
