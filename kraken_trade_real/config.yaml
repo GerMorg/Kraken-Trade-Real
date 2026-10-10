@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.37
+version: 0.1.38
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -50,6 +50,11 @@ options:
   strategy_entry_fee_bps: 40.0
   strategy_exit_fee_bps: 80.0
   strategy_execution_overhead_bps: 8.0
+  strategy_partial_profit_trigger_pct: 3.5
+  strategy_partial_profit_fraction_pct: 50.0
+  strategy_profit_lock_trigger_pct: 5.0
+  strategy_profit_giveback_pct: 35.0
+  strategy_profit_lock_floor_pct: 2.0
   risk_max_position_pct: 15.0
   risk_max_gross_pct: 80.0
   risk_max_net_pct: 50.0
@@ -160,6 +165,11 @@ schema:
   strategy_entry_fee_bps: float
   strategy_exit_fee_bps: float
   strategy_execution_overhead_bps: float
+  strategy_partial_profit_trigger_pct: float
+  strategy_partial_profit_fraction_pct: float
+  strategy_profit_lock_trigger_pct: float
+  strategy_profit_giveback_pct: float
+  strategy_profit_lock_floor_pct: float
   risk_max_position_pct: float
   risk_max_gross_pct: float
   risk_max_net_pct: float
