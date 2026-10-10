@@ -914,8 +914,28 @@ class TradingRuntime:
 
             stage="DECISIONS"
             self._watchdog_arm(cycle_id, stage)
-            model_version=self.registry.active()
-            model_parameters=self.registry.parameters(model_version)
+            model_version=self.registry.active("decision")
+            model_parameters=self.registry.parameters(model_version, family="decision")
+            strategy_policy_version = self.registry.active("strategy_policy")
+            strategy_parameters = self.registry.parameters(
+                strategy_policy_version, family="strategy_policy"
+            )
+            # Include the independent policy revision in every decision/observation.
+            strategy_parameters = {
+                **strategy_parameters,
+                "policy_version": strategy_policy_version,
+            }
+            self.audit.emit(
+                "STRATEGY_POLICY_ACTIVE",
+                "INFO",
+                cycle_id=cycle_id,
+                policy_version=strategy_policy_version,
+                decision_model_version=model_version,
+                parameters={
+                    key: str(value) for key, value in strategy_parameters.items()
+                    if key != "policy_version"
+                },
+            )
             placed=0
             decisions_count=0
             strategy_rejected=0
@@ -930,7 +950,8 @@ class TradingRuntime:
                 regime=self.regimes.detect(f)
                 news_bps=self.news.effect_for(instrument.symbol,news)
                 long_signal,short_signal=self.signals.evaluate(
-                    instrument,snap,f,regime,news_bps,gemini_bps
+                    instrument,snap,f,regime,news_bps,gemini_bps,
+                    strategy_parameters=strategy_parameters,
                 )
                 # Apply opening/rollover financing only to Kraken Spot Margin.
                 # Use the same direction-specific leverage selection as execution and
@@ -1067,6 +1088,28 @@ class TradingRuntime:
                         reason=reason,
                     )
                     continue
+                try:
+                    self.db.save_signal_observation(
+                        snap,
+                        long_signal,
+                        direction_available=instrument.long_available,
+                        model_version=f"{model_version}/{strategy_policy_version}",
+                    )
+                    self.db.save_signal_observation(
+                        snap,
+                        short_signal,
+                        direction_available=instrument.short_available,
+                        model_version=f"{model_version}/{strategy_policy_version}",
+                    )
+                except Exception as exc:
+                    # Shadow observation persistence must not stop the trading cycle.
+                    self.audit.emit(
+                        "SIGNAL_OBSERVATION_WRITE_FAILED",
+                        "WARNING",
+                        cycle_id=cycle_id,
+                        symbol=instrument.symbol,
+                        error_type=type(exc).__name__,
+                    )
                 decision=self.decisions.choose(
                     instrument,
                     long_signal,
@@ -1076,6 +1119,7 @@ class TradingRuntime:
                     self.config_hash,
                     model_parameters,
                     min_cost_eur,
+                    strategy_parameters=strategy_parameters,
                 )
                 decision = self.profit_protection.apply(
                     cycle_id=cycle_id,
@@ -1087,6 +1131,7 @@ class TradingRuntime:
                     model_version=model_version,
                     config_hash=self.config_hash,
                     min_cost_eur=min_cost_eur,
+                    strategy_policy_version=strategy_policy_version,
                 )
                 if not decision:
                     reason=self.decisions.rejection_reason(
@@ -1096,6 +1141,7 @@ class TradingRuntime:
                         portfolio,
                         model_parameters,
                         min_cost_eur,
+                        strategy_parameters=strategy_parameters,
                     )
                     no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
                     strategy_rejected+=1

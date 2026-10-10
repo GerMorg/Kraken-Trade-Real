@@ -148,6 +148,7 @@ class PositionProfitProtection:
         model_version: str,
         config_hash: str,
         min_cost_eur: D,
+        strategy_policy_version: str = "CONFIG_DEFAULTS",
     ) -> Decision | None:
         """Apply a profit-management override or forbid increasing a partly taken position."""
         if (
@@ -258,6 +259,7 @@ class PositionProfitProtection:
             "position_loss_stop_pct": str(stop_loss_pct),
             "risk_profile": "core",
             "min_cost_eur": str(min_cost_eur),
+            "strategy_policy_version": strategy_policy_version,
         })
 
         if decision is None:
