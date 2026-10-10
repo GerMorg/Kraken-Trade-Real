@@ -42,7 +42,15 @@ class ModelRegistry:
             (family,),
         )
         if active:
-            return str(active["version"])
+            active_version = str(active["version"])
+            if active_version == version:
+                # An unpromoted baseline must continue to reflect current HA options.
+                self.db.execute(
+                    "UPDATE model_versions SET parameters_json=?,reason=? "
+                    "WHERE version=? AND family=? AND status='ACTIVE'",
+                    (json.dumps(parameters, sort_keys=True), reason, version, family),
+                )
+            return active_version
         existing = self.db.one(
             "SELECT version FROM model_versions WHERE version=? AND family=?",
             (version, family),

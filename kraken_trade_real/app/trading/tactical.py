@@ -964,6 +964,7 @@ class TacticalTrader:
             fill_price,
             intent.client_order_id,
             now,
+            requested_quantity=quantity,
         )
         self._last_action = "LIVE_ENTRY"
 
@@ -1357,13 +1358,15 @@ class TacticalTrader:
         price: D,
         client_order_id: str,
         now: float,
+        requested_quantity: D | None = None,
     ) -> None:
-        requested_quantity = D(str(kwargs_requested_quantity)) if False else quantity
+        requested = max(D("0"), D(str(requested_quantity or quantity)))
         quote_rate = self.portfolio.quote_to_eur_rate(decision.instrument.quote)
         if quote_rate is not None and D(str(quote_rate)) > 0:
             filled_notional_eur = abs(quantity * price * D(str(quote_rate)))
         else:
-            filled_notional_eur = abs(decision.target_notional_eur)
+            fill_ratio = min(D("1"), quantity / requested) if requested > 0 else D("1")
+            filled_notional_eur = abs(decision.target_notional_eur) * fill_ratio
         position = TacticalPosition(
             decision.instrument.symbol,
             decision.instrument.venue,
