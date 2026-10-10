@@ -100,8 +100,15 @@ CREATE TABLE IF NOT EXISTS order_events(
 CREATE TABLE IF NOT EXISTS fills(
   order_id TEXT NOT NULL, trade_id TEXT NOT NULL, created_at REAL NOT NULL,
   symbol TEXT NOT NULL, side TEXT NOT NULL, quantity TEXT NOT NULL, price TEXT NOT NULL,
-  fee TEXT NOT NULL, fee_currency TEXT NOT NULL, PRIMARY KEY(order_id,trade_id)
+  fee TEXT NOT NULL, fee_currency TEXT NOT NULL, PRIMARY KEY(order_id,trade_id),
+  client_order_id TEXT NOT NULL DEFAULT '',
+  decision_id TEXT NOT NULL DEFAULT '',
+  venue TEXT NOT NULL DEFAULT 'spot',
+  quote_asset TEXT NOT NULL DEFAULT '',
+  raw_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE INDEX IF NOT EXISTS idx_fills_decision_time ON fills(decision_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_fills_client_order ON fills(client_order_id, created_at);
 
 CREATE TABLE IF NOT EXISTS positions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, captured_at REAL NOT NULL, venue TEXT NOT NULL,
