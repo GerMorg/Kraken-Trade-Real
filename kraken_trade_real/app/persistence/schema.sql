@@ -222,3 +222,13 @@ CREATE TABLE IF NOT EXISTS tactical_trades(
   detail_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tactical_trades_closed ON tactical_trades(closed_at);
+
+
+-- Cumulative Tactical fills are applied exactly once, including after restarts.
+CREATE TABLE IF NOT EXISTS tactical_order_progress(
+  client_order_id TEXT PRIMARY KEY,
+  last_filled_quantity TEXT NOT NULL DEFAULT '0',
+  last_average_price TEXT NOT NULL DEFAULT '0',
+  terminal INTEGER NOT NULL DEFAULT 0,
+  updated_at REAL NOT NULL
+);
