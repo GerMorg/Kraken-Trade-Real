@@ -138,6 +138,8 @@ def test_core_new_short_requires_exchange_direction_availability(config, instrum
     from app.domain.states import Direction
     from app.trading.decision import DecisionEngine
 
+    config = replace(config, strategy_min_edge_bps=5.0, strategy_min_confidence=0.5)
+
     blocked = replace(instrument, short_available=False)
     portfolio = PortfolioState(equity_eur=Decimal("100"), cash_eur=Decimal("100"))
     long_signal = Signal(
