@@ -88,6 +88,15 @@ class AdaptiveParameterOptimizer:
             candidate["tactical_min_volume_ratio"] = min(
                 8.0, float(current["tactical_min_volume_ratio"]) * 1.05
             )
+            candidate["tactical_min_breakout_bps"] = min(
+                250.0, float(current["tactical_min_breakout_bps"]) * 1.05
+            )
+            candidate["tactical_max_spread_bps"] = max(
+                3.0, float(current["tactical_max_spread_bps"]) * 0.95
+            )
+            candidate["tactical_adaptive_min_expected_move_bps"] = min(
+                800.0, float(current["tactical_adaptive_min_expected_move_bps"]) * 1.05
+            )
             candidate["tactical_portfolio_pct"] = max(
                 1.0, float(current["tactical_portfolio_pct"]) * 0.90
             )
@@ -105,6 +114,15 @@ class AdaptiveParameterOptimizer:
             )
             candidate["tactical_min_volume_ratio"] = max(
                 1.0, float(current["tactical_min_volume_ratio"]) * 0.98
+            )
+            candidate["tactical_min_breakout_bps"] = max(
+                5.0, float(current["tactical_min_breakout_bps"]) * 0.98
+            )
+            candidate["tactical_max_spread_bps"] = min(
+                60.0, float(current["tactical_max_spread_bps"]) * 1.02
+            )
+            candidate["tactical_adaptive_min_expected_move_bps"] = max(
+                80.0, float(current["tactical_adaptive_min_expected_move_bps"]) * 0.98
             )
             reason = "POSITIVE_IMPROVING_EXPECTANCY_SMALL_ENTRY_RELAXATION"
 
