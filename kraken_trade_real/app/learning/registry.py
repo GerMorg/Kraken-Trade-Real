@@ -14,15 +14,46 @@ class ModelRegistry:
         self.ensure()
 
     def ensure(self) -> None:
-        row=self.db.one("SELECT version FROM model_versions LIMIT 1")
-        if not row:
-            self.db.execute(
-                "INSERT INTO model_versions(version,family,status,created_at,parent_version,parameters_json,metrics_json,reason) VALUES(?,?,?,?,?,?,?,?)",
-                ("baseline-v1","decision","ACTIVE",time.time(),None,json.dumps({"kind":"deterministic"}),json.dumps({}),"initial baseline"),
-            )
+        # A crash during an older promotion/rollback must not leave the trader
+        # without an active decision model or with multiple active versions.
+        with self.db.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT version FROM model_versions WHERE family='decision' ORDER BY created_at ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                con.execute(
+                    "INSERT INTO model_versions(version,family,status,created_at,parent_version,parameters_json,metrics_json,reason) VALUES(?,?,?,?,?,?,?,?)",
+                    ("baseline-v1", "decision", "ACTIVE", time.time(), None,
+                     json.dumps({"kind": "deterministic"}), json.dumps({}), "initial baseline"),
+                )
+            active_rows = con.execute(
+                "SELECT version FROM model_versions WHERE family='decision' AND status='ACTIVE' ORDER BY created_at DESC"
+            ).fetchall()
+            if not active_rows:
+                fallback = con.execute(
+                    "SELECT version FROM model_versions WHERE family='decision' ORDER BY created_at ASC LIMIT 1"
+                ).fetchone()
+                if fallback:
+                    con.execute(
+                        "UPDATE model_versions SET status='ACTIVE' WHERE version=?",
+                        (fallback["version"],),
+                    )
+            elif len(active_rows) > 1:
+                keep = active_rows[0]["version"]
+                con.execute(
+                    "UPDATE model_versions SET status='RETIRED' WHERE family='decision' AND status='ACTIVE' AND version<>?",
+                    (keep,),
+                )
+            con.commit()
 
     def active(self, family: str="decision") -> str:
-        row=self.db.one("SELECT version FROM model_versions WHERE family=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",(family,))
+        if family == "decision":
+            self.ensure()
+        row = self.db.one(
+            "SELECT version FROM model_versions WHERE family=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",
+            (family,),
+        )
         return row["version"] if row else "baseline-v1"
 
     def parameters(self, version: str | None = None, family: str = "decision") -> dict:
@@ -74,8 +105,23 @@ class ModelRegistry:
             )
             return False
         with self.db.connect() as con:
-            con.execute("UPDATE model_versions SET status='RETIRED' WHERE family=? AND status='ACTIVE'",(row["family"],))
-            con.execute("UPDATE model_versions SET status='ACTIVE' WHERE version=?",(version,))
+            con.execute("BEGIN IMMEDIATE")
+            current = con.execute(
+                "SELECT version FROM model_versions WHERE family=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",
+                (row["family"],),
+            ).fetchone()
+            if current and current["version"] == version:
+                con.rollback()
+                return True
+            con.execute(
+                "UPDATE model_versions SET status='RETIRED' WHERE family=? AND status='ACTIVE'",
+                (row["family"],),
+            )
+            con.execute(
+                "UPDATE model_versions SET status='ACTIVE' WHERE version=? AND status='CANDIDATE'",
+                (version,),
+            )
+            con.commit()
         self.db.learning_event("MODEL_PROMOTED",version,metrics)
         return True
 
@@ -84,8 +130,22 @@ class ModelRegistry:
         parent=row.get("parent_version") if row else None
         if not parent:
             return self.active(family)
+        parent_row = self.db.one(
+            "SELECT version FROM model_versions WHERE version=? AND family=?",
+            (parent, family),
+        )
+        if not parent_row:
+            return self.active(family)
         with self.db.connect() as con:
-            con.execute("UPDATE model_versions SET status='RETIRED' WHERE family=? AND status='ACTIVE'",(family,))
-            con.execute("UPDATE model_versions SET status='ACTIVE' WHERE version=?",(parent,))
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                "UPDATE model_versions SET status='RETIRED' WHERE family=? AND status='ACTIVE'",
+                (family,),
+            )
+            con.execute(
+                "UPDATE model_versions SET status='ACTIVE' WHERE version=? AND family=?",
+                (parent, family),
+            )
+            con.commit()
         self.db.learning_event("MODEL_ROLLBACK",parent,{"family":family})
         return parent
