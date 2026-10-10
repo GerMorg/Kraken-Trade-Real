@@ -250,7 +250,6 @@ class DecisionEngine:
         model_parameters: dict[str, Any] | None = None,
         min_cost_eur: D | None = None,
     ) -> Decision | None:
-        scale = self._confidence_scale(model_parameters)
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
 
