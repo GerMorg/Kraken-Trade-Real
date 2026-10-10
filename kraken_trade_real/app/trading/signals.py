@@ -41,6 +41,11 @@ class SignalEngine:
                 return D(default)
 
         trend_weight = weight("signal_weight_trend", "18")
+        volatility_cost_multiplier = weight("signal_cost_volatility_multiplier", "1.5")
+        spread_quality_scale = weight("signal_quality_spread_scale_bps", "200")
+        liquidity_quality_scale = weight("signal_quality_liquidity_scale", "1000")
+        confidence_return_scale = weight("signal_confidence_return_scale_bps", "45")
+        confidence_volatility_scale = weight("signal_confidence_volatility_scale", "120")
         return_5_weight = weight("signal_weight_return_5", "4")
         return_15_weight = weight("signal_weight_return_15", "5")
         return_60_weight = weight("signal_weight_return_60", "6")
@@ -56,8 +61,8 @@ class SignalEngine:
         liquidity = max(D("1"), features.get("liquidity", D("1")))
         spread = features.get("spread_bps", D("999"))
         quality = (
-            max(D("0"), D("1") - spread / D("200"))
-            * min(D("1"), liquidity / D("1000"))
+            max(D("0"), D("1") - spread / spread_quality_scale)
+            * min(D("1"), liquidity / liquidity_quality_scale)
         )
 
         directional_raw = (
@@ -74,7 +79,7 @@ class SignalEngine:
 
         cost = (
             spread
-            + vol * D("1.5")
+            + vol * volatility_cost_multiplier
             + self._fee_cost_bps()
         )
         long_conf = max(
@@ -82,8 +87,8 @@ class SignalEngine:
             min(
                 D("1"),
                 D("0.5")
-                + long_raw / D("45")
-                - vol / D("120"),
+                + long_raw / confidence_return_scale
+                - vol / confidence_volatility_scale,
             ),
         )
         short_conf = max(
@@ -91,8 +96,8 @@ class SignalEngine:
             min(
                 D("1"),
                 D("0.5")
-                + short_raw / D("45")
-                - vol / D("120"),
+                + short_raw / confidence_return_scale
+                - vol / confidence_volatility_scale,
             ),
         )
         shared_features = dict(features)
@@ -108,6 +113,12 @@ class SignalEngine:
                 "signal_weight_return_240": return_240_weight,
                 "signal_weight_news": news_weight,
                 "signal_weight_gemini": gemini_weight,
+                "signal_cost_volatility_multiplier": volatility_cost_multiplier,
+                "signal_quality_spread_scale_bps": spread_quality_scale,
+                "signal_quality_liquidity_scale": liquidity_quality_scale,
+                "signal_confidence_return_scale_bps": confidence_return_scale,
+                "signal_confidence_volatility_scale": confidence_volatility_scale,
+                "signal_fee_cost_bps": self._fee_cost_bps(),
             }
         )
         return (

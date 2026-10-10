@@ -33,6 +33,11 @@ def _row(bucket, direction, *, net_return, trend, confidence=0.9, available=True
 def _params():
     return {
         **DEFAULT_WEIGHTS,
+        "signal_cost_volatility_multiplier": 1.5,
+        "signal_quality_spread_scale_bps": 200.0,
+        "signal_quality_liquidity_scale": 1000.0,
+        "signal_confidence_return_scale_bps": 45.0,
+        "signal_confidence_volatility_scale": 120.0,
         "strategy_min_edge_bps": 5.0,
         "strategy_min_confidence": 0.35,
         "strategy_adaptive_edge_floor_bps": 3.0,

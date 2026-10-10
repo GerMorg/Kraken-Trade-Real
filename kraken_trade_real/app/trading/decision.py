@@ -394,6 +394,11 @@ class DecisionEngine:
                     "signal_weight_return_5", "signal_weight_return_15",
                     "signal_weight_return_60", "signal_weight_return_240",
                     "signal_weight_news", "signal_weight_gemini",
+                    "signal_cost_volatility_multiplier",
+                    "signal_quality_spread_scale_bps",
+                    "signal_quality_liquidity_scale",
+                    "signal_confidence_return_scale_bps",
+                    "signal_confidence_volatility_scale",
                 }
             },
             "legacy_confidence_scale_ignored": (

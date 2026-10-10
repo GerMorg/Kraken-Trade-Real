@@ -16,6 +16,13 @@ WEIGHT_KEYS = (
     "signal_weight_news",
     "signal_weight_gemini",
 )
+SHAPE_KEYS = (
+    "signal_cost_volatility_multiplier",
+    "signal_quality_spread_scale_bps",
+    "signal_quality_liquidity_scale",
+    "signal_confidence_return_scale_bps",
+    "signal_confidence_volatility_scale",
+)
 POLICY_KEYS = (
     "strategy_min_edge_bps",
     "strategy_min_confidence",
@@ -31,6 +38,13 @@ DEFAULT_WEIGHTS = {
     "signal_weight_return_240": 3.0,
     "signal_weight_news": 1.0,
     "signal_weight_gemini": 1.0,
+}
+DEFAULT_SHAPE = {
+    "signal_cost_volatility_multiplier": 1.5,
+    "signal_quality_spread_scale_bps": 200.0,
+    "signal_quality_liquidity_scale": 1000.0,
+    "signal_confidence_return_scale_bps": 45.0,
+    "signal_confidence_volatility_scale": 120.0,
 }
 
 
@@ -71,20 +85,35 @@ class StrategyPolicyOptimizer:
             ),
         }
         values.update(DEFAULT_WEIGHTS)
+        values.update(DEFAULT_SHAPE)
         return values
 
     @staticmethod
     def normalize_profile(
         profile: dict[str, Any] | None, defaults: dict[str, float]
     ) -> dict[str, float]:
-        source = dict(defaults)
+        safe_defaults = {**DEFAULT_WEIGHTS, **DEFAULT_SHAPE}
+        safe_defaults.update(defaults)
+        source = dict(safe_defaults)
         source.update(profile or {})
         normalized: dict[str, float] = {}
         for key in WEIGHT_KEYS:
-            base = _number(defaults.get(key), DEFAULT_WEIGHTS[key])
+            base = _number(safe_defaults.get(key), DEFAULT_WEIGHTS[key])
             low, high = ((0.0, 1.5) if key in {"signal_weight_news", "signal_weight_gemini"}
                          else (max(0.1, base * 0.5), base * 1.5))
             normalized[key] = min(high, max(low, _number(source.get(key), base)))
+        shape_bounds = {
+            "signal_cost_volatility_multiplier": (0.25, 5.0),
+            "signal_quality_spread_scale_bps": (75.0, 500.0),
+            "signal_quality_liquidity_scale": (250.0, 10000.0),
+            "signal_confidence_return_scale_bps": (20.0, 150.0),
+            "signal_confidence_volatility_scale": (50.0, 300.0),
+        }
+        for key, (low, high) in shape_bounds.items():
+            base = _number(safe_defaults.get(key), DEFAULT_SHAPE[key])
+            normalized[key] = min(
+                high, max(low, _number(source.get(key), base))
+            )
         normalized["strategy_min_edge_bps"] = min(
             100.0, max(5.0, _number(source.get("strategy_min_edge_bps"), 25.0))
         )
@@ -132,7 +161,7 @@ class StrategyPolicyOptimizer:
     @classmethod
     def _model_values(
         cls, row: dict[str, Any], profile: dict[str, float]
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         features = cls._features(row)
         direction = str(row.get("direction") or "").upper()
         direction_sign = 1.0 if direction == "LONG" else -1.0 if direction == "SHORT" else 0.0
@@ -151,12 +180,34 @@ class StrategyPolicyOptimizer:
         spread = max(0.0, features.get("spread_bps", 999.0))
         liquidity = max(1.0, features.get("liquidity", 1.0))
         volatility = max(1.0, features.get("volatility", 999.0))
-        quality = max(0.0, 1.0 - spread / 200.0) * min(1.0, liquidity / 1000.0)
+        spread_scale = profile["signal_quality_spread_scale_bps"]
+        liquidity_scale = profile["signal_quality_liquidity_scale"]
+        volatility_cost_multiplier = profile["signal_cost_volatility_multiplier"]
+        quality = (
+            max(0.0, 1.0 - spread / spread_scale)
+            * min(1.0, liquidity / liquidity_scale)
+        )
         expected_return = max(0.0, raw) * quality
-        cost = max(0.0, _number(row.get("expected_cost_bps")))
+        fixed_fee = features.get("signal_fee_cost_bps")
+        if fixed_fee <= 0:
+            fixed_fee = max(
+                0.0,
+                _number(row.get("expected_cost_bps"))
+                - spread - volatility * DEFAULT_SHAPE["signal_cost_volatility_multiplier"]
+                - features.get("margin_financing_cost_bps", 0.0),
+            )
+        financing = max(0.0, features.get("margin_financing_cost_bps", 0.0))
+        cost = max(
+            0.0,
+            spread + volatility * volatility_cost_multiplier + fixed_fee + financing,
+        )
         edge = expected_return - cost
-        confidence = min(1.0, max(0.0, 0.5 + raw / 45.0 - volatility / 120.0))
-        return expected_return, edge, confidence
+        confidence = min(1.0, max(
+            0.0,
+            0.5 + raw / profile["signal_confidence_return_scale_bps"]
+            - volatility / profile["signal_confidence_volatility_scale"],
+        ))
+        return expected_return, edge, confidence, cost
 
     @classmethod
     def score(
@@ -168,7 +219,7 @@ class StrategyPolicyOptimizer:
             for row in group:
                 if not bool(int(_number(row.get("direction_available"), 1))):
                     continue
-                expected_return, edge, confidence = cls._model_values(row, profile)
+                expected_return, edge, confidence, expected_cost = cls._model_values(row, profile)
                 standard = (
                     confidence >= profile["strategy_min_confidence"]
                     and edge >= profile["strategy_min_edge_bps"]
@@ -181,8 +232,7 @@ class StrategyPolicyOptimizer:
                         profile["strategy_min_edge_bps"],
                     )
                     and expected_return
-                    >= max(0.0, _number(row.get("expected_cost_bps")))
-                    * profile["strategy_adaptive_cost_ratio"]
+                    >= expected_cost * profile["strategy_adaptive_cost_ratio"]
                 )
                 if standard or adaptive:
                     eligible.append((edge, confidence, row))
@@ -230,7 +280,7 @@ class StrategyPolicyOptimizer:
             step, low, high = 0.10, 1.0, 1.8
         values = {min(high, max(low, center - step)), min(high, max(low, center)),
                   min(high, max(low, center + step))}
-        values.add(min(high, max(low, defaults.get(key, center))))
+        values.add(min(high, max(low, defaults.get(key, DEFAULT_SHAPE.get(key, center)))))
         return sorted(values)
 
     def fit(
@@ -258,7 +308,7 @@ class StrategyPolicyOptimizer:
             self.MIN_TRAIN_TRADES, int(math.ceil(len(train) * 0.05))
         )
         profile = dict(baseline)
-        coordinate_keys = (*WEIGHT_KEYS, *POLICY_KEYS)
+        coordinate_keys = (*WEIGHT_KEYS, *SHAPE_KEYS, *POLICY_KEYS)
         for key in coordinate_keys:
             best_profile = dict(profile)
             best_score = self.score(train, profile)
