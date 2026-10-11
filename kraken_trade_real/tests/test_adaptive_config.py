@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from types import SimpleNamespace
 from decimal import Decimal
 
@@ -430,3 +431,43 @@ def test_adaptive_config_restores_safe_tactical_volatility_band_when_registry_is
     assert config.tactical_min_volatility_bps == 12.0
     assert config.tactical_max_volatility_bps == 55.0
 
+
+def test_adaptive_config_restores_defaults_for_malformed_or_nonfinite_policy_values():
+    class CorruptRegistry:
+        def active(self, family="decision"):
+            return f"corrupt-{family}"
+
+        def parameters(self, version=None, family="decision"):
+            if family == "strategy_core":
+                return {
+                    "strategy_min_edge_bps": "not-a-number",
+                    "strategy_min_confidence": float("nan"),
+                    "strategy_adaptive_cost_ratio": float("inf"),
+                }
+            if family == "strategy_tactical":
+                return {
+                    "tactical_min_momentum_bps": float("inf"),
+                    "tactical_min_expected_move_bps": "broken",
+                    "tactical_max_spread_bps": float("-inf"),
+                }
+            return {}
+
+    config = AdaptiveConfig(SimpleNamespace(), CorruptRegistry())
+
+    assert config.strategy_min_edge_bps == CORE_DEFAULTS["strategy_min_edge_bps"]
+    assert config.strategy_min_confidence == CORE_DEFAULTS["strategy_min_confidence"]
+    assert config.strategy_adaptive_cost_ratio == CORE_DEFAULTS["strategy_adaptive_cost_ratio"]
+    assert config.tactical_min_momentum_bps == 40.0
+    assert config.tactical_min_expected_move_bps == 280.0
+    assert config.tactical_max_spread_bps == 25.0
+    assert all(
+        math.isfinite(float(config.as_dict()[key]))
+        for key in (
+            "strategy_min_edge_bps",
+            "strategy_min_confidence",
+            "strategy_adaptive_cost_ratio",
+            "tactical_min_momentum_bps",
+            "tactical_min_expected_move_bps",
+            "tactical_max_spread_bps",
+        )
+    )

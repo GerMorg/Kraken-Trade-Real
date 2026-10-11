@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.64
+
+- Fall back to validated per-parameter defaults when learned model records contain malformed, non-numeric or non-finite values.
+- Prevent corrupted active policy data from leaking NaN/Infinity or strings into live trading arithmetic; keep cross-parameter safety relationships enforced.
+- Add regression coverage for malformed Core and Tactical registry values.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.64.
+
 ## 0.1.63
 
 - Add structured, credential-free context to deterministic exchange order rejections: instrument/base/quote, side/direction, order type, quantity, price/notional estimate, leverage/margin/reduce-only, exchange minimums, and linked decision rationale where available.
