@@ -68,12 +68,14 @@ class MarketScanner:
             graph.setdefault(base, []).append((quote, snap.price))
             graph.setdefault(quote, []).append((base, D("1") / snap.price))
 
+        rate_cache: dict[str, D | None] = {"EUR": D("1")}
+
         def to_eur_rate(asset: str) -> D | None:
             source = canonical_asset(asset)
             if not source:
                 return None
-            if source == "EUR":
-                return D("1")
+            if source in rate_cache:
+                return rate_cache[source]
             # Breadth-first traversal prefers the shortest available conversion.
             # A non-fiat quote may convert directly into a supported currency,
             # but intermediate hops are restricted to currencies/stablecoins.
@@ -90,9 +92,12 @@ class MarketScanner:
                         continue
                     next_rate = rate * multiplier
                     if neighbor == "EUR":
-                        return next_rate if next_rate > 0 else None
+                        result = next_rate if next_rate > 0 else None
+                        rate_cache[source] = result
+                        return result
                     visited.add(neighbor)
                     queue.append((neighbor, next_rate))
+            rate_cache[source] = None
             return None
 
         normalized = 0
