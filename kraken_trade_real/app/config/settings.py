@@ -16,6 +16,8 @@ APP_CONTROLLED_MODE_KEYS = {
 }
 
 LEARNED_OPTION_KEYS = {
+    "market_min_liquidity_eur",
+    "market_max_spread_bps",
     "strategy_min_edge_bps",
     "strategy_min_confidence",
     "strategy_adaptive_edge_floor_bps",
