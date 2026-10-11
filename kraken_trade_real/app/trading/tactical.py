@@ -33,6 +33,7 @@ class TacticalSignal:
     imbalance: D
     confidence: D
     reason: str
+    policy_snapshot: dict[str, Any] = field(default_factory=dict)
 
     @property
     def net_edge_bps(self) -> D:
@@ -570,6 +571,9 @@ class TacticalTrader:
     ) -> TacticalSignal | None:
         if state is None:
             return self._signal_reject(instrument.symbol, "NO_STREAM_DATA")
+        # All learnable entry filters are captured together before evaluating this
+        # signal, then the same values are attached to the resulting trade signal.
+        policy_snapshot = self._entry_policy_snapshot()
         bid = D(str(state.get("bid", "0")))
         ask = D(str(state.get("ask", "0")))
         price = D(str(state.get("price", "0")))
@@ -577,7 +581,7 @@ class TacticalTrader:
         timestamp = float(state.get("timestamp", 0) or 0)
         if min(bid, ask, price) <= 0:
             return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
-        max_spread = D(str(getattr(self.config, "tactical_max_spread_bps", 25)))
+        max_spread = D(str(policy_snapshot.get("tactical_max_spread_bps", 25)))
         max_age = D(str(getattr(self.config, "tactical_market_max_age_seconds", 5)))
         if spread > max_spread or now - timestamp > float(max_age):
             return self._signal_reject(instrument.symbol, "STALE_OR_WIDE_MARKET")
@@ -593,9 +597,9 @@ class TacticalTrader:
         momentum_60 = self._return_since(sampled, 60.0)
         momentum_180 = self._return_since(sampled, 180.0)
         volatility = self._realized_volatility(tuple(price for _, price in sampled))
-        if volatility < D(str(getattr(self.config, "tactical_min_volatility_bps", 12))):
+        if volatility < D(str(policy_snapshot.get("tactical_min_volatility_bps", 12))):
             return self._signal_reject(instrument.symbol, "LOW_VOLATILITY")
-        if volatility > D(str(getattr(self.config, "tactical_max_volatility_bps", 55))):
+        if volatility > D(str(policy_snapshot.get("tactical_max_volatility_bps", 55))):
             return self._signal_reject(instrument.symbol, "HIGH_VOLATILITY")
 
         recent = [price for ts, price in sampled if now - ts <= 60.0]
@@ -611,12 +615,12 @@ class TacticalTrader:
             float(getattr(self.config, "tactical_trade_lookback_seconds", 900)),
         )
         volume_ratio = D(str(metrics.get("volume_ratio", "0")))
-        if volume_ratio < D(str(getattr(self.config, "tactical_min_volume_ratio", 2))):
+        if volume_ratio < D(str(policy_snapshot.get("tactical_min_volume_ratio", 2))):
             return self._signal_reject(instrument.symbol, "LOW_VOLUME_EXPANSION")
         imbalance = self._book_imbalance(state.get("depths_bid", ()), state.get("depths_ask", ()))
-        min_imbalance = D(str(getattr(self.config, "tactical_min_imbalance", 0.10)))
-        min_momentum = D(str(getattr(self.config, "tactical_min_momentum_bps", 40)))
-        min_breakout = D(str(getattr(self.config, "tactical_min_breakout_bps", 25)))
+        min_imbalance = D(str(policy_snapshot.get("tactical_min_imbalance", 0.10)))
+        min_momentum = D(str(policy_snapshot.get("tactical_min_momentum_bps", 40)))
+        min_breakout = D(str(policy_snapshot.get("tactical_min_breakout_bps", 25)))
 
         context = self._news_effects.get(instrument.symbol, D("0")) + self._gemini_bps
         context_block = D(str(getattr(self.config, "tactical_context_block_bps", 80)))
@@ -699,16 +703,16 @@ class TacticalTrader:
             min(D("1"), D("0.50") + score / D("400")),
         )
         adaptive_enabled = bool(
-            getattr(self.config, "tactical_adaptive_entry_enabled", True)
+            policy_snapshot.get("tactical_adaptive_entry_enabled", True)
         )
         adaptive_min_move = D(str(
-            getattr(self.config, "tactical_adaptive_min_expected_move_bps", 230.0)
+            policy_snapshot.get("tactical_adaptive_min_expected_move_bps", 230.0)
         ))
         adaptive_min_confidence = D(str(
-            getattr(self.config, "tactical_adaptive_min_confidence", 0.75)
+            policy_snapshot.get("tactical_adaptive_min_confidence", 0.75)
         ))
         adaptive_min_edge = D(str(
-            getattr(self.config, "tactical_adaptive_min_net_edge_bps", 15.0)
+            policy_snapshot.get("tactical_adaptive_min_net_edge_bps", 15.0)
         ))
         adaptive_ok = self._adaptive_entry_allowed(
             expected_move,
@@ -720,7 +724,7 @@ class TacticalTrader:
             adaptive_min_edge,
         )
         configured_min_move = D(str(
-            getattr(self.config, "tactical_min_expected_move_bps", 280)
+            policy_snapshot.get("tactical_min_expected_move_bps", 280)
         ))
         min_move = min(configured_min_move, adaptive_min_move) if adaptive_ok else configured_min_move
         if expected_move < min_move or expected_move - cost < (
@@ -745,6 +749,7 @@ class TacticalTrader:
             signed_imbalance,
             confidence,
             reason,
+            policy_snapshot=policy_snapshot,
         )
 
     def _enter(self, signal: TacticalSignal, now: float) -> None:
@@ -856,7 +861,7 @@ class TacticalTrader:
                 "tactical_direction": signal.direction.value,
                 # Persist these with the decision before order submission so a
                 # post-restart reconciliation can restore true entry-time context.
-                "tactical_entry_policy": self._entry_policy_snapshot(),
+                "tactical_entry_policy": dict(signal.policy_snapshot or self._entry_policy_snapshot()),
                 "tactical_entry_context": self._entry_context_snapshot(signal),
             },
             strategy_version=self.STRATEGY_VERSION,
