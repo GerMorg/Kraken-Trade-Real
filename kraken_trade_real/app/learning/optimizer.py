@@ -281,26 +281,30 @@ class AdaptiveParameterOptimizer:
     }
 
     def optimize_core_entry_policy(self, now: float | None = None) -> dict[str, Any]:
-        """Conservatively adapt Normal entry gates from fully closed Spot/Margin outcomes.
+        """Adapt Normal entry gates only from fully verified cash-Spot net returns.
 
-        The label is directional gross return in basis points minus the cost
-        estimate stored with the opening decision. Exchange-reported fee amounts
-        and ledger net estimates are deliberately not read: fee currency is still
-        unverified. The controller only tightens after poor results or restores
-        earlier, tighter settings toward the documented defaults after a strong
-        subsequent window. It never relaxes below those defaults or changes risk caps.
+        The outcome ledger marks a decision verified only if all FIFO legs have
+        ledger-attributed quote-currency fees (or explicitly reported zero fees),
+        consistent entry/exit fills, no remaining inventory, and no Margin or
+        leverage financing that would be absent from the PnL. Estimated-only and
+        Spot-Margin outcomes are deliberately excluded from this controller.
+        The policy is bounded and never changes hard risk caps.
         """
         now = time.time() if now is None else float(now)
         rows = self.db.query(
             """SELECT o.opening_decision_id,o.symbol,o.direction,o.last_closed_at,
-                      CAST(o.gross_return_bps AS REAL) AS gross_return_bps,
-                      CAST(d.expected_cost_bps AS REAL) AS expected_cost_bps
+                      CAST(o.verified_net_return_bps AS REAL) AS verified_net_return_bps,
+                      CAST(o.verified_net_pnl_quote AS REAL) AS verified_net_pnl_quote,
+                      CAST(o.verified_fees_quote AS REAL) AS verified_fees_quote
                FROM core_realized_outcomes AS o
                JOIN decisions AS d ON d.decision_id=o.opening_decision_id
                WHERE o.last_closed_at >= ?
                  AND lower(d.strategy_version) NOT LIKE '%tactical%'
-                 AND CAST(o.gross_return_bps AS REAL) IS NOT NULL
-                 AND CAST(d.expected_cost_bps AS REAL) > 0
+                 AND o.net_verified=1
+                 AND o.fee_status='LEDGER_VERIFIED_SPOT_NET'
+                 AND CAST(o.verified_net_return_bps AS REAL) IS NOT NULL
+                 AND CAST(o.verified_net_pnl_quote AS REAL) IS NOT NULL
+                 AND CAST(o.verified_fees_quote AS REAL) >= 0
                  AND NOT EXISTS (
                    SELECT 1 FROM core_inventory_lots AS l
                    WHERE l.opening_decision_id=o.opening_decision_id
@@ -313,10 +317,10 @@ class AdaptiveParameterOptimizer:
         rows.reverse()
         if len(rows) < self.MIN_CORE_OUTCOMES:
             return {
-                "status": "INSUFFICIENT_CLOSED_CORE_OUTCOMES",
+                "status": "INSUFFICIENT_VERIFIED_CLOSED_SPOT_OUTCOMES",
                 "samples": len(rows),
                 "minimum_samples": self.MIN_CORE_OUTCOMES,
-                "data_scope": "APP_MANAGED_SPOT_MARGIN_ONLY",
+                "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
             }
 
         last = self.db.one(
@@ -333,8 +337,11 @@ class AdaptiveParameterOptimizer:
                    JOIN decisions AS d ON d.decision_id=o.opening_decision_id
                    WHERE o.last_closed_at > ?
                      AND lower(d.strategy_version) NOT LIKE '%tactical%'
-                     AND CAST(o.gross_return_bps AS REAL) IS NOT NULL
-                     AND CAST(d.expected_cost_bps AS REAL) > 0
+                     AND o.net_verified=1
+                     AND o.fee_status='LEDGER_VERIFIED_SPOT_NET'
+                     AND CAST(o.verified_net_return_bps AS REAL) IS NOT NULL
+                     AND CAST(o.verified_net_pnl_quote AS REAL) IS NOT NULL
+                     AND CAST(o.verified_fees_quote AS REAL) >= 0
                      AND NOT EXISTS (
                        SELECT 1 FROM core_inventory_lots AS l
                        WHERE l.opening_decision_id=o.opening_decision_id
@@ -355,23 +362,24 @@ class AdaptiveParameterOptimizer:
         clean: list[dict[str, Any]] = []
         for row in rows:
             try:
-                gross = float(row["gross_return_bps"])
-                cost = float(row["expected_cost_bps"])
+                net_return = float(row["verified_net_return_bps"])
+                net_pnl_quote = float(row["verified_net_pnl_quote"])
+                fees_quote = float(row["verified_fees_quote"])
                 closed_at = float(row["last_closed_at"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if not all(math.isfinite(value) for value in (gross, cost, closed_at)):
+            if not all(math.isfinite(value) for value in (net_return, net_pnl_quote, fees_quote, closed_at)):
                 continue
-            if cost < 0 or closed_at <= 0:
+            if fees_quote < 0 or closed_at <= 0:
                 continue
             clean.append({
                 "opening_decision_id": str(row["opening_decision_id"]),
                 "symbol": str(row["symbol"]),
                 "direction": str(row["direction"]),
                 "closed_at": closed_at,
-                "gross_return_bps": gross,
-                "expected_cost_bps": cost,
-                "after_expected_cost_bps": gross - cost,
+                "verified_net_return_bps": net_return,
+                "verified_net_pnl_quote": net_pnl_quote,
+                "verified_fees_quote": fees_quote,
             })
         if len(clean) < self.MIN_CORE_OUTCOMES:
             return {
@@ -391,16 +399,12 @@ class AdaptiveParameterOptimizer:
             }
 
         def stats(items: list[dict[str, Any]]) -> dict[str, float]:
-            gross = [float(item["gross_return_bps"]) for item in items]
-            cost = [float(item["expected_cost_bps"]) for item in items]
-            adjusted = [float(item["after_expected_cost_bps"]) for item in items]
+            net_returns = [float(item["verified_net_return_bps"]) for item in items]
             return {
                 "samples": float(len(items)),
-                "mean_gross_return_bps": sum(gross) / len(gross),
-                "mean_decision_cost_estimate_bps": sum(cost) / len(cost),
-                "mean_after_expected_cost_bps": sum(adjusted) / len(adjusted),
-                "positive_after_expected_cost_rate": (
-                    sum(1 for value in adjusted if value > 0) / len(adjusted)
+                "mean_verified_net_return_bps": sum(net_returns) / len(net_returns),
+                "positive_verified_net_rate": (
+                    sum(1 for value in net_returns if value > 0) / len(net_returns)
                 ),
             }
 
@@ -437,11 +441,11 @@ class AdaptiveParameterOptimizer:
         action = "NO_ADJUSTMENT"
         reason = "OUTCOMES_WITHIN_POLICY_GUARD_BANDS"
         if (
-            after["mean_after_expected_cost_bps"] <= -10.0
-            and after["positive_after_expected_cost_rate"] < 0.45
+            after["mean_verified_net_return_bps"] <= -10.0
+            and after["positive_verified_net_rate"] < 0.45
         ):
             action = "TIGHTEN"
-            reason = "NEGATIVE_RECENT_CORE_RETURN_AFTER_DECISION_COST_ESTIMATE"
+            reason = "NEGATIVE_RECENT_VERIFIED_NET_CORE_RETURN"
             candidate["strategy_min_edge_bps"] = min(
                 80.0, max(current["strategy_min_edge_bps"] + 2.0,
                            current["strategy_min_edge_bps"] * 1.08)
@@ -462,13 +466,13 @@ class AdaptiveParameterOptimizer:
                 1.50, current["strategy_adaptive_cost_ratio"] + 0.05
             )
         elif (
-            after["mean_after_expected_cost_bps"] >= 15.0
-            and after["positive_after_expected_cost_rate"] >= 0.60
+            after["mean_verified_net_return_bps"] >= 15.0
+            and after["positive_verified_net_rate"] >= 0.60
             and after["mean_after_expected_cost_bps"]
-                >= before["mean_after_expected_cost_bps"] + 5.0
+                >= before["mean_verified_net_return_bps"] + 5.0
         ):
             action = "RESTORE_TOWARD_DEFAULTS"
-            reason = "STRONG_IMPROVING_CORE_RETURN_RESTORE_TOWARD_BASELINE"
+            reason = "STRONG_IMPROVING_VERIFIED_NET_CORE_RETURN_RESTORE_TOWARD_BASELINE"
             # Positive observed outcomes only restore previous extra strictness;
             # no setting can become looser than the documented baseline defaults.
             candidate["strategy_min_edge_bps"] = max(
@@ -515,14 +519,15 @@ class AdaptiveParameterOptimizer:
             "samples": len(clean),
             "previous_samples": int(before["samples"]),
             "recent_samples": int(after["samples"]),
-            "previous_mean_after_expected_cost_bps": before["mean_after_expected_cost_bps"],
-            "recent_mean_after_expected_cost_bps": after["mean_after_expected_cost_bps"],
-            "previous_positive_after_expected_cost_rate": before["positive_after_expected_cost_rate"],
-            "recent_positive_after_expected_cost_rate": after["positive_after_expected_cost_rate"],
-            "data_basis": "gross_return_bps_minus_decision_expected_cost_bps",
+            "previous_mean_verified_net_return_bps": before["mean_verified_net_return_bps"],
+            "recent_mean_verified_net_return_bps": after["mean_verified_net_return_bps"],
+            "previous_positive_verified_net_rate": before["positive_verified_net_rate"],
+            "recent_positive_verified_net_rate": after["positive_verified_net_rate"],
+            "verified_fee_verified_samples": len(clean),
+            "data_basis": "ledger_verified_non_margin_spot_net_return_bps",
             "exchange_fee_estimates_used": False,
-            "verified_net_pnl_used": False,
-            "data_scope": "APP_MANAGED_SPOT_MARGIN_ONLY",
+            "verified_net_pnl_used": True,
+            "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
             "changed_parameters": changed,
         }
         if not changed:
@@ -534,6 +539,7 @@ class AdaptiveParameterOptimizer:
                 "recent": after,
                 "action": action,
                 "data_basis": metrics["data_basis"],
+                "data_scope": metrics["data_scope"],
             }
             mark_evaluated()
             self.db.learning_event("CORE_ENTRY_POLICY_EVALUATED", active_version, result)
@@ -569,8 +575,9 @@ class AdaptiveParameterOptimizer:
             "active_version": self.registry.active("strategy_core"),
             "promoted": promoted,
             "data_basis": metrics["data_basis"],
+            "data_scope": metrics["data_scope"],
             "exchange_fee_estimates_used": False,
-            "verified_net_pnl_used": False,
+            "verified_net_pnl_used": True,
         }
         mark_evaluated()
         self.db.learning_event("CORE_ENTRY_POLICY_EVALUATED", version, result)

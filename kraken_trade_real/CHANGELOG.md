@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.59
+
+- Restrict Normal entry-policy training and promotion to fully closed non-margin Spot outcomes with verified quote-currency or explicitly zero fees.
+- Train from the realized, fee-verified net return stored by the FIFO fill ledger rather than gross return minus an estimated cost field.
+- Exclude estimated-only fills, unverified fee currencies, incomplete FIFO episodes, remaining inventory and Tactical trades from this learning controller.
+- Require promotion metrics to attest to verified-net labels and the non-margin Spot data scope; stale estimated-return candidates are not promotable under the new contract.
+- Add regression tests proving verified net outcomes can train the policy and estimate-only outcomes cannot.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.59.
+
 ## 0.1.58
 
 - Read Kraken Spot BalanceEx balances and calculate spendable funds after open-order holds, separate from total portfolio valuation.
