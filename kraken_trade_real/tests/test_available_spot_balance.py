@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from types import SimpleNamespace
 
 from app.domain.models import MarketSnapshot, OrderIntent
 from app.domain.states import Direction, OrderState
 from app.monitoring import AuditLogger
 from app.execution import ExecutionPolicy, ExecutionReconciler
-from app.persistence.db import Database
 from app.portfolio import PortfolioReconciler
 from app.trading.authority import TradingAuthority
 
