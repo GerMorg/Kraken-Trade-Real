@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.74
+
+- Fix repeated Spot fill-history sync failures: Kraken TradesHistory uses `ofs` pagination and does not support the previously sent `with_cursor`, `cursor` or `limit` parameters.
+- Persist and resume an offset-based sync session, advance by the actual number of returned trades, and complete safely on the final page.
+- Add regressions asserting only documented TradesHistory pagination arguments are sent and that multi-page fill attribution resumes across cycles.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.74.
+
 ## 0.1.73
 
 - Move Normal market minimum-liquidity and maximum-spread thresholds into the versioned adaptive policy, removing both from the Home Assistant options/schema.
