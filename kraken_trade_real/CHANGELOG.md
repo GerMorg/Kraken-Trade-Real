@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.62
+
+- Centralize validated numeric bounds for learned Core/Normal and Tactical strategy parameters so runtime clamping and promotion validation share the same source.
+- Validate complete candidate policy combinations before activation, including Core adaptive-threshold nesting, Core profit-exit ordering, Tactical volatility-band ordering, and Tactical stop/target ordering.
+- Reject non-finite/out-of-range values, fractional Tactical maximum-hold values, and attempted changes to non-learnable Tactical position ceilings or adaptive-entry mode.
+- Emit an auditable policy-promotion rejection reason without changing the active model; immutable account/exposure/daily-loss/leverage controls remain outside the optimizer.
+- Add regression tests for bounds completeness, invalid cross-parameter combinations, and immutable Tactical safety/operation settings.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.62.
+
 ## 0.1.61
 
 - Capture the same actionable Tactical signal direction and net edge with each observed price-path point, enabling faithful replay of reversal exits.
