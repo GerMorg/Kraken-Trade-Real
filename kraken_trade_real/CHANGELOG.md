@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.69
+
+- Add Tactical context conflict tolerance to the same versioned policy registry as the other learned entry filters.
+- Tighten the allowed context conflict by 10% after sufficiently poor LIVE outcomes; relax it by only 2% after positive, improving results, always within 10–200 bps.
+- Use the context threshold from the same entry-time policy snapshot that is persisted with the trade, preventing mismatch between execution and learning attribution.
+- Remove the learnable threshold from HA options and ignore legacy saved values.
+- Add tests for policy overlay, promotion bounds, stale option isolation and entry-time capture.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.69.
+
 ## 0.1.68
 
 - Make Core/Normal adaptive-edge evaluation and Tactical adaptive-entry evaluation application-owned, always-enabled modes instead of manually changeable HA options.

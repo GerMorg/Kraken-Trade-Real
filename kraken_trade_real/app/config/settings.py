@@ -38,6 +38,7 @@ LEARNED_OPTION_KEYS = {
     "tactical_min_imbalance",
     "tactical_adaptive_min_confidence",
     "tactical_adaptive_min_net_edge_bps",
+    "tactical_context_block_bps",
     "tactical_portfolio_pct",
     "tactical_stop_loss_pct",
     "tactical_take_profit_pct",

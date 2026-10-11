@@ -49,6 +49,7 @@ class FakeRegistry:
                 "tactical_min_imbalance": 0.15,
                 "tactical_adaptive_min_confidence": 0.82,
                 "tactical_adaptive_min_net_edge_bps": 20.0,
+                "tactical_context_block_bps": 120.0,
                 "tactical_reversal_exit_bps": 99999.0,
             }
         return {}
@@ -60,6 +61,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
         tactical_min_expected_move_bps=280.0,
         tactical_min_momentum_bps=40.0,
         tactical_portfolio_pct=25.0,
+        tactical_context_block_bps=80.0,
         tactical_stop_loss_pct=1.0,
         tactical_take_profit_pct=2.2,
         tactical_trailing_trigger_bps=100.0,
@@ -81,6 +83,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.tactical_min_imbalance == 0.15
     assert config.tactical_adaptive_min_confidence == 0.82
     assert config.tactical_adaptive_min_net_edge_bps == 20.0
+    assert config.tactical_context_block_bps == 120.0
     # Values loaded from the registry are bounded again by the runtime overlay.
     assert config.tactical_reversal_exit_bps == 500.0
     # Core policy values are supplied by its own versioned model; unrelated settings remain base-config owned.
@@ -161,6 +164,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
         "tactical_min_imbalance": 0.99,
         "tactical_adaptive_min_confidence": 0.01,
         "tactical_adaptive_min_net_edge_bps": 999,
+        "tactical_context_block_bps": 0.1,
         "tactical_reversal_exit_bps": 9999,
     }), encoding="utf-8")
     config = Config.load(str(path))
@@ -181,6 +185,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_min_imbalance == 0.10
     assert config.tactical_adaptive_min_confidence == 0.75
     assert config.tactical_adaptive_min_net_edge_bps == 15.0
+    assert config.tactical_context_block_bps == 80.0
     assert config.tactical_reversal_exit_bps == 120.0
 
 
@@ -212,10 +217,13 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
     assert result["changed_parameters"]["tactical_min_imbalance"] > 0.10
     assert result["changed_parameters"]["tactical_adaptive_min_confidence"] > 0.75
     assert result["changed_parameters"]["tactical_adaptive_min_net_edge_bps"] > 15
+    assert result["changed_parameters"]["tactical_context_block_bps"] < 80
     active = registry.parameters(registry.active("strategy_tactical"), family="strategy_tactical")
     assert active["tactical_min_expected_move_bps"] <= 1200
     assert 1 <= active["tactical_portfolio_pct"] <= 25
     assert active["tactical_min_volatility_bps"] < active["tactical_max_volatility_bps"]
+    assert active["tactical_context_block_bps"] >= 10
+    assert active["tactical_context_block_bps"] <= 200
     repeated = optimizer.optimize_tactical(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_TRADE_DATA"
     assert repeated["new_trades_since_last_evaluation"] == 0

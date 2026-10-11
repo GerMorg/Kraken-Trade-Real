@@ -799,3 +799,21 @@ def test_legacy_tactical_position_does_not_mislabel_close_time_settings_as_entry
     assert context["entry_context_snapshot"] == {}
     assert context["entry_snapshot_source"] == "LEGACY_ENTRY_SNAPSHOT_MISSING"
 
+
+
+def test_tactical_entry_policy_snapshot_owns_context_threshold():
+    trader = TacticalTrader(
+        cfg(tactical_context_block_bps=47.5),
+        DummyDB(),
+        DummyAudit(),
+        None,
+        DummyWS(),
+        None,
+        None,
+        None,
+        None,
+    )
+
+    snapshot = trader._entry_policy_snapshot()
+
+    assert snapshot["tactical_context_block_bps"] == "47.5"
