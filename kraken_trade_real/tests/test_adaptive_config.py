@@ -285,3 +285,22 @@ def test_core_optimizer_tightens_entry_policy_from_closed_gross_outcomes(db):
     repeated = optimizer.optimize_core_entry_policy(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_CORE_OUTCOMES"
     assert repeated["new_closed_outcomes_since_last_evaluation"] == 0
+
+def test_adaptive_config_restores_safe_tactical_volatility_band_when_registry_is_invalid():
+    class InvalidVolatilityRegistry:
+        def active(self, family="decision"):
+            return "invalid-policy"
+
+        def parameters(self, version=None, family="decision"):
+            if family == "strategy_tactical":
+                return {
+                    "tactical_min_volatility_bps": 80.0,
+                    "tactical_max_volatility_bps": 20.0,
+                }
+            return {}
+
+    config = AdaptiveConfig(SimpleNamespace(), InvalidVolatilityRegistry())
+
+    assert config.tactical_min_volatility_bps == 12.0
+    assert config.tactical_max_volatility_bps == 55.0
+
