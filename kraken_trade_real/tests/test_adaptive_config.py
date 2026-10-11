@@ -630,7 +630,8 @@ def test_registry_rejects_tactical_policy_below_cost_floors(db):
         )
         assert registry.promote_adaptive_policy(version) is False
         event = db.one(
-            "SELECT payload_json FROM events WHERE code='ADAPTIVE_POLICY_NOT_PROMOTED' "
+            "SELECT payload_json FROM learning_events "
+            "WHERE event_type='ADAPTIVE_POLICY_NOT_PROMOTED' "
             "ORDER BY created_at DESC LIMIT 1"
         )
         assert event is not None
