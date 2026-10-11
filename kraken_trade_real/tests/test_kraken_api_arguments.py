@@ -26,8 +26,7 @@ def test_spot_private_encodes_boolean_form_values_as_lowercase_and_signs_same_bo
     result = gateway.spot_trades_history({
         "start": 1_800_000_000,
         "end": 1_800_000_100,
-        "limit": 50,
-        "with_cursor": True,
+        "ofs": 100,
         "trades": True,
         "ledgers": True,
         "without_count": False,
@@ -37,7 +36,10 @@ def test_spot_private_encodes_boolean_form_values_as_lowercase_and_signs_same_bo
     assert captured["url"] == "https://api.kraken.com/0/private/TradesHistory"
     assert captured["method"] == "POST"
     encoded = parse_qs(captured["data"])
-    assert encoded["with_cursor"] == ["true"]
+    assert encoded["ofs"] == ["100"]
+    assert "with_cursor" not in encoded
+    assert "limit" not in encoded
+    assert "cursor" not in encoded
     assert encoded["trades"] == ["true"]
     assert encoded["ledgers"] == ["true"]
     assert encoded["without_count"] == ["false"]
