@@ -7,14 +7,29 @@ from typing import Any
 # Tunable policy parameters live in versioned model records, not HA options.
 # Risk caps, credentials, execution switches and operational limits are intentionally
 # excluded: the learner may never relax the immutable safety envelope.
+# Bounds for learnable Core/Normal exit policy. These change exit behaviour,
+# never the immutable daily-loss, drawdown, leverage or exposure risk envelope.
+CORE_EXIT_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
+    "strategy_stop_loss_pct": (0.5, 4.0),
+    "strategy_partial_profit_trigger_pct": (3.0, 25.0),
+    "strategy_partial_profit_fraction_pct": (25.0, 75.0),
+    "strategy_profit_lock_trigger_pct": (5.0, 25.0),
+    "strategy_profit_giveback_pct": (15.0, 60.0),
+    "strategy_profit_lock_floor_pct": (1.0, 12.0),
+}
+
 CORE_DEFAULTS: dict[str, Any] = {
-    # Core entry policy only. Position sizing, stop/profit protection and all
-    # hard risk caps remain governed by separate non-learnable controls.
     "strategy_min_edge_bps": 25.0,
     "strategy_min_confidence": 0.58,
     "strategy_adaptive_edge_floor_bps": 15.0,
     "strategy_adaptive_min_confidence": 0.75,
     "strategy_adaptive_cost_ratio": 1.10,
+    "strategy_stop_loss_pct": 2.0,
+    "strategy_partial_profit_trigger_pct": 10.0,
+    "strategy_partial_profit_fraction_pct": 50.0,
+    "strategy_profit_lock_trigger_pct": 10.0,
+    "strategy_profit_giveback_pct": 35.0,
+    "strategy_profit_lock_floor_pct": 5.0,
 }
 
 LEARNED_TACTICAL_KEYS = {
@@ -97,6 +112,7 @@ class AdaptiveConfig:
             "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
             "strategy_adaptive_min_confidence": (0.75, 0.95),
             "strategy_adaptive_cost_ratio": (1.10, 1.50),
+            **CORE_EXIT_POLICY_BOUNDS,
             "tactical_portfolio_pct": (1.0, 25.0),
             "tactical_min_volume_ratio": (1.0, 8.0),
             "tactical_min_momentum_bps": (10.0, 300.0),
@@ -129,8 +145,16 @@ class AdaptiveConfig:
         merged["strategy_adaptive_cost_ratio"] = max(
             1.10, float(merged.get("strategy_adaptive_cost_ratio", 1.10))
         )
-        # Preserve stop/target ordering even if a corrupt or legacy model record
-        # somehow bypasses candidate promotion.
+        # Preserve policy ordering even if a corrupt model record bypasses promotion.
+        core_stop = float(merged.get("strategy_stop_loss_pct", 2.0))
+        core_partial = float(merged.get("strategy_partial_profit_trigger_pct", 10.0))
+        core_lock = float(merged.get("strategy_profit_lock_trigger_pct", 10.0))
+        core_floor = float(merged.get("strategy_profit_lock_floor_pct", 5.0))
+        if not (core_stop < core_partial <= core_lock and core_floor < core_lock):
+            for key in CORE_EXIT_POLICY_BOUNDS:
+                merged[key] = CORE_DEFAULTS[key]
+
+        # Tactical stop must remain below its profit target.
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
         target = float(merged.get("tactical_take_profit_pct", 2.2))
         if stop >= target:

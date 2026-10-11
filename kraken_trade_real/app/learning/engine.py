@@ -80,6 +80,7 @@ class LearningEngine:
             }
 
         adaptive_core_policy: dict[str, Any] = {"status": "CORE_OPTIMIZER_NOT_CONFIGURED"}
+        adaptive_core_exit_policy: dict[str, Any] = {"status": "CORE_EXIT_OPTIMIZER_NOT_CONFIGURED"}
         adaptive_policy: dict[str, Any] = {"status": "OPTIMIZER_NOT_CONFIGURED"}
         adaptive_exit_policy: dict[str, Any] = {"status": "EXIT_OPTIMIZER_NOT_CONFIGURED"}
         if self.optimizer is not None:
@@ -94,6 +95,18 @@ class LearningEngine:
                     }
                     self.db.learning_event(
                         "CORE_ENTRY_POLICY_FAILED", "strategy_core", adaptive_core_policy
+                    )
+            core_exit_optimizer = getattr(self.optimizer, "optimize_core_exits", None)
+            if callable(core_exit_optimizer):
+                try:
+                    adaptive_core_exit_policy = core_exit_optimizer(now)
+                except Exception as exc:
+                    adaptive_core_exit_policy = {
+                        "status": "CORE_EXIT_OPTIMIZER_FAILED",
+                        "error": type(exc).__name__,
+                    }
+                    self.db.learning_event(
+                        "CORE_EXIT_POLICY_FAILED", "strategy_core", adaptive_core_exit_policy
                     )
             try:
                 adaptive_policy = self.optimizer.optimize_tactical(now)
@@ -131,6 +144,7 @@ class LearningEngine:
                         0, int(interval_seconds - (now - last_validation_at))
                     ),
                     "adaptive_core_policy": adaptive_core_policy,
+                    "adaptive_core_exit_policy": adaptive_core_exit_policy,
                     "adaptive_policy": adaptive_policy,
                     "adaptive_exit_policy": adaptive_exit_policy,
                 }
@@ -164,6 +178,7 @@ class LearningEngine:
                 "minimum_validation_samples": minimum_validation,
                 "status": "INSUFFICIENT_DATA",
                 "adaptive_core_policy": adaptive_core_policy,
+                "adaptive_core_exit_policy": adaptive_core_exit_policy,
                 "adaptive_policy": adaptive_policy,
                 "adaptive_exit_policy": adaptive_exit_policy,
             }
@@ -307,6 +322,7 @@ class LearningEngine:
             "validation_method": "chronological_70_30_holdout",
             "candidate_version": candidate_version, "promoted": promoted,
             "adaptive_core_policy": adaptive_core_policy,
+            "adaptive_core_exit_policy": adaptive_core_exit_policy,
             "adaptive_policy": adaptive_policy,
             "adaptive_exit_policy": adaptive_exit_policy,
         }

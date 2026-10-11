@@ -17,7 +17,15 @@ class FakeRegistry:
 
     def parameters(self, version=None, family="decision"):
         if family == "strategy_core":
-            return {"strategy_min_edge_bps": 33.0}
+            return {
+                "strategy_min_edge_bps": 33.0,
+                "strategy_stop_loss_pct": 2.5,
+                "strategy_partial_profit_trigger_pct": 8.0,
+                "strategy_partial_profit_fraction_pct": 40.0,
+                "strategy_profit_lock_trigger_pct": 12.0,
+                "strategy_profit_giveback_pct": 28.0,
+                "strategy_profit_lock_floor_pct": 4.0,
+            }
         if family == "strategy_tactical":
             return {
                 "tactical_min_expected_move_bps": 350,
@@ -55,6 +63,12 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.tactical_max_hold_seconds == 900
     # Core policy values are supplied by its own versioned model; unrelated settings remain base-config owned.
     assert config.strategy_min_edge_bps == 33.0
+    assert config.strategy_stop_loss_pct == 2.5
+    assert config.strategy_partial_profit_trigger_pct == 8.0
+    assert config.strategy_partial_profit_fraction_pct == 40.0
+    assert config.strategy_profit_lock_trigger_pct == 12.0
+    assert config.strategy_profit_giveback_pct == 28.0
+    assert config.strategy_profit_lock_floor_pct == 4.0
     assert config.as_dict()["strategy_min_edge_bps"] == 33.0
 
 
@@ -171,6 +185,12 @@ def test_legacy_ha_options_cannot_override_learned_core_parameters(tmp_path):
         "strategy_adaptive_edge_floor_bps": 24.0,
         "strategy_adaptive_min_confidence": 0.94,
         "strategy_adaptive_cost_ratio": 1.49,
+        "strategy_stop_loss_pct": 3.9,
+        "strategy_partial_profit_trigger_pct": 20.0,
+        "strategy_partial_profit_fraction_pct": 70.0,
+        "strategy_profit_lock_trigger_pct": 22.0,
+        "strategy_profit_giveback_pct": 55.0,
+        "strategy_profit_lock_floor_pct": 11.0,
     }), encoding="utf-8")
     config = Config.load(str(path))
     assert config.strategy_min_edge_bps == 25.0
@@ -178,6 +198,12 @@ def test_legacy_ha_options_cannot_override_learned_core_parameters(tmp_path):
     assert config.strategy_adaptive_edge_floor_bps == 15.0
     assert config.strategy_adaptive_min_confidence == 0.75
     assert config.strategy_adaptive_cost_ratio == 1.10
+    assert config.strategy_stop_loss_pct == 2.0
+    assert config.strategy_partial_profit_trigger_pct == 10.0
+    assert config.strategy_partial_profit_fraction_pct == 50.0
+    assert config.strategy_profit_lock_trigger_pct == 10.0
+    assert config.strategy_profit_giveback_pct == 35.0
+    assert config.strategy_profit_lock_floor_pct == 5.0
 
 
 def test_core_optimizer_tightens_entry_policy_from_closed_gross_outcomes(db):

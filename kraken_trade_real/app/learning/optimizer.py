@@ -1008,3 +1008,10 @@ class AdaptiveParameterOptimizer:
         self._mark_exit_policy_evaluated(last_closed_at)
         self.db.learning_event("TACTICAL_EXIT_POLICY_EVALUATED", active_version, result)
         return result
+
+
+    def optimize_core_exits(self, now: float | None = None) -> dict[str, Any]:
+        """Run the independent, path-based Normal/Core exit-policy optimizer."""
+        from app.learning.core_exit_optimizer import CoreExitPolicyOptimizer
+
+        return CoreExitPolicyOptimizer(self.db, self.registry, self.config).optimize(now)

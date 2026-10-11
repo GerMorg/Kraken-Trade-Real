@@ -184,7 +184,7 @@ class ModelRegistry:
             and kind in {"bounded_online_controller", "path_replay_exit_policy"}
         ) or (
             row["family"] == "strategy_core"
-            and kind == "bounded_core_outcome_controller"
+            and kind in {"bounded_core_outcome_controller", "path_replay_core_exit_policy"}
         )
         if (
             not supported_policy
@@ -198,7 +198,7 @@ class ModelRegistry:
             return False
         # Path-based exit candidates need their own holdout quality gate. Entry-policy
         # candidates keep their existing bounded-controller contract.
-        if metrics.get("kind") == "path_replay_exit_policy":
+        if kind in {"path_replay_exit_policy", "path_replay_core_exit_policy"}:
             try:
                 valid_metrics = (
                     int(metrics.get("training_samples", 0)) >= 42
@@ -263,6 +263,12 @@ class ModelRegistry:
             "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
             "strategy_adaptive_min_confidence": (0.75, 0.95),
             "strategy_adaptive_cost_ratio": (1.10, 1.50),
+            "strategy_stop_loss_pct": (0.5, 4.0),
+            "strategy_partial_profit_trigger_pct": (3.0, 25.0),
+            "strategy_partial_profit_fraction_pct": (25.0, 75.0),
+            "strategy_profit_lock_trigger_pct": (5.0, 25.0),
+            "strategy_profit_giveback_pct": (15.0, 60.0),
+            "strategy_profit_lock_floor_pct": (1.0, 12.0),
             "tactical_min_expected_move_bps": (80.0, 1200.0),
             "tactical_min_momentum_bps": (10.0, 300.0),
             "tactical_min_volume_ratio": (1.0, 8.0),
@@ -287,6 +293,31 @@ class ModelRegistry:
                 {"reason": "PARAMETER_OUT_OF_BOUNDS"},
             )
             return False
+        if kind == "path_replay_core_exit_policy":
+            try:
+                required_exit_keys = {
+                    "strategy_stop_loss_pct",
+                    "strategy_partial_profit_trigger_pct",
+                    "strategy_partial_profit_fraction_pct",
+                    "strategy_profit_lock_trigger_pct",
+                    "strategy_profit_giveback_pct",
+                    "strategy_profit_lock_floor_pct",
+                }
+                if not required_exit_keys.issubset(params):
+                    raise ValueError("INCOMPLETE_CORE_EXIT_POLICY")
+                stop = float(params["strategy_stop_loss_pct"])
+                partial_trigger = float(params["strategy_partial_profit_trigger_pct"])
+                lock_trigger = float(params["strategy_profit_lock_trigger_pct"])
+                floor = float(params["strategy_profit_lock_floor_pct"])
+                if not (stop < partial_trigger <= lock_trigger and floor < lock_trigger):
+                    raise ValueError("CORE_EXIT_POLICY_RELATIONSHIP_INVALID")
+            except (TypeError, ValueError):
+                self.db.learning_event(
+                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                    {"reason": "CORE_EXIT_POLICY_PARAMETER_CONTRACT_FAILED"},
+                )
+                return False
+
         if kind == "bounded_core_outcome_controller":
             try:
                 required_core_keys = {

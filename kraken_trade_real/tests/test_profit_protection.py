@@ -217,7 +217,7 @@ def test_profit_protection_defaults_use_ten_percent_with_matching_trailing_activ
     assert config.strategy_profit_lock_floor_pct == 5.0
 
 
-def test_config_migrates_untouched_legacy_profit_defaults(tmp_path):
+def test_config_ignores_legacy_profit_settings_owned_by_learning(tmp_path):
     path = tmp_path / "legacy-options.json"
     path.write_text(
         json.dumps({
@@ -235,10 +235,9 @@ def test_config_migrates_untouched_legacy_profit_defaults(tmp_path):
     assert config.strategy_partial_profit_trigger_pct == 10.0
     assert config.strategy_profit_lock_trigger_pct == 10.0
     assert config.strategy_profit_lock_floor_pct == 5.0
-    assert config.profit_protection_legacy_defaults_overridden is True
 
 
-def test_config_preserves_custom_profit_protection_triplet(tmp_path):
+def test_config_ignores_custom_profit_protection_options_owned_by_learning(tmp_path):
     path = tmp_path / "custom-options.json"
     path.write_text(
         json.dumps({
@@ -251,10 +250,10 @@ def test_config_preserves_custom_profit_protection_triplet(tmp_path):
 
     config = Config.load(str(path))
 
-    assert config.strategy_partial_profit_trigger_pct == 7.0
-    assert config.strategy_profit_lock_trigger_pct == 9.0
-    assert config.strategy_profit_lock_floor_pct == 3.0
-    assert config.profit_protection_legacy_defaults_overridden is False
+    # Custom legacy options cannot override the active versioned learning policy.
+    assert config.strategy_partial_profit_trigger_pct == 10.0
+    assert config.strategy_profit_lock_trigger_pct == 10.0
+    assert config.strategy_profit_lock_floor_pct == 5.0
 
 
 def test_core_position_loss_stop_forces_full_reduce_only_exit(db, config, instrument):
