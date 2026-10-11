@@ -211,7 +211,7 @@ class TradingAuthority:
                 for key in (
                     "core_spot_fill_sync_start",
                     "core_spot_fill_sync_end",
-                    "core_spot_fill_sync_cursor",
+                    "core_spot_fill_sync_offset",
                 )
             }
             active_session = all(session[key] is not None for key in session)
@@ -265,7 +265,10 @@ class TradingAuthority:
             if active_session:
                 start_at = int(float(session["core_spot_fill_sync_start"]["value"]))
                 end_at = int(float(session["core_spot_fill_sync_end"]["value"]))
-                cursor = str(session["core_spot_fill_sync_cursor"].get("value") or "")
+                try:
+                    offset = max(0, int(float(session["core_spot_fill_sync_offset"].get("value") or 0)))
+                except (TypeError, ValueError):
+                    offset = 0
             else:
                 watermark = metadata_value("core_spot_fill_sync_watermark")
                 cutoff = int(now - max(1, int(lookback_days)) * 86400)
@@ -281,12 +284,17 @@ class TradingAuthority:
                     )
                     start_at = max(cutoff, int(first_order) - 2)
                 end_at = int(now)
-                cursor = ""
+                offset = 0
                 if end_at <= start_at:
                     return {"status": "UP_TO_DATE", "pages": 0, "inserted": 0, "matched": 0}
                 set_metadata("core_spot_fill_sync_start", start_at)
                 set_metadata("core_spot_fill_sync_end", end_at)
-                set_metadata("core_spot_fill_sync_cursor", "")
+                set_metadata("core_spot_fill_sync_offset", 0)
+                # Clear cursor metadata from releases that used an unsupported
+                # cursor contract; the session is restarted with valid offset paging.
+                self.db.execute(
+                    "DELETE FROM metadata WHERE key='core_spot_fill_sync_cursor'"
+                )
 
             stats: dict[str, Any] = {
                 "status": "IN_PROGRESS",
@@ -298,18 +306,21 @@ class TradingAuthority:
                 "fee_unverified": 0,
                 "ledger_batches": 0,
                 "ledger_lookup_failures": 0,
-                "cursor_page_start": bool(cursor),
+                "page_offset_start": offset,
                 "window_start": start_at,
                 "window_end": end_at,
             }
             max_pages = max(1, min(5, int(max_pages)))
-            page_size = max(1, min(50, int(page_size)))
+            # Kraken TradesHistory has fixed pages of up to 50 rows and uses
+            # 'ofs'; it does not accept 'limit', 'with_cursor' or 'cursor'.
+            # Keep page_size in the signature for compatibility, but never send
+            # it to Kraken or discard rows from an exchange response.
+            _requested_page_size = max(1, min(50, int(page_size)))
             for _ in range(max_pages):
                 request_params: dict[str, Any] = {
                     "start": start_at,
                     "end": end_at,
-                    "with_cursor": True,
-                    "limit": page_size,
+                    "ofs": offset,
                     "trades": True,
                     # A trade record has a fee amount but omits its currency.
                     # Ask Kraken for the exact linked ledger IDs in the same query.
@@ -323,12 +334,10 @@ class TradingAuthority:
                 trades = response.get("trades")
                 if not isinstance(trades, dict):
                     raise KrakenError("SPOT_TRADES_HISTORY_MISSING_TRADES")
-                cursor_response = response.get("cursor")
-                next_cursor = (
-                    str(cursor_response.get("next") or "")
-                    if isinstance(cursor_response, dict)
-                    else ""
-                )
+                try:
+                    total_count = int(response.get("count") or 0)
+                except (TypeError, ValueError):
+                    total_count = 0
                 stats["pages"] += 1
 
                 # Resolve ledger IDs only for app-managed orders. A missing API
@@ -623,21 +632,28 @@ class TradingAuthority:
                     if inserted:
                         stats["inserted"] += 1
 
-                # With cursor pagination, an absent cursor.next marks the final
-                # page. Do not infer completion from count/offset values.
-                done = not trades or not next_cursor
+                # TradesHistory pagination is offset-based. Advance by the
+                # actual number returned (not the requested test/page-size hint),
+                # and finish on an empty page, a short final page when count is
+                # unavailable, or once the reported total has been reached.
+                next_offset = offset + len(trades)
+                done = not trades
+                if total_count > 0 and next_offset >= total_count:
+                    done = True
+                elif total_count <= 0 and len(trades) < 50:
+                    done = True
                 if done:
                     stats["status"] = "COMPLETE"
                     set_metadata("core_spot_fill_sync_watermark", end_at)
                     self.db.execute(
                         """DELETE FROM metadata WHERE key IN (
                            'core_spot_fill_sync_start','core_spot_fill_sync_end',
-                           'core_spot_fill_sync_cursor'
+                           'core_spot_fill_sync_offset','core_spot_fill_sync_cursor'
                         )"""
                     )
                     break
-                cursor = next_cursor
-                set_metadata("core_spot_fill_sync_cursor", cursor)
+                offset = next_offset
+                set_metadata("core_spot_fill_sync_offset", offset)
                 stats["status"] = "IN_PROGRESS"
             return stats
 
