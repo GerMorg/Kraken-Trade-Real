@@ -234,7 +234,7 @@ class TradingAuthority:
                 return {"status": "NO_SPOT_INSTRUMENTS", "pages": 0, "inserted": 0, "matched": 0}
             order_rows = self.db.query(
                 """SELECT client_order_id,decision_id,symbol,created_at,submitted_at,
-                          kraken_order_id,state,reduce_only,direction
+                          kraken_order_id,state,reduce_only,direction,margin,leverage
                    FROM orders
                    WHERE kraken_order_id IS NOT NULL AND kraken_order_id!=''
                      AND state!='REJECTED'
@@ -437,15 +437,121 @@ class TradingAuthority:
                         "reason": "LEDGER_LOOKUP_UNAVAILABLE" if ledger_lookup_failed else "NO_MATCHING_LEDGER_FEE",
                     }
                     resolved_currency = "UNVERIFIED"
-                    if fee == 0:
+                    try:
+                        order_is_margin = (
+                            bool(int(order.get("margin") or 0))
+                            or D(str(order.get("leverage") or "1")) > D("1")
+                            or D(str(payload.get("margin") or "0")) > D("0")
+                        )
+                    except (ArithmeticError, TypeError, ValueError):
+                        order_is_margin = True  # malformed leverage context fails closed
+
+                    # Kraken's Margin ledger record is authoritative for realised
+                    # margin P/L (amount) and the actual opening/trading fee (fee).
+                    # TradesHistory's fee alone is not a complete margin-cost figure.
+                    if (
+                        order_is_margin
+                        and related_ids
+                        and all(item in ledger_records for item in related_ids)
+                    ):
+                        margin_records = [
+                            (ledger_id, ledger_records[ledger_id])
+                            for ledger_id in related_ids
+                            if str(ledger_records[ledger_id].get("type") or "").lower() == "margin"
+                        ]
+                        conflicting_ledgers = []
+                        for ledger_id in related_ids:
+                            record = ledger_records[ledger_id]
+                            if str(record.get("type") or "").lower() == "margin":
+                                continue
+                            try:
+                                other_fee = D(str(record.get("fee") or "0"))
+                            except (ArithmeticError, TypeError, ValueError):
+                                other_fee = D("NaN")
+                            # If another ledger record carries a fee, assigning the
+                            # margin fee to this fill could omit or double-count costs.
+                            if not other_fee.is_finite() or other_fee != 0:
+                                conflicting_ledgers.append(ledger_id)
+                        if len(margin_records) == 1 and not conflicting_ledgers:
+                            ledger_id, margin_record = margin_records[0]
+                            margin_asset = str(margin_record.get("asset") or "").strip()
+                            try:
+                                margin_amount = D(str(margin_record.get("amount") or "0"))
+                                margin_fee = D(str(margin_record.get("fee") or "0"))
+                                margin_time = float(margin_record.get("time") or trade_time)
+                                ledger_values_valid = (
+                                    margin_amount.is_finite()
+                                    and margin_fee.is_finite()
+                                    and margin_fee >= 0
+                                    and margin_time > 0
+                                )
+                            except (ArithmeticError, TypeError, ValueError):
+                                margin_amount = D("NaN")
+                                margin_fee = D("NaN")
+                                margin_time = 0.0
+                                ledger_values_valid = False
+                            quote_matches = (
+                                bool(margin_asset)
+                                and canonical_asset(margin_asset) == canonical_asset(str(instrument.quote or ""))
+                            )
+                            # Opening margin ledger entries have zero realised P/L.
+                            # A malformed/opening P/L must not receive a verified label.
+                            opening_amount_valid = bool(order.get("reduce_only")) or (
+                                ledger_values_valid and margin_amount == 0
+                            )
+                            if ledger_values_valid and quote_matches and opening_amount_valid:
+                                resolved_currency = margin_asset
+                                attribution.update({
+                                    "status": "MARGIN_LEDGER_VERIFIED",
+                                    "fee_currency": margin_asset,
+                                    "reason": "MARGIN_PNL_AND_FEES_MATCHED_TO_QUOTE_CURRENCY_LEDGER",
+                                    "margin_ledger": {
+                                        "ledger_id": ledger_id,
+                                        "type": "margin",
+                                        "asset": margin_asset,
+                                        "amount": str(margin_amount),
+                                        "fee": str(margin_fee),
+                                        "time": margin_time,
+                                    },
+                                })
+                                stats["fee_verified"] += 1
+                                stats["margin_ledger_verified"] = int(
+                                    stats.get("margin_ledger_verified", 0)
+                                ) + 1
+                            else:
+                                attribution.update({
+                                    "reason": (
+                                        "MARGIN_LEDGER_ASSET_NOT_QUOTE"
+                                        if not quote_matches
+                                        else "MARGIN_LEDGER_VALUES_INVALID_OR_UNEXPECTED"
+                                    ),
+                                })
+                                stats["fee_unverified"] += 1
+                        else:
+                            attribution.update({
+                                "reason": "MARGIN_LEDGER_MISSING_AMBIGUOUS_OR_CONFLICTING",
+                                "margin_ledger_count": len(margin_records),
+                                "conflicting_ledger_ids": conflicting_ledgers,
+                            })
+                            stats["fee_unverified"] += 1
+                    elif order_is_margin:
+                        # Never treat a reported TradeHistory fee of zero as proof
+                        # that a margin trade had no opening, trading or rollover cost.
+                        attribution["reason"] = (
+                            "MARGIN_LEDGER_LOOKUP_UNAVAILABLE"
+                            if ledger_lookup_failed
+                            else "MARGIN_LEDGER_NOT_LINKED_TO_TRADE"
+                        )
+                        stats["fee_unverified"] += 1
+                    elif fee == 0:
                         resolved_currency = "ZERO_FEE"
                         attribution.update({"status": "ZERO_FEE_REPORTED", "fee_currency": "ZERO_FEE",
                                             "reason": "TRADE_HISTORY_REPORTED_ZERO_FEE"})
                         stats["fee_verified"] += 1
                     elif related_ids and all(item in ledger_records for item in related_ids):
-                        # Kraken ledger records carry the fee and asset together.
-                        # Verify the TradesHistory fee against per-asset ledger fees;
-                        # do not guess a currency when the match is absent/ambiguous.
+                        # For unleveraged Spot, verify the TradesHistory fee against
+                        # per-asset trade-ledger fees. Margin positions use their own
+                        # realised-P/L ledger path above and never reach this branch.
                         fees_by_asset: dict[str, D] = {}
                         for ledger_id in related_ids:
                             ledger = ledger_records[ledger_id]
