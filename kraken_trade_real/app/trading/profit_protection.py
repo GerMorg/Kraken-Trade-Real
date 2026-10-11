@@ -525,6 +525,12 @@ class PositionProfitProtection:
                     error_type=type(exc).__name__,
                 )
             if episode is not None:
+                try:
+                    episode_detail = json.loads(episode.get("detail_json") or "{}")
+                except (TypeError, ValueError):
+                    episode_detail = {}
+                if not isinstance(episode_detail, dict):
+                    episode_detail = {}
                 final_state = self._state(symbol) or {}
                 basis = _d(portfolio.position_basis_eur.get(symbol))
                 quantity = _d(portfolio.position_quantity.get(symbol))
