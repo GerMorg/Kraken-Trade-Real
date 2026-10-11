@@ -319,17 +319,27 @@ class Database:
         trade_id: str,
         fee_currency: str,
         raw_payload: dict[str, Any],
+        base_asset: str = "",
     ) -> bool:
         """Enrich legacy/unverified fill fee attribution without replacing trade data."""
-        if fee_currency not in {"ZERO_FEE", "LEDGER_VERIFIED"}:
+        attribution = raw_payload.get("_ledger_attribution")
+        status = attribution.get("status") if isinstance(attribution, dict) else ""
+        if status not in {"ZERO_FEE_REPORTED", "LEDGER_VERIFIED"}:
+            return False
+        if status == "LEDGER_VERIFIED" and (
+            not fee_currency or fee_currency == "UNVERIFIED" or fee_currency == "ZERO_FEE"
+        ):
+            return False
+        if status == "ZERO_FEE_REPORTED" and fee_currency != "ZERO_FEE":
             return False
         encoded = json.dumps(raw_payload, sort_keys=True, default=str)
         with self.connect() as con:
             cur = con.execute(
-                """UPDATE fills SET fee_currency=?,raw_json=?
+                """UPDATE fills SET fee_currency=?,raw_json=?,
+                     base_asset=CASE WHEN base_asset='' THEN ? ELSE base_asset END
                    WHERE order_id=? AND trade_id=?
                      AND (fee_currency='UNVERIFIED' OR fee_currency='')""",
-                (str(fee_currency), encoded, str(order_id), str(trade_id)),
+                (str(fee_currency), encoded, str(base_asset), str(order_id), str(trade_id)),
             )
             return cur.rowcount > 0
 
