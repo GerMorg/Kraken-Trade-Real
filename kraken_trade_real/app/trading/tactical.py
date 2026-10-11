@@ -1535,6 +1535,34 @@ class TacticalTrader:
             mfe_bps = max(D("0"), (entry / max(position.trough_price, D("0.00000001")) - D("1")) * D("10000"))
             adverse = (entry / max(position.peak_price, D("0.00000001")) - D("1")) * D("10000")
             mae_bps = max(D("0"), -adverse)
+        entry_policy = dict(position.entry_policy) if isinstance(position.entry_policy, dict) else {}
+        entry_context = dict(position.entry_context) if isinstance(position.entry_context, dict) else {}
+        entry_key_aliases = {
+            "min_expected_move_bps": "tactical_min_expected_move_bps",
+            "min_momentum_bps": "tactical_min_momentum_bps",
+            "min_volume_ratio": "tactical_min_volume_ratio",
+            "min_breakout_bps": "tactical_min_breakout_bps",
+            "max_spread_bps": "tactical_max_spread_bps",
+            "portfolio_pct": "tactical_portfolio_pct",
+            "min_volatility_bps": "tactical_min_volatility_bps",
+            "max_volatility_bps": "tactical_max_volatility_bps",
+            "min_imbalance": "tactical_min_imbalance",
+            "adaptive_min_expected_move_bps": "tactical_adaptive_min_expected_move_bps",
+            "adaptive_min_confidence": "tactical_adaptive_min_confidence",
+            "adaptive_min_net_edge_bps": "tactical_adaptive_min_net_edge_bps",
+            "adaptive_entry_enabled": "tactical_adaptive_entry_enabled",
+            "stop_loss_pct": "tactical_stop_loss_pct",
+            "take_profit_pct": "tactical_take_profit_pct",
+            "trailing_trigger_bps": "tactical_trailing_trigger_bps",
+            "trailing_stop_pct": "tactical_trailing_stop_pct",
+            "max_hold_seconds": "tactical_max_hold_seconds",
+            "reversal_exit_bps": "tactical_reversal_exit_bps",
+        }
+        entry_policy_snapshot = {
+            alias: str(entry_policy[key])
+            for alias, key in entry_key_aliases.items()
+            if key in entry_policy
+        }
         return {
             "mode": mode,
             "client_order_id": client_order_id,
@@ -1542,15 +1570,14 @@ class TacticalTrader:
             "max_adverse_excursion_bps": str(mae_bps),
             "observed_peak_price": str(position.peak_price),
             "observed_trough_price": str(position.trough_price),
-            "entry_policy_snapshot": {
-                # Empty means a legacy/recovered record lacked entry-time metadata;
-                # never relabel current close-time settings as the entry policy.
-                **dict(position.entry_policy),
-            },
-            "entry_context_snapshot": dict(position.entry_context),
+            # Keep stable consumer-facing aliases and also retain exact versioned
+            # parameter names so future learners can audit every managed setting.
+            "entry_policy_snapshot": entry_policy_snapshot,
+            "entry_policy_parameters": entry_policy,
+            "entry_context_snapshot": entry_context,
             "entry_snapshot_source": (
                 "ENTRY_TIME_CAPTURED"
-                if position.entry_policy and position.entry_context
+                if entry_policy and entry_context
                 else "LEGACY_ENTRY_SNAPSHOT_MISSING"
             ),
             "exit_policy_snapshot": {
