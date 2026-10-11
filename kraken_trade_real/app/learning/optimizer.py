@@ -406,7 +406,6 @@ class AdaptiveParameterOptimizer:
                 "positive_verified_net_rate": (
                     sum(1 for value in net_returns if value > 0) / len(net_returns)
                 ),
-                "verified_fees_quote_sum": sum(float(item["verified_fees_quote"]) for item in items),
             }
 
         before = stats(previous)
@@ -524,7 +523,7 @@ class AdaptiveParameterOptimizer:
             "recent_mean_verified_net_return_bps": after["mean_verified_net_return_bps"],
             "previous_positive_verified_net_rate": before["positive_verified_net_rate"],
             "recent_positive_verified_net_rate": after["positive_verified_net_rate"],
-            "verified_fees_quote_sum": sum(float(item["verified_fees_quote"]) for item in clean),
+            "verified_fee_verified_samples": len(clean),
             "data_basis": "ledger_verified_non_margin_spot_net_return_bps",
             "exchange_fee_estimates_used": False,
             "verified_net_pnl_used": True,
