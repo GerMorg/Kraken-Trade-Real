@@ -183,3 +183,133 @@ def test_detailed_selection_keeps_family_coverage_inside_limit(instrument):
         "DERIVATIVE",
         "CRYPTO",
     }
+
+def test_spot_snapshot_keeps_base_volume_and_calculates_quote_turnover(instrument):
+    from app.market.data import MarketData
+
+    snap = MarketData(object()).snapshot(
+        instrument,
+        {
+            "XXBTZEUR": {
+                "b": ["60000"],
+                "a": ["60010"],
+                "c": ["60005"],
+                "v": ["100", "1000"],
+            }
+        },
+        include_history=False,
+        include_orderbook=False,
+    )
+
+    assert snap is not None
+    # Ticker volume is 1,000 XBT, not 1,000 EUR.
+    assert snap.volume_24h == Decimal("1000")
+    assert snap.quote_asset == "EUR"
+    assert snap.volume_24h_quote == Decimal("60005000")
+    assert snap.liquidity_eur_24h is None
+
+
+def test_scanner_uses_fx_normalized_eur_turnover_not_raw_base_volume(instrument):
+    from dataclasses import replace
+    from time import time
+
+    from app.market.scanner import MarketScanner
+
+    btc_usd = replace(
+        instrument,
+        symbol="BTC/USD",
+        instrument_id="XXBTZUSD",
+        altname="XBTUSD",
+        base="XXBT",
+        quote="ZUSD",
+    )
+    doge_eur = replace(
+        instrument,
+        symbol="DOGE/EUR",
+        instrument_id="XXDGZEUR",
+        altname="XDGEUR",
+        base="XXDG",
+        quote="ZEUR",
+    )
+    eur_usd = replace(
+        instrument,
+        symbol="EUR/USD",
+        instrument_id="ZEURZUSD",
+        altname="EURUSD",
+        base="ZEUR",
+        quote="ZUSD",
+    )
+    now = time()
+
+    snapshots = {
+        # One BTC (~60,000 USD) must pass a €50 turnover floor after FX conversion,
+        # even though the raw base-volume number is only 1.
+        "BTC/USD": MarketSnapshot(
+            "BTC/USD", Decimal("60000"), Decimal("59990"), Decimal("60010"),
+            Decimal("1"), now, (), quote_asset="USD",
+        ),
+        # 100 DOGE at €0.10 is only €10; the old raw-quantity comparison incorrectly
+        # treated its base volume of 100 as €100 and let it pass a €50 floor.
+        "DOGE/EUR": MarketSnapshot(
+            "DOGE/EUR", Decimal("0.1"), Decimal("0.0999"), Decimal("0.1001"),
+            Decimal("100"), now, (), quote_asset="EUR",
+        ),
+        # 1 EUR = 1.10 USD gives the scanner a current USD->EUR conversion path.
+        "EUR/USD": MarketSnapshot(
+            "EUR/USD", Decimal("1.1"), Decimal("1.099"), Decimal("1.101"),
+            Decimal("1000"), now, (), quote_asset="USD",
+        ),
+    }
+    scanner = MarketScanner(50, 100, 60)
+
+    selected, diagnostics = scanner.fast_filter_with_diagnostics(
+        [btc_usd, doge_eur, eur_usd],
+        snapshots,
+        require_history=False,
+    )
+
+    assert {item.symbol for item in selected} == {"BTC/USD", "EUR/USD"}
+    assert snapshots["BTC/USD"].liquidity_eur_24h is not None
+    assert snapshots["BTC/USD"].liquidity_eur_24h > Decimal("50000")
+    assert snapshots["DOGE/EUR"].liquidity_eur_24h == Decimal("10.0")
+    assert diagnostics["excluded_by_reason"]["LIQUIDITY_TOO_LOW"] == 1
+
+
+def test_scanner_fails_closed_when_spot_quote_cannot_be_converted_to_eur(instrument):
+    from dataclasses import replace
+    from time import time
+
+    from app.market.scanner import MarketScanner
+
+    unknown_quote = replace(
+        instrument,
+        symbol="DOGE/ABC",
+        instrument_id="DOGEABC",
+        base="DOGE",
+        quote="ABC",
+    )
+    snap = MarketSnapshot(
+        "DOGE/ABC", Decimal("0.1"), Decimal("0.0999"), Decimal("0.1001"),
+        Decimal("100000"), time(), (),
+    )
+
+    selected, diagnostics = MarketScanner(1, 100, 60).fast_filter_with_diagnostics(
+        [unknown_quote], {unknown_quote.symbol: snap}, require_history=False,
+    )
+
+    assert selected == []
+    assert diagnostics["excluded_by_reason"]["LIQUIDITY_EUR_UNAVAILABLE"] == 1
+
+
+def test_features_use_eur_normalized_liquidity_when_available():
+    closes = tuple(Decimal(str(100 + i)) for i in range(40))
+    snap = MarketSnapshot(
+        "DOGE/EUR", Decimal("0.1"), Decimal("0.0999"), Decimal("0.1001"),
+        Decimal("100000"), __import__("time").time(), closes,
+        quote_asset="EUR", volume_24h_quote=Decimal("10000"),
+        liquidity_eur_24h=Decimal("10000"),
+    )
+
+    features = FeatureEngine().calculate(snap)
+
+    assert features["liquidity"] == Decimal("10000")
