@@ -241,6 +241,9 @@ class AdaptiveParameterOptimizer:
             candidate["tactical_adaptive_min_net_edge_bps"] = min(
                 100.0, float(current["tactical_adaptive_min_net_edge_bps"]) * 1.05
             )
+            candidate["tactical_context_block_bps"] = max(
+                10.0, float(current["tactical_context_block_bps"]) * 0.90
+            )
             if candidate["tactical_min_volatility_bps"] >= candidate["tactical_max_volatility_bps"]:
                 candidate["tactical_max_volatility_bps"] = min(
                     120.0, float(candidate["tactical_min_volatility_bps"]) + 5.0
@@ -286,6 +289,9 @@ class AdaptiveParameterOptimizer:
             )
             candidate["tactical_adaptive_min_net_edge_bps"] = max(
                 5.0, float(current["tactical_adaptive_min_net_edge_bps"]) * 0.98
+            )
+            candidate["tactical_context_block_bps"] = min(
+                200.0, float(current["tactical_context_block_bps"]) * 1.02
             )
             # Preserve a non-empty volatility band even at the numeric bounds.
             if candidate["tactical_min_volatility_bps"] >= candidate["tactical_max_volatility_bps"]:
