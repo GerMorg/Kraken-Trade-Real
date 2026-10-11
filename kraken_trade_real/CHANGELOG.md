@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.55
+
+- Capture the exact versioned Tactical entry policy and signal features alongside the opening decision before any order is submitted.
+- Persist entry snapshots in SQLite with an idempotent schema migration; routine position updates preserve them instead of replacing them with empty defaults.
+- Restore entry-time policy/context when loading positions after a restart and when reconciling a pending entry order from its stored decision rationale.
+- Trade learning records now use true entry-time values and signal features. Legacy positions without a snapshot are explicitly marked as missing rather than filled with unrelated close-time parameters.
+- Preserve existing learning-field aliases while also storing exact internal parameter names for later attribution and audit.
+- Add regression tests for durable snapshots, restart recovery, immutable updates, entry-time/close-time separation, legacy-data labeling, and migration idempotence.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.55.
+
 ## 0.1.54
 
 - Extend the versioned Tactical policy with minimum/maximum volatility, order-book imbalance, adaptive confidence, and minimum net-edge thresholds.
