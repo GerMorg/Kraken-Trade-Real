@@ -113,7 +113,7 @@ class AustrianTaxLedger:
         # Altvermögen or Neuvermögen. Resolve against the tracked inventory;
         # if both regimes could supply this disposal, require an explicit choice.
         asset_key = asset.upper()
-        allowed_regimes = ("ALTVERSMÖGEN", "NEUVERSMÖGEN")
+        allowed_regimes = ("ALTVERSMÖGEN", "NEUVERMÖGEN")
         if quantity <= 0 or proceeds_eur < 0:
             raise ValueError("invalid disposal quantity or proceeds")
         if asset_regime is not None:
@@ -136,7 +136,7 @@ class AustrianTaxLedger:
             regime = candidates[0]
             key = (asset_key, regime)
             pool = self._pools[key]
-        if regime == "NEUVERSMÖGEN":
+        if regime == "NEUVERMÖGEN":
             cost = pool.average_cost_eur * quantity
         elif specific_cost_eur is not None:
             cost = specific_cost_eur
@@ -159,7 +159,7 @@ class AustrianTaxLedger:
         asset_regime: str | None = None,
     ) -> TaxPool:
         asset_key = given_asset.upper()
-        allowed_regimes = ("ALTVERSMÖGEN", "NEUVERSMÖGEN")
+        allowed_regimes = ("ALTVERSMÖGEN", "NEUVERMÖGEN")
         if asset_regime is None:
             candidates = [
                 regime for regime in allowed_regimes
@@ -174,7 +174,7 @@ class AustrianTaxLedger:
             regime = str(asset_regime).upper()
             if regime not in allowed_regimes:
                 raise ValueError("invalid asset regime")
-        if regime != "NEUVERSMÖGEN":
+        if regime != "NEUVERMÖGEN":
             raise ValueError("Altvermögen crypto-to-crypto swaps require tax review")
         if datetime.fromtimestamp(timestamp, timezone.utc) < CRYPTO_TAX_EFFECTIVE_DATE:
             raise ValueError("pre-2022 crypto-to-crypto swaps require tax review")
@@ -357,8 +357,8 @@ class AustrianTaxLedger:
                 TaxPool(base.upper(), "ALTVERSMÖGEN", D("0"), D("0")),
             )
             new_pool = self._pools.get(
-                (base.upper(), "NEUVERSMÖGEN"),
-                TaxPool(base.upper(), "NEUVERSMÖGEN", D("0"), D("0")),
+                (base.upper(), "NEUVERMÖGEN"),
+                TaxPool(base.upper(), "NEUVERMÖGEN", D("0"), D("0")),
             )
             if alt_pool.quantity > 0:
                 event_type = "DISPOSAL_REGIME_REVIEW" if new_pool.quantity > 0 else "ALT_DISPOSAL_REVIEW"
