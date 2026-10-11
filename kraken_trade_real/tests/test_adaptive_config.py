@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from decimal import Decimal
 
-from app.config.adaptive import AdaptiveConfig
+from app.config.adaptive import AdaptiveConfig, CORE_DEFAULTS
 from app.config.settings import Config
 from app.learning.optimizer import AdaptiveParameterOptimizer
 from app.learning.registry import ModelRegistry
