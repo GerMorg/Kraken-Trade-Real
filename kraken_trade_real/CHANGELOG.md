@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.63
+
+- Add structured, credential-free context to deterministic exchange order rejections: instrument/base/quote, side/direction, order type, quantity, price/notional estimate, leverage/margin/reduce-only, exchange minimums, and linked decision rationale where available.
+- Persist each deterministic rejection as an `ORDER_SUBMISSION_REJECTED` database event in addition to emitting a structured audit-log entry, so failures can be counted and investigated without joining by an otherwise opaque intent ID.
+- Classify common failures such as insufficient funds, invalid arguments, below-minimum orders and rate limits, and include diagnostic next-step hints without retrying or relaxing any risk checks automatically.
+- Keep diagnostics best-effort: event-write/query failures must never alter exchange submission handling or block exits.
+- Add regression tests for rejection classification, event persistence, order context and absence of credential fields.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.63.
+
 ## 0.1.62
 
 - Centralize validated numeric bounds for learned Core/Normal and Tactical strategy parameters so runtime clamping and promotion validation share the same source.
