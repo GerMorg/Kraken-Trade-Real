@@ -41,6 +41,7 @@ class FakeRegistry:
                 "tactical_min_imbalance": 0.15,
                 "tactical_adaptive_min_confidence": 0.82,
                 "tactical_adaptive_min_net_edge_bps": 20.0,
+                "tactical_reversal_exit_bps": 99999.0,
             }
         return {}
 
@@ -56,6 +57,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
         tactical_trailing_trigger_bps=100.0,
         tactical_trailing_stop_pct=0.7,
         tactical_max_hold_seconds=1800,
+        tactical_reversal_exit_bps=120.0,
     )
     config = AdaptiveConfig(base, FakeRegistry())
     assert config.tactical_min_expected_move_bps == 350.0
@@ -71,6 +73,8 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.tactical_min_imbalance == 0.15
     assert config.tactical_adaptive_min_confidence == 0.82
     assert config.tactical_adaptive_min_net_edge_bps == 20.0
+    # Values loaded from the registry are bounded again by the runtime overlay.
+    assert config.tactical_reversal_exit_bps == 500.0
     # Core policy values are supplied by its own versioned model; unrelated settings remain base-config owned.
     assert config.strategy_min_edge_bps == 33.0
     assert config.strategy_stop_loss_pct == 2.5
@@ -113,6 +117,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
         "tactical_min_imbalance": 0.99,
         "tactical_adaptive_min_confidence": 0.01,
         "tactical_adaptive_min_net_edge_bps": 999,
+        "tactical_reversal_exit_bps": 9999,
     }), encoding="utf-8")
     config = Config.load(str(path))
     assert config.tactical_min_expected_move_bps == 280.0
@@ -132,6 +137,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_min_imbalance == 0.10
     assert config.tactical_adaptive_min_confidence == 0.75
     assert config.tactical_adaptive_min_net_edge_bps == 15.0
+    assert config.tactical_reversal_exit_bps == 120.0
 
 
 def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
