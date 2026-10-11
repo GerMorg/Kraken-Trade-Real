@@ -38,15 +38,15 @@ def test_risk_diagnostics_explain_daily_loss_and_projected_exposure(config):
 
     assert context["equity_eur"] == "1000"
     assert context["daily_pnl_eur"] == "-40"
-    assert context["daily_loss_limit_eur"] == "30"
-    assert context["daily_loss_headroom_eur"] == "-10"
-    assert context["projected_gross_eur"] == "600"
-    assert context["projected_gross_pct"] == "60"
-    assert context["gross_limit_eur"] == "800"
-    assert context["projected_net_eur"] == "200"
-    assert context["projected_net_pct"] == "20"
-    assert context["target_position_pct"] == "20"
-    assert context["position_limit_eur"] == "150"
-    assert context["cash_reserve_min_eur"] == "200"
+    assert Decimal(context["daily_loss_limit_eur"]) == Decimal("30")
+    assert Decimal(context["daily_loss_headroom_eur"]) == Decimal("-10")
+    assert Decimal(context["projected_gross_eur"]) == Decimal("600")
+    assert Decimal(context["projected_gross_pct"]) == Decimal("60")
+    assert Decimal(context["gross_limit_eur"]) == Decimal("800")
+    assert Decimal(context["projected_net_eur"]) == Decimal("200")
+    assert Decimal(context["projected_net_pct"]) == Decimal("20")
+    assert Decimal(context["target_position_pct"]) == Decimal("20")
+    assert Decimal(context["position_limit_eur"]) == Decimal("150")
+    assert Decimal(context["cash_reserve_min_eur"]) == Decimal("200")
     assert context["open_positions_count"] == 2
     assert context["failed_checks"] == ["daily_loss"]
