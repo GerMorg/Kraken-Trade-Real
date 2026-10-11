@@ -47,6 +47,8 @@ def exchange_order_minimum_violation(
         return {"reason": "ORDER_MINIMUM_METADATA_INVALID"}
     if not qty.is_finite() or qty <= 0 or not min_qty.is_finite() or min_qty < 0:
         return {"reason": "ORDER_MINIMUM_METADATA_INVALID"}
+    if not min_cost.is_finite() or min_cost < 0:
+        return {"reason": "ORDER_MINIMUM_METADATA_INVALID"}
     if qty < min_qty:
         return {
             "reason": "MIN_ORDER_QTY",
@@ -54,7 +56,7 @@ def exchange_order_minimum_violation(
             "minimum_order_qty": str(min_qty),
         }
     if str(getattr(instrument, "venue", "")).lower() != "futures" and min_cost > 0:
-        if not price.is_finite() or price <= 0 or not min_cost.is_finite():
+        if not price.is_finite() or price <= 0:
             return {"reason": "ORDER_MINIMUM_METADATA_INVALID"}
         estimated_cost = qty * price
         if estimated_cost < min_cost:
