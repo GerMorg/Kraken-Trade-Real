@@ -2,10 +2,17 @@
 
 Last reconciled against GitHub: 2026-10-11  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.77**  
+Main version: **0.1.77** (v0.1.78 in review on fix/tactical-global-net-limit-v0.1.78)  
 Latest runtime release commit (v0.1.77): `aabe554cf0b3e2b9a1e7eaa5492df39366b1a839`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
+
+## Current review — v0.1.78
+
+- Scope: keep the portfolio-wide risk_max_net_pct hard cap authoritative for both Core and Tactical entries. A Tactical risk_position_limit_pct is a per-position limit and must not widen the global net exposure limit.
+- Regression: the existing high-conviction Tactical test used an 80% position limit and incorrectly expected a 75%-of-equity entry to pass even though the configured global net cap is 50%. v0.1.78 changes that assertion to require a net_limit rejection.
+- User clarification for the v0.1.77 runtime log: the two observed cycles were the first two after installation. Their zero newly inserted fills and zero verified outcomes are an initial observation window, not proof of a sync defect. Continue monitoring across a longer period and use persistent sync/anomaly evidence before diagnosing failure.
+- Release must not be merged until all five CI jobs pass on the exact PR head and the version is consistent in config.yaml, pyproject.toml, Dockerfile, and Kraken User-Agent.
 
 ## Recently merged releases
 
