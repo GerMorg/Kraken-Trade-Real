@@ -360,6 +360,8 @@ class ModelRegistry:
         if kind == "bounded_core_outcome_controller":
             try:
                 required_core_keys = {
+                    "market_min_liquidity_eur",
+                    "market_max_spread_bps",
                     "strategy_min_edge_bps",
                     "strategy_min_confidence",
                     "strategy_adaptive_edge_floor_bps",

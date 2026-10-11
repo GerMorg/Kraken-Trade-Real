@@ -20,6 +20,10 @@ CORE_EXIT_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
 }
 
 CORE_DEFAULTS: dict[str, Any] = {
+    # Bounded, internally managed universe-entry gates; the hard market-quality
+    # envelope is 50-1,000 EUR notional and 20-80 bps spread.
+    "market_min_liquidity_eur": 50.0,
+    "market_max_spread_bps": 80.0,
     "strategy_min_edge_bps": 25.0,
     "strategy_min_confidence": 0.58,
     "strategy_adaptive_edge_floor_bps": 15.0,
@@ -80,6 +84,8 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
 }
 
 CORE_ENTRY_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
+    "market_min_liquidity_eur": (50.0, 1000.0),
+    "market_max_spread_bps": (20.0, 80.0),
     "strategy_min_edge_bps": (25.0, 80.0),
     "strategy_min_confidence": (0.58, 0.85),
     "strategy_adaptive_edge_floor_bps": (15.0, 25.0),

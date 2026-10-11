@@ -20,10 +20,32 @@ FAMILY_ORDER = ("XSTOCK", "STOCK", "DERIVATIVE", "CRYPTO", "OTHER")
 
 
 class MarketScanner:
-    def __init__(self, min_liquidity_eur: float, max_spread_bps: float, freshness_seconds: int) -> None:
+    def __init__(
+        self,
+        min_liquidity_eur: float,
+        max_spread_bps: float,
+        freshness_seconds: int,
+        config: Any | None = None,
+    ) -> None:
         self.min_liquidity = D(str(min_liquidity_eur))
         self.max_spread = D(str(max_spread_bps))
         self.freshness_seconds = freshness_seconds
+        # The adaptive config proxy is read on every scan, so promoted policies
+        # take effect without restarting Home Assistant or rebuilding the scanner.
+        self.config = config
+
+    def _active_filter_limits(self) -> tuple[D, D]:
+        def active_decimal(name: str, fallback: D) -> D:
+            try:
+                value = D(str(getattr(self.config, name, fallback)))
+                return value if value.is_finite() and value > 0 else fallback
+            except (ArithmeticError, TypeError, ValueError):
+                return fallback
+
+        return (
+            active_decimal("market_min_liquidity_eur", self.min_liquidity),
+            active_decimal("market_max_spread_bps", self.max_spread),
+        )
 
     FX_CONVERSION_ASSETS = frozenset({
         "EUR", "USD", "GBP", "CHF", "CAD", "AUD", "JPY", "NZD",
@@ -202,6 +224,7 @@ class MarketScanner:
     ) -> tuple[list[Instrument], dict[str, Any]]:
         instrument_list = list(instruments)
         liquidity_diagnostics = self.normalize_liquidity_eur(instrument_list, snapshots)
+        min_liquidity, max_spread = self._active_filter_limits()
         candidates: list[Instrument] = []
         total_by_family: dict[str, int] = {}
         excluded_by_reason: dict[str, int] = {}
@@ -226,13 +249,13 @@ class MarketScanner:
                 reason = "NOT_TRADEABLE"
             elif snap.age_seconds > self.freshness_seconds:
                 reason = "STALE_TICKER"
-            elif snap.spread_bps > self.max_spread:
+            elif snap.spread_bps > max_spread:
                 reason = "SPREAD_TOO_WIDE"
             elif instrument.product_type.value != "DERIVATIVE" and snap.liquidity_eur_24h is None:
                 reason = "LIQUIDITY_EUR_UNAVAILABLE"
             elif (
                 snap.liquidity_eur_24h is not None
-                and snap.liquidity_eur_24h < self.min_liquidity
+                and snap.liquidity_eur_24h < min_liquidity
                 and instrument.product_type.value != "DERIVATIVE"
             ):
                 reason = "LIQUIDITY_TOO_LOW"
@@ -259,6 +282,10 @@ class MarketScanner:
             "families": family_stats,
             "passed": len(candidates),
             "eur_liquidity": liquidity_diagnostics,
+            "active_thresholds": {
+                "market_min_liquidity_eur": str(min_liquidity),
+                "market_max_spread_bps": str(max_spread),
+            },
         }
 
     @staticmethod

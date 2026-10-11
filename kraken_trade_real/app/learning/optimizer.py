@@ -406,6 +406,8 @@ class AdaptiveParameterOptimizer:
     CORE_WINDOW = 30
     MIN_CORE_OUTCOMES = 60
     CORE_POLICY_BOUNDS = {
+        "market_min_liquidity_eur": (50.0, 1000.0),
+        "market_max_spread_bps": (20.0, 80.0),
         "strategy_min_edge_bps": (25.0, 80.0),
         "strategy_min_confidence": (0.58, 0.85),
         "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
@@ -580,6 +582,18 @@ class AdaptiveParameterOptimizer:
         ):
             action = "TIGHTEN"
             reason = "NEGATIVE_RECENT_VERIFIED_NET_CORE_RETURN"
+            # Poor verified outcomes make universe entry gates more selective.
+            # These filters remain inside immutable hard bounds.
+            candidate["market_min_liquidity_eur"] = min(
+                1000.0,
+                max(
+                    current["market_min_liquidity_eur"] + 5.0,
+                    current["market_min_liquidity_eur"] * 1.10,
+                ),
+            )
+            candidate["market_max_spread_bps"] = max(
+                20.0, current["market_max_spread_bps"] * 0.90
+            )
             candidate["strategy_min_edge_bps"] = min(
                 80.0, max(current["strategy_min_edge_bps"] + 2.0,
                            current["strategy_min_edge_bps"] * 1.08)
@@ -607,6 +621,20 @@ class AdaptiveParameterOptimizer:
         ):
             action = "RESTORE_TOWARD_DEFAULTS"
             reason = "STRONG_IMPROVING_VERIFIED_NET_CORE_RETURN_RESTORE_TOWARD_BASELINE"
+            # Strong improving net results only restore previous extra selectivity;
+            # liquidity cannot go below baseline and spread cannot exceed it.
+            candidate["market_min_liquidity_eur"] = max(
+                CORE_DEFAULTS["market_min_liquidity_eur"],
+                current["market_min_liquidity_eur"] - max(
+                    1.0, current["market_min_liquidity_eur"] * 0.03
+                ),
+            )
+            candidate["market_max_spread_bps"] = min(
+                CORE_DEFAULTS["market_max_spread_bps"],
+                current["market_max_spread_bps"] + max(
+                    1.0, current["market_max_spread_bps"] * 0.03
+                ),
+            )
             # Positive observed outcomes only restore previous extra strictness;
             # no setting can become looser than the documented baseline defaults.
             candidate["strategy_min_edge_bps"] = max(
