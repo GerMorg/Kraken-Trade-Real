@@ -263,6 +263,7 @@ class AdaptiveParameterOptimizer:
         "tactical_trailing_trigger_bps": (50.0, 500.0),
         "tactical_trailing_stop_pct": (0.2, 1.5),
         "tactical_max_hold_seconds": (300, 7200),
+        "tactical_reversal_exit_bps": (30.0, 500.0),
     }
     MIN_EXIT_TRADES = 60
     MIN_EXIT_COVERAGE = 0.85
@@ -642,7 +643,7 @@ class AdaptiveParameterOptimizer:
                     current["exit_reason"] = str(row.get("exit_reason") or "")
                     current["detail"] = detail
 
-        supported_reasons = {"STOP_LOSS", "TRAILING_STOP", "TIME_STOP"}
+        supported_reasons = {"STOP_LOSS", "TRAILING_STOP", "TIME_STOP", "SIGNAL_REVERSAL"}
         result: list[dict[str, Any]] = []
         for key, trade in grouped.items():
             if (key[0], key[1]) in active or trade["exit_reason"] not in supported_reasons:
@@ -696,6 +697,7 @@ class AdaptiveParameterOptimizer:
             trailing_trigger_bps = float(policy["tactical_trailing_trigger_bps"])
             trailing_stop_pct = float(policy["tactical_trailing_stop_pct"])
             max_hold_seconds = int(float(policy["tactical_max_hold_seconds"]))
+            reversal_exit_bps = float(policy.get("tactical_reversal_exit_bps", 120.0))
             entry_fee_bps = max(0.0, float(costs["entry_fee_bps"]))
             exit_fee_bps = max(0.0, float(costs["exit_fee_bps"]))
             spread_bps = max(0.0, float(costs["max_spread_bps"]))
@@ -775,6 +777,21 @@ class AdaptiveParameterOptimizer:
                 reason = "TRAILING_STOP"
             elif state != "TRAILING" and elapsed >= max_hold_seconds:
                 reason = "TIME_STOP"
+            # Production only treats a valid opposite-direction setup as a reversal.
+            # Rows created before signal fields existed remain unqualified and cannot
+            # fabricate a counterfactual reversal exit.
+            signal_direction = str(point.get("signal_direction") or "").upper()
+            try:
+                signal_edge_bps = float(point.get("signal_net_edge_bps") or 0.0)
+            except (TypeError, ValueError):
+                signal_edge_bps = 0.0
+            if (
+                not reason
+                and signal_direction in {"LONG", "SHORT"}
+                and signal_direction != direction
+                and signal_edge_bps >= reversal_exit_bps
+            ):
+                reason = "SIGNAL_REVERSAL"
             if reason:
                 return {
                     "net_bps": pnl_bps - estimated_net_cost_bps,
@@ -916,6 +933,7 @@ class AdaptiveParameterOptimizer:
             ("tactical_trailing_trigger_bps", (0.75, 1.25)),
             ("tactical_trailing_stop_pct", (0.75, 1.25)),
             ("tactical_max_hold_seconds", (0.75, 1.25)),
+            ("tactical_reversal_exit_bps", (0.75, 1.25)),
         ):
             low, high = self.EXIT_POLICY_BOUNDS[key]
             for factor in factors:
