@@ -65,6 +65,11 @@ class PortfolioState:
     position_basis_eur:dict[str,Decimal]=field(default_factory=dict)
     position_quantity:dict[str,Decimal]=field(default_factory=dict)
     spot_open_positions_read_ok:bool=False
+    # Wallet provenance is independent from Kraken OpenPositions (Spot Margin) reads.
+    spot_wallet_read_ok:bool=False
+    # Cash-Spot holdings are listed only when the entire wallet quantity is
+    # reconciled against unleveraged, app-managed FIFO inventory lots.
+    spot_cash_position_symbols:tuple[str,...]=()
     spot_margin_position_symbols:tuple[str,...]=()
     # Exchange open-position identities keep the Normal exit-learning path tied
     # to the exact live margin position epoch; aggregates may contain wallet inventory.

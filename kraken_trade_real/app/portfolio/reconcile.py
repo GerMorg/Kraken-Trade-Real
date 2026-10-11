@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_UP
 import datetime
+import json
 import time
 from typing import Any
 
@@ -232,6 +233,10 @@ class PortfolioReconciler:
         spot_margin_position_direction_sets: dict[str, set[str]] = {}
         spot_margin_open_lot_count: dict[str, int] = {}
         spot_open_positions_read_ok = False
+        spot_wallet_read_ok = False
+        wallet_quantity_by_base: dict[str, D] = {}
+        wallet_instrument_by_base: dict[str, Instrument] = {}
+        spot_cash_position_symbols: set[str] = set()
         self.position_leverages = {}
         self.cash_balances = {}
         self.available_cash_balances = {}
@@ -324,9 +329,17 @@ class PortfolioReconciler:
                     continue
                 value_eur = quantity * price * rate
                 positions[instrument.symbol] = value_eur
+                base_key = canonical_asset(instrument.base)
+                wallet_quantity_by_base[base_key] = (
+                    wallet_quantity_by_base.get(base_key, D("0")) + quantity
+                )
+                wallet_instrument_by_base[base_key] = instrument
                 gross += abs(value_eur)
                 net += value_eur
 
+            # The wallet read succeeded independently of the TradeBalance/PnL call.
+            # Keep this provenance even if a later margin-account read fails.
+            spot_wallet_read_ok = True
             tb = self.gateway.spot_private(
                 "TradeBalance",
                 {"aclass": "currency", "asset": "ZEUR"},
@@ -491,6 +504,143 @@ class PortfolioReconciler:
                 {"error": type(exc).__name__},
             )
 
+        # A wallet asset may be protected as a Normal cash-Spot position only
+        # when its entire balance reconciles to the app's FIFO inventory ledger.
+        # A deposit, an unexplained quantity delta, a different quote pair, any
+        # margin lot, or unknown fee/position provenance fails closed.
+        if spot_wallet_read_ok and spot_open_positions_read_ok:
+            try:
+                known_spot = self._spot_instruments()
+                instrument_by_symbol = {item.symbol: item for item in known_spot}
+                open_lots = self.db.query(
+                    """SELECT lot_id,symbol,direction,entry_order_id,entry_trade_id,
+                              opening_decision_id,entry_price,remaining_quantity,
+                              quote_asset,detail_json
+                       FROM core_inventory_lots
+                       WHERE CAST(remaining_quantity AS REAL)>0
+                       ORDER BY opened_at,lot_id"""
+                )
+                lots_by_base: dict[str, list[dict[str, Any]]] = {}
+                for lot in open_lots:
+                    lot_symbol = str(lot.get("symbol") or "")
+                    lot_instrument = instrument_by_symbol.get(lot_symbol)
+                    if lot_instrument is None:
+                        resolved = resolve_instrument_symbol(lot_symbol, known_spot)
+                        lot_instrument = resolved if isinstance(resolved, Instrument) else None
+                    if lot_instrument is None or lot_instrument.venue != "spot":
+                        continue
+                    base_key = canonical_asset(lot_instrument.base)
+                    lots_by_base.setdefault(base_key, []).append(lot)
+
+                margin_bases = {
+                    canonical_asset(
+                        instrument_by_symbol[symbol].base
+                    )
+                    for symbol in spot_margin_position_symbols
+                    if symbol in instrument_by_symbol
+                }
+                for base_key, wallet_quantity in wallet_quantity_by_base.items():
+                    instrument = wallet_instrument_by_base.get(base_key)
+                    if (
+                        instrument is None
+                        or wallet_quantity <= 0
+                        or base_key in margin_bases
+                        or instrument.symbol in spot_margin_position_symbols
+                    ):
+                        continue
+                    lots = lots_by_base.get(base_key, [])
+                    if not lots or any(
+                        str(lot.get("symbol") or "") != instrument.symbol
+                        for lot in lots
+                    ):
+                        # Do not use a price from one quote market to manage lots
+                        # opened on another market for the same base asset.
+                        continue
+
+                    managed_quantity = D("0")
+                    basis_eur = D("0")
+                    lot_order_ids: set[str] = set()
+                    lot_decision_ids: set[str] = set()
+                    valid_lots = True
+                    for lot in lots:
+                        try:
+                            direction = str(lot.get("direction") or "").upper()
+                            quantity = dec(lot.get("remaining_quantity"))
+                            entry_price = dec(lot.get("entry_price"))
+                            quote_asset = str(lot.get("quote_asset") or "")
+                            order_id = str(lot.get("entry_order_id") or "").strip()
+                            decision_id = str(lot.get("opening_decision_id") or "").strip()
+                            detail = json.loads(lot.get("detail_json") or "{}")
+                            if not isinstance(detail, dict):
+                                detail = {}
+                            leverage = dec(detail.get("leverage") or "1")
+                            is_margin_lot = bool(detail.get("margin", False))
+                            quote_rate = self.quote_to_eur_rate(quote_asset)
+                            if (
+                                direction != "LONG"
+                                or quantity <= 0
+                                or entry_price <= 0
+                                or not order_id
+                                or not decision_id
+                                or is_margin_lot
+                                or leverage != D("1")
+                                or quote_rate is None
+                                or quote_rate <= 0
+                            ):
+                                valid_lots = False
+                                break
+                            managed_quantity += quantity
+                            basis_eur += quantity * entry_price * quote_rate
+                            lot_order_ids.add(order_id)
+                            lot_decision_ids.add(decision_id)
+                        except (ArithmeticError, TypeError, ValueError, json.JSONDecodeError):
+                            valid_lots = False
+                            break
+                    tolerance = max(D("0.00000001"), wallet_quantity.copy_abs() * D("0.000001"))
+                    if (
+                        not valid_lots
+                        or managed_quantity <= 0
+                        or basis_eur <= 0
+                        or abs(wallet_quantity - managed_quantity) > tolerance
+                        or not lot_order_ids
+                        or not lot_decision_ids
+                    ):
+                        continue
+
+                    price = self._spot_price(instrument)
+                    quote_rate = self.quote_to_eur_rate(instrument.quote)
+                    if price <= 0 or quote_rate is None or quote_rate <= 0:
+                        continue
+                    current_value_eur = wallet_quantity * price * quote_rate
+                    pnl_eur = current_value_eur - basis_eur
+                    position_basis_eur[instrument.symbol] = basis_eur
+                    position_quantity[instrument.symbol] = wallet_quantity
+                    position_pnl_eur[instrument.symbol] = pnl_eur
+                    position_pnl_pct[instrument.symbol] = pnl_eur / basis_eur * D("100")
+                    spot_cash_position_symbols.add(instrument.symbol)
+                    self.db.event(
+                        "PORTFOLIO_CASH_SPOT_LEDGER_MATCH",
+                        "INFO",
+                        {
+                            "symbol": instrument.symbol,
+                            "base_asset": base_key,
+                            "wallet_quantity": str(wallet_quantity),
+                            "ledger_quantity": str(managed_quantity),
+                            "basis_eur": str(basis_eur),
+                            "mark_to_market_pnl_eur": str(pnl_eur),
+                            "pnl_basis": "FIFO_ENTRY_COST_GROSS_MARK_TO_MARKET",
+                            "unique_open_orders": len(lot_order_ids),
+                            "unique_opening_decisions": len(lot_decision_ids),
+                        },
+                    )
+            except Exception as exc:
+                # Provenance/learning is auxiliary; never fail portfolio reconciliation.
+                self.db.event(
+                    "PORTFOLIO_CASH_SPOT_LEDGER_MATCH_FAILED",
+                    "WARNING",
+                    {"error_type": type(exc).__name__, "error": str(exc)[:300]},
+                )
+
         if getattr(self.gateway, "futures_enabled", False):
             try:
                 accounts = self.gateway.futures_accounts().get("accounts", {})
@@ -585,6 +735,8 @@ class PortfolioReconciler:
             position_basis_eur=position_basis_eur,
             position_quantity=position_quantity,
             spot_open_positions_read_ok=spot_open_positions_read_ok,
+            spot_wallet_read_ok=spot_wallet_read_ok,
+            spot_cash_position_symbols=tuple(sorted(spot_cash_position_symbols)),
             spot_margin_position_symbols=tuple(sorted(spot_margin_position_symbols)),
             spot_margin_open_order_ids={
                 symbol: tuple(sorted(order_ids))

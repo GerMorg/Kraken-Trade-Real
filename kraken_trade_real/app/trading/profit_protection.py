@@ -90,19 +90,56 @@ class PositionProfitProtection:
         current_pct: D,
     ) -> dict[str, Any] | None:
         """Create or reuse a position epoch; never label an inherited/manual path learnable."""
-        order_ids = sorted({
-            str(value).strip()
-            for value in getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
-            if str(value).strip()
-        })
-        direction = str(
-            getattr(portfolio, "spot_margin_position_directions", {}).get(symbol, "MIXED")
-            or "MIXED"
-        ).upper()
-        lot_count = int(
-            getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, len(order_ids))
-            or 0
+        is_cash_spot = symbol in getattr(portfolio, "spot_cash_position_symbols", ())
+        source = (
+            "APP_MANAGED_SPOT_WALLET_LEDGER"
+            if is_cash_spot
+            else "KRAKEN_OPENPOSITIONS_AGGREGATED"
         )
+        if is_cash_spot:
+            # Read the exact FIFO inventory contract used to prove this wallet
+            # quantity is app-managed cash Spot rather than manual/inherited assets.
+            ledger_lots = self.db.query(
+                """SELECT symbol,direction,entry_order_id,opening_decision_id,
+                          remaining_quantity,detail_json
+                   FROM core_inventory_lots
+                   WHERE symbol=? AND CAST(remaining_quantity AS REAL)>0
+                   ORDER BY opened_at,lot_id""",
+                (symbol,),
+            )
+            order_ids = sorted({
+                str(lot.get("entry_order_id") or "").strip()
+                for lot in ledger_lots
+                if str(lot.get("entry_order_id") or "").strip()
+            })
+            decision_ids_from_lots = sorted({
+                str(lot.get("opening_decision_id") or "").strip()
+                for lot in ledger_lots
+                if str(lot.get("opening_decision_id") or "").strip()
+            })
+            directions = {
+                str(lot.get("direction") or "").upper()
+                for lot in ledger_lots
+            }
+            direction = next(iter(directions)) if len(directions) == 1 else "MIXED"
+            # Multiple partial fills of one exchange order are one position lot
+            # for learning eligibility; distinct open orders remain ambiguous.
+            lot_count = len(order_ids)
+        else:
+            order_ids = sorted({
+                str(value).strip()
+                for value in getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
+                if str(value).strip()
+            })
+            direction = str(
+                getattr(portfolio, "spot_margin_position_directions", {}).get(symbol, "MIXED")
+                or "MIXED"
+            ).upper()
+            lot_count = int(
+                getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, len(order_ids))
+                or 0
+            )
+            decision_ids_from_lots = []
         active = self.db.active_core_exit_episode(symbol)
         same_identity = False
         if active is not None:
@@ -110,9 +147,19 @@ class PositionProfitProtection:
                 stored_ids = sorted(json.loads(active.get("open_order_ids_json") or "[]"))
             except (TypeError, ValueError):
                 stored_ids = []
+            try:
+                active_detail = json.loads(active.get("detail_json") or "{}")
+            except (TypeError, ValueError):
+                active_detail = {}
+            if not isinstance(active_detail, dict):
+                active_detail = {}
+            active_source = str(
+                active_detail.get("source") or "KRAKEN_OPENPOSITIONS_AGGREGATED"
+            )
             same_identity = (
                 stored_ids == order_ids
                 and str(active.get("direction") or "").upper() == direction
+                and active_source == source
             )
             if not same_identity:
                 self.db.close_core_exit_episode(
@@ -169,6 +216,11 @@ class PositionProfitProtection:
             str(row.get("decision_id") or "")
             for row in opening_rows if str(row.get("decision_id") or "")
         })
+        if is_cash_spot:
+            # Cross-check the decision set reconstructed from FIFO lots against
+            # the order joins; disagreement invalidates the episode for learning.
+            if set(decision_ids) != set(decision_ids_from_lots):
+                decision_ids = []
         matching_open_order = (
             opening_rows[0]
             if len(order_ids) == 1
@@ -216,7 +268,11 @@ class PositionProfitProtection:
             reason = "POSITION_PNL_OR_BASIS_UNAVAILABLE"
             episode_opened_at = observed_at
         elif len(order_ids) != 1 or lot_count != 1:
-            reason = "MULTIPLE_OPEN_MARGIN_LOTS"
+            reason = (
+                "MULTIPLE_OPEN_SPOT_ORDERS"
+                if is_cash_spot
+                else "MULTIPLE_OPEN_MARGIN_LOTS"
+            )
             episode_opened_at = observed_at
         elif matching_open_order is None or len(decision_ids) != 1:
             reason = "EXTERNAL_OR_UNATTRIBUTED_POSITION"
@@ -251,7 +307,12 @@ class PositionProfitProtection:
             eligibility_reason=reason,
             exit_policy_snapshot=policy,
             detail={
-                "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
+                "source": source,
+                "pnl_basis": (
+                    "FIFO_ENTRY_COST_GROSS_MARK_TO_MARKET"
+                    if is_cash_spot
+                    else "KRAKEN_OPENPOSITIONS_NET_PNL"
+                ),
                 "cycle_id": cycle_id,
                 "cycle_started_at": cycle_started_at,
                 "order_created_at": order_created_at,
@@ -275,25 +336,48 @@ class PositionProfitProtection:
 
     def observe(self, portfolio: PortfolioState, cycle_id: str = "") -> None:
         """Persist PnL high-water marks and reconcile outstanding partial exits."""
-        if not portfolio.spot_open_positions_read_ok:
-            # A failed OpenPositions read must never erase a high-water mark or
-            # conclude that a live position has disappeared.
+        if not (portfolio.spot_open_positions_read_ok or portfolio.spot_wallet_read_ok):
+            # With both source reads unavailable, neither exits nor episode closure
+            # may be inferred from missing data.
             return
 
-        active_symbols = set(portfolio.spot_margin_position_symbols)
-        active_symbols.update(
-            symbol for symbol in portfolio.position_pnl_pct
-            if symbol and symbol in portfolio.positions and portfolio.positions.get(symbol, D("0")) != 0
+        margin_active_symbols = (
+            set(portfolio.spot_margin_position_symbols)
+            if portfolio.spot_open_positions_read_ok else set()
         )
+        cash_active_symbols = (
+            set(portfolio.spot_cash_position_symbols)
+            if portfolio.spot_wallet_read_ok and portfolio.spot_open_positions_read_ok
+            else set()
+        )
+        active_symbols = margin_active_symbols | cash_active_symbols
         # A confirmed successful OpenPositions read is the only signal allowed
         # to close old path episodes. An API failure returned above without erasing
         # either high-water marks or learning evidence.
         try:
             for episode in self.db.query(
-                "SELECT episode_id,symbol,opened_at FROM core_exit_episodes WHERE closed_at IS NULL"
+                """SELECT episode_id,symbol,opened_at,detail_json
+                   FROM core_exit_episodes WHERE closed_at IS NULL"""
             ):
                 episode_symbol = str(episode.get("symbol") or "")
-                if episode_symbol and episode_symbol not in active_symbols:
+                try:
+                    episode_detail = json.loads(episode.get("detail_json") or "{}")
+                except (TypeError, ValueError):
+                    episode_detail = {}
+                if not isinstance(episode_detail, dict):
+                    episode_detail = {}
+                episode_source = str(
+                    episode_detail.get("source") or "KRAKEN_OPENPOSITIONS_AGGREGATED"
+                )
+                if episode_source == "APP_MANAGED_SPOT_WALLET_LEDGER":
+                    if not (portfolio.spot_wallet_read_ok and portfolio.spot_open_positions_read_ok):
+                        continue
+                    source_active = cash_active_symbols
+                else:
+                    if not portfolio.spot_open_positions_read_ok:
+                        continue
+                    source_active = margin_active_symbols
+                if episode_symbol and episode_symbol not in source_active:
                     episode_id = str(episode.get("episode_id") or "")
                     opened_at = float(episode.get("opened_at") or 0.0)
                     close_reason = self._position_exit_close_reason(episode_symbol, opened_at)
@@ -316,23 +400,24 @@ class PositionProfitProtection:
                 error=str(exc)[:240],
             )
 
-        rows = self.db.query(
-            "SELECT symbol FROM position_profit_state"
-        )
-        for row in rows:
-            symbol = str(row.get("symbol") or "")
-            if symbol and symbol not in active_symbols:
-                self.db.execute(
-                    "DELETE FROM position_profit_state WHERE symbol=?",
-                    (symbol,),
-                )
-                self.audit.emit(
-                    "POSITION_PROFIT_STATE_CLEARED",
-                    "INFO",
-                    cycle_id=cycle_id,
-                    symbol=symbol,
-                    reason="EXCHANGE_CONFIRMED_POSITION_ABSENT",
-                )
+        # A shared symbol-keyed high-water mark can be retired only when both
+        # the wallet and margin position feeds successfully confirm the snapshot.
+        if portfolio.spot_wallet_read_ok and portfolio.spot_open_positions_read_ok:
+            rows = self.db.query("SELECT symbol FROM position_profit_state")
+            for row in rows:
+                symbol = str(row.get("symbol") or "")
+                if symbol and symbol not in active_symbols:
+                    self.db.execute(
+                        "DELETE FROM position_profit_state WHERE symbol=?",
+                        (symbol,),
+                    )
+                    self.audit.emit(
+                        "POSITION_PROFIT_STATE_CLEARED",
+                        "INFO",
+                        cycle_id=cycle_id,
+                        symbol=symbol,
+                        reason="EXCHANGE_CONFIRMED_POSITION_ABSENT",
+                    )
 
         observation_time = float(portfolio.source_timestamp or time.time())
         for symbol in sorted(active_symbols):
@@ -440,28 +525,52 @@ class PositionProfitProtection:
                     error_type=type(exc).__name__,
                 )
             if episode is not None:
+                try:
+                    episode_detail = json.loads(episode.get("detail_json") or "{}")
+                except (TypeError, ValueError):
+                    episode_detail = {}
+                if not isinstance(episode_detail, dict):
+                    episode_detail = {}
                 final_state = self._state(symbol) or {}
                 basis = _d(portfolio.position_basis_eur.get(symbol))
                 quantity = _d(portfolio.position_quantity.get(symbol))
+                episode_is_cash = (
+                    symbol in getattr(portfolio, "spot_cash_position_symbols", ())
+                )
+                episode_source_read_ok = (
+                    bool(portfolio.spot_wallet_read_ok and portfolio.spot_open_positions_read_ok)
+                    if episode_is_cash
+                    else bool(portfolio.spot_open_positions_read_ok)
+                )
+                try:
+                    episode_order_ids = json.loads(episode.get("open_order_ids_json") or "[]")
+                except (TypeError, ValueError):
+                    episode_order_ids = []
+                if not isinstance(episode_order_ids, list):
+                    episode_order_ids = []
                 quality = {
-                    "open_positions_read_ok": bool(portfolio.spot_open_positions_read_ok),
+                    "open_positions_read_ok": episode_source_read_ok,
                     "pnl_present": symbol in portfolio.position_pnl_pct,
                     "basis_positive": basis > 0,
                     "quantity_positive": quantity > 0,
-                    "direction": str(
-                        getattr(portfolio, "spot_margin_position_directions", {}).get(
-                            symbol, "MIXED"
+                    "direction": (
+                        "LONG" if episode_is_cash
+                        else str(
+                            getattr(portfolio, "spot_margin_position_directions", {}).get(
+                                symbol, "MIXED"
+                            )
                         )
                     ),
-                    "open_order_ids": list(
-                        getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
-                    ),
-                    "open_lot_count": int(
-                        getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, 0)
-                        or 0
-                    ),
+                    "open_order_ids": episode_order_ids,
+                    "open_lot_count": int(episode.get("open_lot_count") or 0),
                     "eligible_for_learning": bool(int(episode.get("eligible_for_learning") or 0)),
                     "eligibility_reason": str(episode.get("eligibility_reason") or ""),
+                    "position_data_source": (
+                        "APP_MANAGED_SPOT_WALLET_LEDGER"
+                        if episode_is_cash
+                        else "KRAKEN_OPENPOSITIONS_AGGREGATED"
+                    ),
+                    "pnl_basis": str(episode_detail.get("pnl_basis") or ""),
                 }
                 try:
                     self.db.record_core_exit_observation(
@@ -504,13 +613,23 @@ class PositionProfitProtection:
         min_cost_eur: D,
     ) -> Decision | None:
         """Apply a profit-management override or forbid increasing a partly taken position."""
-        if (
-            instrument.venue != "spot"
-            or instrument.product_type != ProductType.SPOT_MARGIN
-        ):
+        if instrument.venue != "spot" or instrument.product_type not in {
+            ProductType.SPOT, ProductType.SPOT_MARGIN,
+        }:
             return decision
 
         symbol = instrument.symbol
+        if instrument.product_type == ProductType.SPOT:
+            # Cash-Spot protection is enabled only for fully matched app-managed
+            # FIFO inventory. Manual assets or any quantity discrepancy are excluded.
+            if not (
+                symbol in getattr(portfolio, "spot_cash_position_symbols", ())
+                and portfolio.spot_wallet_read_ok
+                and portfolio.spot_open_positions_read_ok
+            ):
+                return decision
+        elif symbol not in getattr(portfolio, "spot_margin_position_symbols", ()):
+            return decision
         current = _d(portfolio.positions.get(symbol))
         pnl_pct_value = portfolio.position_pnl_pct.get(symbol)
         if current == 0 or pnl_pct_value is None:
