@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.66
+
+- Derive Normal cash-Spot mark-to-market PnL from app-owned FIFO inventory only when the complete wallet quantity exactly matches unleveraged, single-quote-pair inventory.
+- Extend persistent Normal stop-loss, partial-profit and trailing-profit management to those proven cash-Spot holdings; manual, mixed, margin-backed, cross-pair or quantity-mismatched balances remain excluded.
+- Include fully attributed cash-Spot position episodes in Normal exit-path learning, only when the opening order/decision can be reconciled to the current-cycle entry.
+- Keep exit path capture alive only with trustworthy source reads and avoid closing/censoring episodes on failed wallet or margin-position reads.
+- Add regression coverage for exact-inventory matching, fail-closed handling, cash-Spot stops and exit-episode eligibility.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.66.
+
 ## 0.1.65
 
 - Train Tactical entry filters only from completed LIVE position episodes; historical SHADOW outcomes no longer contaminate live policy adaptation.
