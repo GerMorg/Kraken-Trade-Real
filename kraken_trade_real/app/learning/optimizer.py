@@ -32,21 +32,116 @@ class AdaptiveParameterOptimizer:
         except (TypeError, ValueError):
             return 0.0
 
-    def optimize_tactical(self, now: float | None = None) -> dict[str, Any]:
-        now = time.time() if now is None else float(now)
-        rows = self.db.query(
-            """SELECT trade_id,closed_at,net_pnl_eur,fees_eur,exit_reason,detail_json
+    TACTICAL_ENTRY_OUTCOME_BASIS = (
+        "LIVE_POSITION_EPISODES_WITH_CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED"
+    )
+
+    def _load_live_tactical_episodes(self, now: float) -> tuple[list[dict[str, Any]], int]:
+        """Aggregate complete LIVE position episodes; never mix in SHADOW samples.
+
+        A position may have several partial-close rows. Those rows form one
+        learning outcome, and an episode is excluded while its position remains
+        open. Fees/net values are the configured-cost estimates stored by the
+        Tactical engine, not ledger-verified exchange net PnL.
+        """
+        raw_rows = self.db.query(
+            """SELECT trade_id,symbol,direction,opened_at,closed_at,
+                      gross_pnl_eur,fees_eur,net_pnl_eur,exit_reason,detail_json
                FROM tactical_trades
                WHERE closed_at >= ?
-               ORDER BY closed_at DESC LIMIT 600""",
+               ORDER BY closed_at ASC,trade_id ASC LIMIT 1800""",
             (now - 180 * 86400,),
         )
-        rows.reverse()
+        active = {
+            (str(row.get("symbol") or ""), float(row.get("opened_at") or 0))
+            for row in self.db.tactical_positions()
+        }
+        grouped: dict[tuple[str, float, str], dict[str, Any]] = {}
+        non_live_rows = 0
+
+        for row in raw_rows:
+            try:
+                detail = json.loads(row.get("detail_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                detail = {}
+            if not isinstance(detail, dict) or str(detail.get("mode") or "").upper() != "LIVE":
+                non_live_rows += 1
+                continue
+
+            symbol = str(row.get("symbol") or "")
+            direction = str(row.get("direction") or "").upper()
+            try:
+                opened_at = float(row.get("opened_at") or 0)
+                closed_at = float(row.get("closed_at") or 0)
+                gross = float(row.get("gross_pnl_eur") or 0)
+                fees = float(row.get("fees_eur") or 0)
+                net = float(row.get("net_pnl_eur"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            values = (opened_at, closed_at, gross, fees, net)
+            if (
+                not symbol
+                or direction not in {"LONG", "SHORT"}
+                or opened_at <= 0
+                or closed_at <= opened_at
+                or not all(math.isfinite(value) for value in values)
+                or fees < 0
+            ):
+                continue
+
+            key = (symbol, opened_at, direction)
+            episode = grouped.get(key)
+            if episode is None:
+                grouped[key] = {
+                    "trade_id": str(row.get("trade_id") or ""),
+                    "symbol": symbol,
+                    "direction": direction,
+                    "opened_at": opened_at,
+                    "closed_at": closed_at,
+                    "gross_pnl_eur": gross,
+                    "fees_eur": fees,
+                    "net_pnl_eur": net,
+                    "exit_reason": str(row.get("exit_reason") or ""),
+                    "detail_json": json.dumps(detail, sort_keys=True, default=str),
+                    "trade_ids": [str(row.get("trade_id") or "")],
+                }
+            else:
+                episode["gross_pnl_eur"] += gross
+                episode["fees_eur"] += fees
+                episode["net_pnl_eur"] += net
+                episode["trade_ids"].append(str(row.get("trade_id") or ""))
+                if closed_at >= float(episode["closed_at"]):
+                    episode["closed_at"] = closed_at
+                    episode["trade_id"] = str(row.get("trade_id") or "")
+                    episode["exit_reason"] = str(row.get("exit_reason") or "")
+                    episode["detail_json"] = json.dumps(detail, sort_keys=True, default=str)
+
+        # Do not label a partial close as a completed outcome while the position
+        # still exists. Otherwise one trade could be counted several times.
+        episodes = [
+            episode for key, episode in grouped.items()
+            if (key[0], key[1]) not in active
+        ]
+        episodes.sort(
+            key=lambda item: (
+                float(item["closed_at"]),
+                str(item["symbol"]),
+                float(item["opened_at"]),
+                str(item["trade_id"]),
+            )
+        )
+        return episodes, non_live_rows
+
+    def optimize_tactical(self, now: float | None = None) -> dict[str, Any]:
+        now = time.time() if now is None else float(now)
+        rows, excluded_non_live_rows = self._load_live_tactical_episodes(now)
         if len(rows) < self.MIN_TRADES:
             return {
                 "status": "INSUFFICIENT_REALIZED_TRADES",
                 "samples": len(rows),
                 "minimum_samples": self.MIN_TRADES,
+                "excluded_non_live_rows": excluded_non_live_rows,
+                "outcome_basis": self.TACTICAL_ENTRY_OUTCOME_BASIS,
             }
 
         last_evaluated = self.db.one(
@@ -57,17 +152,19 @@ class AdaptiveParameterOptimizer:
                 last_evaluated_at = float(last_evaluated["value"])
             except (TypeError, ValueError):
                 last_evaluated_at = 0.0
-            new_trade_row = self.db.one(
-                "SELECT COUNT(*) AS n FROM tactical_trades WHERE closed_at > ?",
-                (last_evaluated_at,),
+            # Count complete, distinct LIVE position episodes only. Shadow
+            # samples and additional partial-close rows cannot advance this gate.
+            new_trade_count = sum(
+                1 for row in rows
+                if float(row.get("closed_at") or 0) > last_evaluated_at
             )
-            new_trade_count = int(new_trade_row["n"]) if new_trade_row else 0
             if new_trade_count < 10:
                 return {
                     "status": "WAITING_FOR_NEW_TRADE_DATA",
                     "samples": len(rows),
                     "new_trades_since_last_evaluation": new_trade_count,
                     "minimum_new_trades": 10,
+                    "outcome_basis": self.TACTICAL_ENTRY_OUTCOME_BASIS,
                 }
 
         recent = rows[-self.WINDOW:]
@@ -77,6 +174,7 @@ class AdaptiveParameterOptimizer:
                 "status": "INSUFFICIENT_COMPARISON_WINDOW",
                 "samples": len(rows),
                 "validation_samples": len(recent),
+                "outcome_basis": self.TACTICAL_ENTRY_OUTCOME_BASIS,
             }
 
         def mark_evaluated() -> None:
@@ -208,6 +306,7 @@ class AdaptiveParameterOptimizer:
                 "previous": before,
                 "recent": after,
                 "active_version": active_version,
+                "outcome_basis": self.TACTICAL_ENTRY_OUTCOME_BASIS,
             }
             mark_evaluated()
             self.db.learning_event("ADAPTIVE_POLICY_EVALUATED", active_version, result)
@@ -230,6 +329,8 @@ class AdaptiveParameterOptimizer:
             "reason": reason,
             "changed_parameters": changed,
             "not_counterfactual_backtest": True,
+            "outcome_basis": self.TACTICAL_ENTRY_OUTCOME_BASIS,
+            "learning_mode": "LIVE_ONLY",
         }
         existing = self.db.one(
             "SELECT status FROM model_versions WHERE version=?", (version,)
@@ -251,6 +352,8 @@ class AdaptiveParameterOptimizer:
             "reason": reason,
             "candidate_version": version,
             "promoted": promoted,
+            "outcome_basis": self.TACTICAL_ENTRY_OUTCOME_BASIS,
+            "learning_mode": "LIVE_ONLY",
         }
         mark_evaluated()
         self.db.learning_event("ADAPTIVE_POLICY_EVALUATED", version, result)
