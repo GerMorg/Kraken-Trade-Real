@@ -2,12 +2,12 @@
 
 Last reconciled against GitHub: 2026-10-11  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.77** (v0.1.78 in review on fix/tactical-global-net-limit-v0.1.78)  
-Latest runtime release commit (v0.1.77): `aabe554cf0b3e2b9a1e7eaa5492df39366b1a839`
+Main version: **0.1.78** (v0.1.78 in review on fix/tactical-global-net-limit-v0.1.78)  
+Latest runtime release commit (v0.1.78): `725fad7c73787d63b620b6fdc2baeb9c6e41ceb5`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Current review — v0.1.78
+## Latest release — v0.1.78
 
 - Scope: keep the portfolio-wide risk_max_net_pct hard cap authoritative for both Core and Tactical entries. A Tactical risk_position_limit_pct is a per-position limit and must not widen the global net exposure limit.
 - Regression: the existing high-conviction Tactical test used an 80% position limit and incorrectly expected a 75%-of-equity entry to pass even though the configured global net cap is 50%. v0.1.78 changes that assertion to require a net_limit rejection.
@@ -20,8 +20,9 @@ All listed PRs were merged only after all five CI jobs passed.
 
 - **0.1.74 — PR #79:** Fixed Spot fill-history sync. Kraken `TradesHistory` is paginated with `ofs`; the previous `with_cursor`, `cursor`, and `limit` arguments caused `EGeneral:Invalid arguments`. Sync progress is now durably resumed by offset.
 - **0.1.75 — PR #80:** Added early exchange-minimum checks for new/increased orders. Emits `CYCLE_ORDER_BELOW_MINIMUM`; does not round orders up or bypass risk/cash limits. Reduce-only dust handling and Futures quantity semantics remain separate.
-- **0.1.76 — PR #81:** Tactical cooldown is now a bounded, versioned learned parameter (30–600 seconds), hidden from HA options and protected against legacy `options.json` overrides. It increases after poor verified live outcomes and decreases cautiously only after improving outcomes. Hard trade-rate and risk caps remain immutable.
 - **0.1.77 — PR #82:** Added numerical context and `failed_checks` to `CYCLE_RISK_DECISION` so daily-loss, gross/net exposure, cash reserve, drawdown and position-limit blocks can be diagnosed from logs. Risk decisions themselves were not loosened.
+- **0.1.76 — PR #81:** Tactical cooldown is now a bounded, versioned learned parameter (30–600 seconds), hidden from HA options and protected against legacy `options.json` overrides. It increases after poor verified live outcomes and decreases cautiously only after improving outcomes. Hard trade-rate and risk caps remain immutable.
+- **0.1.78 — PR #85:** Fixed Tactical risk-gate inconsistency: a Tactical per-position allowance can no longer widen the portfolio-wide `risk_max_net_pct` hard cap. Regression coverage now requires a `net_limit` rejection for 75% projected net exposure when the global cap is 50%, even if the Tactical per-position cap is 80%.
 - Obsolete PRs #30, #35 and #49 were closed as superseded by later releases and the newer adaptive-policy architecture.
 
 ## Findings from the supplied v0.1.56 log
