@@ -598,6 +598,13 @@ class TradingRuntime:
                 cycle_key=cycle_id,
                 preserve_symbols=position_symbols | position_candidate_symbols,
             )
+            history_candidates, held_positions_forced_into_history = (
+                self.scanner.include_held_positions_in_history(
+                    history_candidates,
+                    position_instruments,
+                    set(ticker_snapshots),
+                )
+            )
             ticker_instruments=[
                 instrument for instrument in self.instruments
                 if instrument.symbol in ticker_snapshots
@@ -610,6 +617,7 @@ class TradingRuntime:
                 candidates=len(prefiltered),
                 history_candidates=len(history_candidates),
                 position_candidates=len(position_instruments),
+                held_positions_forced_into_history=held_positions_forced_into_history,
                 core_history_limit=self.config.market_history_candidate_limit,
                 exploration_candidates=max(
                     0,len(history_candidates)-min(
