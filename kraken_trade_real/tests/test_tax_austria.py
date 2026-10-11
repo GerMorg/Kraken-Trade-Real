@@ -82,10 +82,13 @@ def test_alt_crypto_to_crypto_swap_is_not_reported_as_tax_neutral():
 
 
 def test_historical_crypto_swap_before_neutral_rollover_date_requires_review():
+    from datetime import datetime, timezone
+
     ledger = AustrianTaxLedger()
-    ledger.acquire("BTC", Decimal("1"), Decimal("1000"), ts(2021))
+    dec_2021 = datetime(2021, 12, 1, tzinfo=timezone.utc).timestamp()
+    ledger.acquire("BTC", Decimal("1"), Decimal("1000"), dec_2021)
     try:
-        ledger.crypto_to_crypto_swap("BTC", Decimal("1"), "ETH", Decimal("10"), ts(2021))
+        ledger.crypto_to_crypto_swap("BTC", Decimal("1"), "ETH", Decimal("10"), dec_2021)
     except ValueError as exc:
         assert "pre-2022" in str(exc)
     else:
