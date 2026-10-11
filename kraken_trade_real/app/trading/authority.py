@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 import time
 import threading
 from typing import Any, Iterable
@@ -594,19 +595,28 @@ class TradingAuthority:
         }
         try:
             decision = self.db.one(
-                """SELECT current_position_eur,target_position_eur,target_notional_eur,
-                          rationale_json FROM decisions WHERE decision_id=?""",
+                """SELECT target_notional_eur,leverage,rationale_json
+                   FROM decisions WHERE decision_id=?""",
                 (intent.decision_id,),
             )
             if decision:
-                context["current_position_eur"] = str(decision.get("current_position_eur") or "0")
-                context["target_position_eur"] = str(decision.get("target_position_eur") or "0")
-                context["target_notional_eur"] = str(decision.get("target_notional_eur") or "0")
+                context["decision_target_notional_eur"] = str(
+                    decision.get("target_notional_eur") or "0"
+                )
+                context["decision_leverage"] = str(decision.get("leverage") or "1")
                 try:
                     rationale = json.loads(decision.get("rationale_json") or "{}")
                 except (TypeError, ValueError, json.JSONDecodeError):
                     rationale = {}
                 if isinstance(rationale, dict):
+                    for source, target in (
+                        ("current_position_eur", "current_position_eur"),
+                        ("target_position_eur", "target_position_eur"),
+                        ("trade_notional_eur", "decision_trade_notional_eur"),
+                        ("target_position_usd", "target_position_usd"),
+                    ):
+                        if rationale.get(source) is not None:
+                            context[target] = str(rationale[source])
                     context["risk_profile"] = str(rationale.get("risk_profile") or "core")
                     for key in ("position_management_action", "rebalance_reason", "edge_tier"):
                         if rationale.get(key) is not None:
@@ -624,6 +634,7 @@ class TradingAuthority:
         *,
         error_type: str,
         venue: str | None = None,
+        extra_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         error_class, suggested_action = self._submission_error_class(error_text)
         context = self._intent_audit_context(intent, market)
@@ -635,6 +646,8 @@ class TradingAuthority:
         })
         if venue:
             context["venue"] = venue
+        if extra_context:
+            context.update(extra_context)
         self.audit.emit("ORDER_REJECTED_EXCHANGE", "WARNING", **context)
         try:
             self.db.event("ORDER_SUBMISSION_REJECTED", "WARNING", context)
@@ -732,12 +745,7 @@ class TradingAuthority:
                         error_text,
                         error_type="KrakenFuturesSendStatusRejected",
                         venue="futures",
-                    )
-                    self.audit.emit(
-                        "ORDER_REJECTED_EXCHANGE_DETAIL",
-                        "WARNING",
-                        exchange_status=exchange_status,
-                        **{key: value for key, value in rejection.items() if key != "error"},
+                        extra_context={"exchange_status": exchange_status},
                     )
                     return {
                         "state": OrderState.REJECTED.value,
