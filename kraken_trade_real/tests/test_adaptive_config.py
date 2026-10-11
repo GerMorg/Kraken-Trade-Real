@@ -737,3 +737,75 @@ def test_registry_rejects_core_market_filter_values_outside_hard_bounds(db):
         registry.register_candidate(version, "strategy_core", parent, params, metrics)
         assert registry.promote_adaptive_policy(version) is False
         assert registry.active("strategy_core") == parent
+
+def test_core_optimizer_restores_learned_market_filters_toward_baseline(db):
+    registry = ModelRegistry(db)
+    parent = registry.active("strategy_core")
+    tightened = dict(CORE_DEFAULTS)
+    tightened["market_min_liquidity_eur"] = 150.0
+    tightened["market_max_spread_bps"] = 45.0
+    registry.register_candidate(
+        "core-market-policy-pre-tightened",
+        "strategy_core",
+        parent,
+        tightened,
+        {
+            "kind": "bounded_core_outcome_controller",
+            "samples": 60,
+            "previous_samples": 30,
+            "recent_samples": 30,
+            "action": "TIGHTEN",
+            "previous_mean_verified_net_return_bps": -30.0,
+            "recent_mean_verified_net_return_bps": -20.0,
+            "recent_positive_verified_net_rate": 0.20,
+            "data_basis": "ledger_verified_non_margin_spot_net_return_bps",
+            "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
+            "exchange_fee_estimates_used": False,
+            "verified_net_pnl_used": True,
+        },
+    )
+    assert registry.promote_adaptive_policy("core-market-policy-pre-tightened") is True
+
+    now = 1_800_000_000.0
+    for index in range(60):
+        decision_id = f"core-market-restore-decision-{index}"
+        closed_at = now - (60 - index) * 3600.0
+        net_return_bps = "5" if index < 30 else "30"
+        net_return = float(net_return_bps)
+        net_pnl = str(net_return / 100.0)
+        db.execute(
+            """INSERT INTO decisions(
+                 decision_id,created_at,symbol,direction,target_notional_eur,leverage,
+                 expected_return_bps,expected_cost_bps,confidence,regime,news_effect_bps,
+                 gemini_effect_bps,strategy_version,model_version,config_hash,rationale_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                decision_id, closed_at - 600, "XBT/EUR", "LONG", "100", "1",
+                "150", "20", "0.70", "TRENDING", "0", "0",
+                "core-v1", "baseline-v1", "test", "{}",
+            ),
+        )
+        db.execute(
+            """INSERT INTO core_realized_outcomes(
+                 opening_decision_id,symbol,direction,first_opened_at,last_closed_at,
+                 matched_legs,closed_quantity,closed_notional_quote,gross_pnl_quote,
+                 fees_est_quote,estimated_net_pnl_quote,gross_return_bps,
+                 estimated_net_return_bps,quote_asset,fee_status,net_verified,
+                 verified_fees_quote,verified_net_pnl_quote,verified_net_return_bps,detail_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                decision_id, "XBT/EUR", "LONG", closed_at - 600, closed_at, 1,
+                "1", "100", net_pnl, "0.1", net_pnl, net_return_bps,
+                net_return_bps, "ZEUR", "LEDGER_VERIFIED_SPOT_NET", 1,
+                "0.1", net_pnl, net_return_bps, "{}",
+            ),
+        )
+
+    optimizer = AdaptiveParameterOptimizer(db, registry)
+    result = optimizer.optimize_core_entry_policy(now)
+
+    assert result["status"] == "PROMOTED", result
+    assert result["action"] == "RESTORE_TOWARD_DEFAULTS"
+    params = registry.parameters(registry.active("strategy_core"), family="strategy_core")
+    assert params["market_min_liquidity_eur"] == 145.5
+    assert params["market_max_spread_bps"] == 46.35
