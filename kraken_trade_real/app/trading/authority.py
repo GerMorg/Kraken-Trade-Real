@@ -9,6 +9,8 @@ from typing import Any, Iterable
 from app.domain.models import Instrument, OrderIntent, is_valid_kraken_client_order_id
 from app.domain.states import OrderState
 from app.kraken.client import KrakenAmbiguous, KrakenError
+from app.domain.symbols import canonical_asset
+from app.trading.cash_budget import spot_cash_required_quote
 
 
 D = Decimal
@@ -887,6 +889,98 @@ class TradingAuthority:
                 return parsed
         return instrument.leverage_levels
 
+    def _spot_available_balance(self, asset: str) -> tuple[D | None, str]:
+        """Read Kraken BalanceEx free funds; never treat a failed read as zero holds."""
+        reader = getattr(self.gateway, "spot_balance_extended", None)
+        if not callable(reader):
+            # Lightweight test/legacy gateways without BalanceEx retain preflight
+            # compatibility; the shipped KrakenGateway always exposes this method.
+            return None, ""
+        try:
+            rows = reader()
+            if not isinstance(rows, dict):
+                return None, "BALANCE_EX_INVALID_RESPONSE"
+            target = canonical_asset(asset)
+            available = D("0")
+            for raw_asset, row in rows.items():
+                if canonical_asset(raw_asset) != target:
+                    continue
+                if not isinstance(row, dict):
+                    return None, "BALANCE_EX_INVALID_ASSET_ROW"
+                balance = D(str(row.get("balance") or "0"))
+                credit = D(str(row.get("credit") or "0"))
+                credit_used = D(str(row.get("credit_used") or "0"))
+                hold_trade = D(str(row.get("hold_trade") or "0"))
+                values = (balance, credit, credit_used, hold_trade)
+                if not all(value.is_finite() for value in values):
+                    return None, "BALANCE_EX_NON_FINITE_VALUE"
+                available += balance + credit - credit_used - hold_trade
+            return max(D("0"), available), ""
+        except Exception as exc:
+            return None, f"{type(exc).__name__}:{str(exc)[:250]}"
+
+    def _preflight_available_spot_funds(
+        self, intent: OrderIntent, market: Any
+    ) -> dict[str, Any] | None:
+        """Gate Spot cash buys/sells against free funds, including external open orders."""
+        if (
+            intent.instrument.venue != "spot"
+            or intent.leverage > D("1")
+            or bool(getattr(intent, "margin", False))
+            or str(getattr(intent.instrument.product_type, "value", "")) == "DERIVATIVE"
+        ):
+            return None
+
+        side = str(intent.side or "").strip().lower()
+        if side == "buy" and not intent.reduce_only:
+            asset = intent.instrument.quote
+            price = intent.limit_price
+            if price is None or D(str(price)) <= 0:
+                price = getattr(market, "ask", None) or getattr(market, "price", None)
+            try:
+                required = spot_cash_required_quote(
+                    D(str(intent.quantity)), D(str(price or "0")), self.config
+                )
+            except (ArithmeticError, TypeError, ValueError):
+                required = D("0")
+            if required <= 0:
+                return {
+                    "allowed": False,
+                    "reason": "SPOT_CASH_BUDGET_PRICE_UNAVAILABLE",
+                    "detail": {"asset": str(asset), "quantity": str(intent.quantity)},
+                }
+        elif side == "sell":
+            asset = intent.instrument.base
+            required = D(str(intent.quantity))
+        else:
+            return None
+
+        available, error = self._spot_available_balance(str(asset))
+        if error:
+            return {
+                "allowed": False,
+                "reason": "SPOT_AVAILABLE_BALANCE_UNAVAILABLE",
+                "detail": {"asset": str(asset), "error": error},
+            }
+        if available is None:
+            return None
+        if required > available:
+            return {
+                "allowed": False,
+                "reason": (
+                    "SPOT_AVAILABLE_QUOTE_INSUFFICIENT"
+                    if side == "buy"
+                    else "SPOT_AVAILABLE_BASE_INSUFFICIENT"
+                ),
+                "detail": {
+                    "asset": str(asset),
+                    "required": str(required),
+                    "available": str(available),
+                    "held_or_reserved_funds_included": True,
+                },
+            }
+        return None
+
     def _preflight(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         if not self.config.kraken_enabled:
             return {"allowed": False, "reason": "KRAKEN_DISABLED"}
@@ -1062,6 +1156,10 @@ class TradingAuthority:
             estimated,
             reduce_only=intent.reduce_only,
         )
+        if ok:
+            funds_check = self._preflight_available_spot_funds(intent, market)
+            if funds_check is not None:
+                return funds_check
         return {
             "allowed": ok,
             "reason": reason if not ok else "PRECHECK_OK",
