@@ -9,6 +9,15 @@ from app.domain.models import MarketSnapshot
 D = Decimal
 
 
+def _liquidity_feature(s: MarketSnapshot) -> D:
+    # Spot snapshots are normalized by MarketScanner before feature calculation.
+    # Futures may lack a comparable EUR turnover field, so retain their own raw
+    # volume only as an intra-derivative feature rather than as a Spot filter value.
+    if s.liquidity_eur_24h is not None:
+        return s.liquidity_eur_24h
+    return s.volume_24h
+
+
 class FeatureEngine:
     def calculate(self, s: MarketSnapshot) -> dict[str, D]:
         c = list(s.closes)
@@ -16,7 +25,7 @@ class FeatureEngine:
             return {
                 "return_1": D(0), "return_5": D(0), "return_15": D(0), "return_60": D(0), "return_240": D(0), "volatility": D(999),
                 "downside_volatility": D(999), "ema_slope": D(0), "sma_slope": D(0),
-                "atr_proxy": D(999), "trend": D(0), "liquidity": s.volume_24h,
+                "atr_proxy": D(999), "trend": D(0), "liquidity": _liquidity_feature(s),
                 "spread_bps": s.spread_bps, "book_imbalance": D(0),
                 "book_depth": D(0), "impact_bps": D(999),
             }
@@ -49,7 +58,7 @@ class FeatureEngine:
             "sma_slope": pct(sf, ss),
             "atr_proxy": sum((abs(x) for x in rs[-min(14, len(rs)):]), D(0)) / D(min(14, len(rs))),
             "trend": pct(ef, es),
-            "liquidity": s.volume_24h,
+            "liquidity": _liquidity_feature(s),
             "spread_bps": s.spread_bps,
             "book_imbalance": imbalance,
             "book_depth": bid_depth + ask_depth,

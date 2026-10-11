@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 from decimal import Decimal
@@ -23,6 +24,122 @@ class MarketScanner:
         self.min_liquidity = D(str(min_liquidity_eur))
         self.max_spread = D(str(max_spread_bps))
         self.freshness_seconds = freshness_seconds
+
+    FX_CONVERSION_ASSETS = frozenset({
+        "EUR", "USD", "GBP", "CHF", "CAD", "AUD", "JPY", "NZD",
+        "USDT", "USDC", "DAI",
+    })
+
+    def normalize_liquidity_eur(
+        self,
+        instruments: Iterable[Instrument],
+        snapshots: dict[str, MarketSnapshot],
+        *,
+        conversion_snapshots: dict[str, MarketSnapshot] | None = None,
+    ) -> dict[str, Any]:
+        """Set each Spot market's 24h quote turnover converted into EUR.
+
+        Kraken's Spot Ticker `v[1]` is base-asset volume, not quote or EUR
+        turnover. Futures contract volumes are deliberately left unnormalized
+        because their nominal units differ across contracts.
+        """
+        instrument_list = list(instruments)
+        rates_source = conversion_snapshots if conversion_snapshots is not None else snapshots
+        graph: dict[str, list[tuple[str, D]]] = {}
+
+        for instrument in instrument_list:
+            if (
+                instrument.venue != "spot"
+                or instrument.product_type.value == "DERIVATIVE"
+                or not instrument.tradeable
+            ):
+                continue
+            snap = rates_source.get(instrument.symbol)
+            if (
+                snap is None
+                or snap.age_seconds > self.freshness_seconds
+                or snap.price <= 0
+            ):
+                continue
+            base = canonical_asset(instrument.base)
+            quote = canonical_asset(instrument.quote)
+            if not base or not quote or base == quote:
+                continue
+            graph.setdefault(base, []).append((quote, snap.price))
+            graph.setdefault(quote, []).append((base, D("1") / snap.price))
+
+        rate_cache: dict[str, D | None] = {"EUR": D("1")}
+
+        def to_eur_rate(asset: str) -> D | None:
+            source = canonical_asset(asset)
+            if not source:
+                return None
+            if source in rate_cache:
+                return rate_cache[source]
+            # Breadth-first traversal prefers the shortest available conversion.
+            # A non-fiat quote may convert directly into a supported currency,
+            # but intermediate hops are restricted to currencies/stablecoins.
+            queue: list[tuple[str, D]] = [(source, D("1"))]
+            visited = {source}
+            index = 0
+            while index < len(queue):
+                current, rate = queue[index]
+                index += 1
+                for neighbor, multiplier in graph.get(current, ()):
+                    if neighbor in visited:
+                        continue
+                    if neighbor != "EUR" and neighbor not in self.FX_CONVERSION_ASSETS:
+                        continue
+                    next_rate = rate * multiplier
+                    if neighbor == "EUR":
+                        result = next_rate if next_rate > 0 else None
+                        rate_cache[source] = result
+                        return result
+                    visited.add(neighbor)
+                    queue.append((neighbor, next_rate))
+            rate_cache[source] = None
+            return None
+
+        normalized = 0
+        unavailable = 0
+        for instrument in instrument_list:
+            snap = snapshots.get(instrument.symbol)
+            if snap is None:
+                continue
+            if instrument.venue != "spot" or instrument.product_type.value == "DERIVATIVE":
+                snapshots[instrument.symbol] = replace(
+                    snap,
+                    quote_asset=canonical_asset(instrument.quote),
+                    liquidity_eur_24h=None,
+                )
+                continue
+
+            quote = canonical_asset(instrument.quote)
+            turnover_quote = snap.volume_24h_quote
+            if turnover_quote is None:
+                turnover_quote = snap.volume_24h * snap.price
+            rate = to_eur_rate(quote)
+            liquidity_eur = (
+                turnover_quote * rate
+                if rate is not None and turnover_quote >= 0
+                else None
+            )
+            snapshots[instrument.symbol] = replace(
+                snap,
+                quote_asset=quote,
+                volume_24h_quote=turnover_quote,
+                liquidity_eur_24h=liquidity_eur,
+            )
+            if liquidity_eur is None:
+                unavailable += 1
+            else:
+                normalized += 1
+
+        return {
+            "normalized_spot_markets": normalized,
+            "unavailable_spot_markets": unavailable,
+            "fx_conversion_markets": sum(len(edges) for edges in graph.values()) // 2,
+        }
 
     @staticmethod
     def product_family(instrument: Instrument) -> str:
@@ -83,6 +200,8 @@ class MarketScanner:
         *,
         require_history: bool = True,
     ) -> tuple[list[Instrument], dict[str, Any]]:
+        instrument_list = list(instruments)
+        liquidity_diagnostics = self.normalize_liquidity_eur(instrument_list, snapshots)
         candidates: list[Instrument] = []
         total_by_family: dict[str, int] = {}
         excluded_by_reason: dict[str, int] = {}
@@ -91,7 +210,7 @@ class MarketScanner:
         def inc(container: dict[str, int], key: str) -> None:
             container[key] = container.get(key, 0) + 1
 
-        for instrument in instruments:
+        for instrument in instrument_list:
             family = self.product_family(instrument)
             inc(total_by_family, family)
             family_stats.setdefault(
@@ -109,8 +228,11 @@ class MarketScanner:
                 reason = "STALE_TICKER"
             elif snap.spread_bps > self.max_spread:
                 reason = "SPREAD_TOO_WIDE"
+            elif instrument.product_type.value != "DERIVATIVE" and snap.liquidity_eur_24h is None:
+                reason = "LIQUIDITY_EUR_UNAVAILABLE"
             elif (
-                snap.volume_24h < self.min_liquidity
+                snap.liquidity_eur_24h is not None
+                and snap.liquidity_eur_24h < self.min_liquidity
                 and instrument.product_type.value != "DERIVATIVE"
             ):
                 reason = "LIQUIDITY_TOO_LOW"
@@ -125,13 +247,37 @@ class MarketScanner:
             candidates.append(instrument)
             family_stats[family]["passed"] += 1
 
-        candidates.sort(key=lambda i: snapshots[i.symbol].volume_24h, reverse=True)
+        # Spot markets are ranked by quote turnover in EUR, never raw base units.
+        # Derivatives without a verified EUR notional stay for family exploration.
+        candidates.sort(
+            key=lambda i: snapshots[i.symbol].liquidity_eur_24h or D("0"),
+            reverse=True,
+        )
         return candidates, {
             "discovered": total_by_family,
             "excluded_by_reason": excluded_by_reason,
             "families": family_stats,
             "passed": len(candidates),
+            "eur_liquidity": liquidity_diagnostics,
         }
+
+    @staticmethod
+    def include_held_positions_in_history(
+        history_candidates: Iterable[Instrument],
+        held_positions: Iterable[Instrument],
+        available_ticker_symbols: set[str] | frozenset[str],
+    ) -> tuple[list[Instrument], int]:
+        """Keep held instruments observable even when entry filters exclude them."""
+        by_symbol = {instrument.symbol: instrument for instrument in history_candidates}
+        added = 0
+        for instrument in held_positions:
+            if (
+                instrument.symbol in available_ticker_symbols
+                and instrument.symbol not in by_symbol
+            ):
+                by_symbol[instrument.symbol] = instrument
+                added += 1
+        return list(by_symbol.values()), added
 
     def build_history_candidates(
         self,
