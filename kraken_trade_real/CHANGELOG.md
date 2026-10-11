@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.77
+
+- Extend `CYCLE_RISK_DECISION` with the actual equity, cash, daily PnL and daily-loss limit/headroom, drawdown, projected gross/net exposure, position percentage, cash reserve and position-count values.
+- Include the exact failed risk-check names so a `daily_loss`, `gross_limit`, `net_limit` or other block can be verified numerically instead of inferred from a reason label.
+- Keep the risk engine decision logic unchanged; this release improves observability only.
+- Add regression tests for numeric diagnostics and bump release version to 0.1.77.
+
 ## 0.1.76
 
 - Add Tactical cooldown to the internally managed, versioned policy; remove it from visible Home Assistant options and ignore stale values in existing options files.
