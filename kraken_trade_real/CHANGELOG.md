@@ -3,6 +3,7 @@
 ## 0.1.55
 
 - Capture the exact versioned Tactical entry policy and signal features alongside the opening decision before any order is submitted.
+- Evaluate learned entry filters against the same snapshot captured for that signal, preventing a concurrent policy refresh from recording a different set of thresholds.
 - Persist entry snapshots in SQLite with an idempotent schema migration; routine position updates preserve them instead of replacing them with empty defaults.
 - Restore entry-time policy/context when loading positions after a restart and when reconciling a pending entry order from its stored decision rationale.
 - Trade learning records now use true entry-time values and signal features. Legacy positions without a snapshot are explicitly marked as missing rather than filled with unrelated close-time parameters.
