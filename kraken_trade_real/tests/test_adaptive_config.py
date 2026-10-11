@@ -569,3 +569,106 @@ def test_core_optimizer_handles_positive_verified_outcomes_without_missing_stats
     # A positive but non-improving recent window must not crash or loosen defaults.
     assert result["status"] == "NO_SAFE_CORE_ADJUSTMENT", result
     assert result["recent"]["mean_verified_net_return_bps"] == 70.0
+
+
+def test_adaptive_config_enforces_tactical_move_thresholds_above_configured_costs():
+    class UnderCostRegistry:
+        def active(self, family="decision"):
+            return f"undercost-{family}"
+
+        def parameters(self, version=None, family="decision"):
+            if family == "strategy_tactical":
+                return {
+                    "tactical_min_expected_move_bps": 120.0,
+                    "tactical_adaptive_min_expected_move_bps": 100.0,
+                    "tactical_max_spread_bps": 40.0,
+                }
+            return {}
+
+    base = SimpleNamespace(
+        tactical_entry_fee_bps=90.0,
+        tactical_exit_fee_bps=100.0,
+        tactical_expected_slippage_bps=30.0,
+        tactical_safety_buffer_bps=35.0,
+        tactical_min_expected_move_bps=280.0,
+        tactical_adaptive_min_expected_move_bps=230.0,
+    )
+    config = AdaptiveConfig(base, UnderCostRegistry())
+
+    # Adaptive entries cover fixed costs; normal entries also cover the learned
+    # maximum spread. An invalid registry value must never reach the live signal gate.
+    assert config.tactical_adaptive_min_expected_move_bps == 256.0
+    assert config.tactical_min_expected_move_bps == 296.0
+
+
+def test_registry_rejects_tactical_policy_below_cost_floors(db):
+    registry = ModelRegistry(db)
+    parent = registry.active("strategy_tactical")
+
+    for version, key, unsafe_value, expected_reason in (
+        (
+            "tactical-policy-adaptive-move-under-cost",
+            "tactical_adaptive_min_expected_move_bps",
+            215.0,
+            "TACTICAL_ADAPTIVE_MOVE_BELOW_ESTIMATED_COST_FLOOR",
+        ),
+        (
+            "tactical-policy-move-under-round-trip-cost",
+            "tactical_min_expected_move_bps",
+            240.0,
+            "TACTICAL_MOVE_BELOW_ESTIMATED_ROUND_TRIP_COST_FLOOR",
+        ),
+    ):
+        params = dict(TACTICAL_DEFAULTS)
+        params[key] = unsafe_value
+        registry.register_candidate(
+            version,
+            "strategy_tactical",
+            parent,
+            params,
+            {"kind": "bounded_online_controller", "samples": 60},
+        )
+        assert registry.promote_adaptive_policy(version) is False
+        event = db.one(
+            "SELECT payload_json FROM events WHERE code='ADAPTIVE_POLICY_NOT_PROMOTED' "
+            "ORDER BY created_at DESC LIMIT 1"
+        )
+        assert event is not None
+        assert expected_reason in event["payload_json"]
+        assert registry.active("strategy_tactical") == parent
+
+
+def test_positive_tactical_optimizer_never_promotes_moves_below_cost_floor(db):
+    registry = ModelRegistry(db)
+    parent = registry.active("strategy_tactical")
+    near_floor = dict(TACTICAL_DEFAULTS)
+    near_floor["tactical_min_expected_move_bps"] = 242.0
+    near_floor["tactical_adaptive_min_expected_move_bps"] = 217.0
+    registry.register_candidate(
+        "tactical-policy-near-cost-floor",
+        "strategy_tactical",
+        parent,
+        near_floor,
+        {"kind": "bounded_online_controller", "samples": 60},
+    )
+    assert registry.promote_adaptive_policy("tactical-policy-near-cost-floor") is True
+
+    now = 1_800_000_000.0
+    rows = [
+        {
+            "trade_id": f"verified-live-episode-{index}",
+            "closed_at": now - (60 - index) * 600.0,
+            "net_pnl_eur": "1.0" if index < 30 else "2.0",
+        }
+        for index in range(60)
+    ]
+    optimizer = AdaptiveParameterOptimizer(db, registry)
+    optimizer._load_live_tactical_episodes = lambda _now: (rows, 0)
+    result = optimizer.optimize_tactical(now)
+
+    assert result["status"] == "PROMOTED", result
+    active = registry.parameters(registry.active("strategy_tactical"), family="strategy_tactical")
+    assert active["tactical_adaptive_min_expected_move_bps"] >= 216.0
+    assert active["tactical_min_expected_move_bps"] >= (
+        80.0 + 80.0 + active["tactical_max_spread_bps"] + 25.0 + 30.0 + 1.0
+    )
