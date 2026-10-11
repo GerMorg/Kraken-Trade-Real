@@ -256,6 +256,24 @@ class MarketScanner:
             "eur_liquidity": liquidity_diagnostics,
         }
 
+    @staticmethod
+    def include_held_positions_in_history(
+        history_candidates: Iterable[Instrument],
+        held_positions: Iterable[Instrument],
+        available_ticker_symbols: set[str] | frozenset[str],
+    ) -> tuple[list[Instrument], int]:
+        """Keep held instruments observable even when entry filters exclude them."""
+        by_symbol = {instrument.symbol: instrument for instrument in history_candidates}
+        added = 0
+        for instrument in held_positions:
+            if (
+                instrument.symbol in available_ticker_symbols
+                and instrument.symbol not in by_symbol
+            ):
+                by_symbol[instrument.symbol] = instrument
+                added += 1
+        return list(by_symbol.values()), added
+
     def build_history_candidates(
         self,
         prefiltered: Iterable[Instrument],
