@@ -1081,6 +1081,9 @@ class TacticalTrader:
                     )
                 )
 
+            # Capture the same actionable signal used by the reversal exit and
+            # persist it with this market observation for counterfactual replay.
+            opposite = self._opposite_signal(position)
             # Persist the full sequence, not just final MFE/MAE. The unique
             # observed_at key prevents repeatedly storing an unchanged WebSocket tick.
             try:
@@ -1094,6 +1097,8 @@ class TacticalTrader:
                     position.peak_price,
                     position.trough_price,
                     position.state,
+                    opposite.direction.value if opposite is not None else "",
+                    opposite.net_edge_bps if opposite is not None else D("0"),
                 )
             except Exception as exc:
                 # Learning telemetry must never block live exit/risk handling.
@@ -1138,7 +1143,6 @@ class TacticalTrader:
             ):
                 reason = "TIME_STOP"
 
-            opposite = self._opposite_signal(position)
             reversal_edge = D(str(getattr(self.config, "tactical_reversal_exit_bps", 120)))
             # A reversal exit requires an actionable signal in the other direction.
             # _build_signal() returns whichever side wins its setup score; it does
@@ -1599,6 +1603,7 @@ class TacticalTrader:
                 "trailing_trigger_bps": str(getattr(self.config, "tactical_trailing_trigger_bps", 100)),
                 "trailing_stop_pct": str(getattr(self.config, "tactical_trailing_stop_pct", 0.7)),
                 "max_hold_seconds": str(getattr(self.config, "tactical_max_hold_seconds", 1800)),
+                "reversal_exit_bps": str(getattr(self.config, "tactical_reversal_exit_bps", 120)),
             },
             "position_context": {
                 "venue": position.venue,
