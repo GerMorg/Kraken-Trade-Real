@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.68
+
+- Make Core/Normal adaptive-edge evaluation and Tactical adaptive-entry evaluation application-owned, always-enabled modes instead of manually changeable HA options.
+- Ignore legacy options that attempted to disable either adaptive path, ensuring the runtime policy remains consistent with its learner.
+- Remove both switches from the Home Assistant options/schema to reduce manual tuning and accidental divergence.
+- Add regression coverage proving stale options cannot disable adaptive strategy evaluation.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.68.
+
 ## 0.1.67
 
 - Allow strictly valid reduce-only exits to proceed when portfolio equity is zero or negative, so an extreme loss or degraded valuation cannot trap an existing position behind the equity-positive gate.
