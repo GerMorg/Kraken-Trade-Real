@@ -332,6 +332,37 @@ def test_core_optimizer_ignores_estimated_only_spot_outcomes(db):
     assert result["samples"] == 0
     assert registry.active("strategy_core") == "core-entry-baseline-v1"
 
+
+def test_registry_rejects_legacy_estimated_core_learning_candidate(db):
+    registry = ModelRegistry(db)
+    active_before = registry.active("strategy_core")
+    registry.register_candidate(
+        "core-policy-legacy-estimated-outcomes",
+        "strategy_core",
+        active_before,
+        dict(CORE_DEFAULTS),
+        {
+            "kind": "bounded_core_outcome_controller",
+            "samples": 60,
+            "previous_samples": 30,
+            "recent_samples": 30,
+            "action": "TIGHTEN",
+            "previous_mean_after_expected_cost_bps": -30.0,
+            "recent_mean_after_expected_cost_bps": -70.0,
+            "previous_positive_after_expected_cost_rate": 0.0,
+            "recent_positive_after_expected_cost_rate": 0.0,
+            "data_basis": "gross_return_bps_minus_decision_expected_cost_bps",
+            "exchange_fee_estimates_used": False,
+            "verified_net_pnl_used": False,
+            "data_scope": "APP_MANAGED_SPOT_MARGIN_ONLY",
+        },
+    )
+
+    assert registry.promote_adaptive_policy(
+        "core-policy-legacy-estimated-outcomes", minimum_samples=60
+    ) is False
+    assert registry.active("strategy_core") == active_before
+
 def test_adaptive_config_restores_safe_tactical_volatility_band_when_registry_is_invalid():
     class InvalidVolatilityRegistry:
         def active(self, family="decision"):
