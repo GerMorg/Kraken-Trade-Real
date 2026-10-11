@@ -212,6 +212,14 @@ class CoreSpotRealizedOutcomeLedger:
 
             closing_direction = "LONG" if direction == "SHORT" else "SHORT"
             position_lots = lots_by_key[(symbol, closing_direction)]
+            # Snapshot identity before mutating lots for this fill. Otherwise an
+            # early FIFO leg could make a multi-decision position look unambiguous
+            # to the later leg of this very same exchange fill.
+            opening_decisions_at_fill = {
+                str(open_lot.get("opening_decision_id") or "")
+                for open_lot in position_lots
+                if _decimal(open_lot.get("remaining_quantity") or "0") > 0
+            }
             remaining_close_qty = quantity
             for lot in position_lots:
                 if remaining_close_qty <= 0:
@@ -278,11 +286,7 @@ class CoreSpotRealizedOutcomeLedger:
                     and reduce_only
                     and canonical_asset(lot["quote_asset"]) == canonical_asset(quote_asset)
                 )
-                same_opening_decision = len({
-                    str(open_lot.get("opening_decision_id") or "")
-                    for open_lot in position_lots
-                    if _decimal(open_lot.get("remaining_quantity") or "0") > 0
-                }) == 1
+                same_opening_decision = len(opening_decisions_at_fill) == 1
                 held_seconds = fill_time - float(lot.get("opened_at") or fill_time)
                 no_rollover_window = 0 <= held_seconds < 4 * 3600
                 if (
@@ -456,7 +460,6 @@ class CoreSpotRealizedOutcomeLedger:
 
             outcome_rows.append({
                 **out,
-                "fee_status": aggregate_fee_status,
                 "gross_return_bps": str(gross_bps),
                 "estimated_net_return_bps": str(net_bps),
                 "verified_net_return_bps": str(verified_net_bps) if verified_net_bps is not None else None,
