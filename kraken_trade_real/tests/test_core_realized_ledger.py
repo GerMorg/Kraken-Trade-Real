@@ -15,6 +15,8 @@ def _add_order(
     side: str,
     reduce_only: bool,
     symbol: str = "XBT/EUR",
+    margin: bool = False,
+    leverage: str = "1",
 ):
     db.execute(
         """INSERT INTO orders(
@@ -24,7 +26,7 @@ def _add_order(
            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             f"intent-{client_order_id}", client_order_id, 10.0, decision_id,
-            symbol, direction, side, "market", "10", None, "1", 0,
+            symbol, direction, side, "market", "10", None, str(leverage), int(margin),
             int(reduce_only), 0, "FILLED", 11.0, exchange_order_id, "20", "30", 60,
         ),
     )
@@ -46,6 +48,7 @@ def _add_fill(
     symbol: str = "XBT/EUR",
     fee_currency: str = "UNVERIFIED",
     fee_attribution_status: str = "",
+    margin_ledger: dict | None = None,
 ):
     raw = {
         "ordertxid": exchange_order_id,
@@ -58,11 +61,14 @@ def _add_fill(
         "trade_id": trade_id,
     }
     if fee_attribution_status:
-        raw["_ledger_attribution"] = {
+        attribution = {
             "status": fee_attribution_status,
             "fee_currency": fee_currency,
             "ledger_ids": [f"ledger-{trade_id}"],
         }
+        if margin_ledger is not None:
+            attribution["margin_ledger"] = margin_ledger
+        raw["_ledger_attribution"] = attribution
     return db.save_attributed_fill(
         order_id=exchange_order_id,
         trade_id=trade_id,
@@ -304,3 +310,95 @@ def test_base_asset_fee_is_not_mislabeled_as_verified_quote_net(db):
     assert outcome["estimated_net_pnl_quote"] is not None
     assert outcome["fee_status"] == "QUOTE_ESTIMATE_ONLY"
 
+
+
+def _add_margin_round_trip(db, *, close_timestamp: float, quote_asset: str = "ZEUR",
+                            close_ledger_asset: str = "ZEUR", open_ledger_fee: str = "0.5",
+                            close_ledger_fee: str = "0.4"):
+    _add_order(
+        db, exchange_order_id="O-MARGIN-OPEN", client_order_id="C-MARGIN-OPEN",
+        decision_id="D-MARGIN-OPEN", direction="LONG", side="buy", reduce_only=False,
+        margin=True, leverage="2",
+    )
+    _add_fill(
+        db, exchange_order_id="O-MARGIN-OPEN", client_order_id="C-MARGIN-OPEN",
+        decision_id="D-MARGIN-OPEN", trade_id="T-MARGIN-OPEN", timestamp=1000,
+        side="buy", quantity="1", price="100", fee="0.1",
+        quote_asset=quote_asset, fee_currency=quote_asset,
+        fee_attribution_status="MARGIN_LEDGER_VERIFIED",
+        margin_ledger={
+            "type": "margin", "asset": quote_asset, "amount": "0",
+            "fee": open_ledger_fee, "time": 1000,
+        },
+    )
+    _add_order(
+        db, exchange_order_id="O-MARGIN-CLOSE", client_order_id="C-MARGIN-CLOSE",
+        decision_id="D-MARGIN-CLOSE", direction="SHORT", side="sell", reduce_only=True,
+        margin=True, leverage="2",
+    )
+    _add_fill(
+        db, exchange_order_id="O-MARGIN-CLOSE", client_order_id="C-MARGIN-CLOSE",
+        decision_id="D-MARGIN-CLOSE", trade_id="T-MARGIN-CLOSE",
+        timestamp=close_timestamp, side="sell", quantity="1", price="110", fee="0.1",
+        quote_asset=quote_asset, fee_currency=close_ledger_asset,
+        fee_attribution_status="MARGIN_LEDGER_VERIFIED",
+        margin_ledger={
+            "type": "margin", "asset": close_ledger_asset, "amount": "10",
+            "fee": close_ledger_fee, "time": close_timestamp,
+        },
+    )
+
+
+def test_verified_short_hold_margin_uses_exchange_realized_pnl_and_actual_ledger_fees(db):
+    _add_margin_round_trip(db, close_timestamp=1300)
+
+    result = CoreSpotRealizedOutcomeLedger(db).rebuild()
+    outcome = db.one(
+        "SELECT * FROM core_realized_outcomes WHERE opening_decision_id='D-MARGIN-OPEN'"
+    )
+    leg = db.one(
+        "SELECT * FROM core_realized_legs WHERE opening_decision_id='D-MARGIN-OPEN'"
+    )
+
+    assert result["realized_legs"] == 1
+    assert result["verified_net_outcomes"] == 1
+    assert outcome["net_verified"] == 1
+    assert outcome["fee_status"] == "LEDGER_VERIFIED_MARGIN_NET"
+    assert Decimal(outcome["verified_fees_quote"]) == Decimal("0.9")
+    assert Decimal(outcome["verified_net_pnl_quote"]) == Decimal("9.1")
+    assert Decimal(outcome["verified_net_return_bps"]) == Decimal("910.0")
+    assert leg["fee_status"] == "LEDGER_VERIFIED_MARGIN_NET"
+    assert Decimal(leg["gross_pnl_quote"]) == Decimal("10")
+    detail = __import__("json").loads(leg["detail_json"])
+    assert detail["rollover_free_window"] is True
+    assert detail["entry_margin_ledger_verified"] is True
+    assert detail["exit_margin_ledger_verified"] is True
+
+
+def test_margin_trade_held_over_four_hours_is_not_marked_verified_without_rollover_attribution(db):
+    _add_margin_round_trip(db, close_timestamp=1000 + 4 * 3600 + 1)
+
+    result = CoreSpotRealizedOutcomeLedger(db).rebuild()
+    outcome = db.one(
+        "SELECT * FROM core_realized_outcomes WHERE opening_decision_id='D-MARGIN-OPEN'"
+    )
+
+    assert result["verified_net_outcomes"] == 0
+    assert outcome["net_verified"] == 0
+    assert outcome["verified_net_pnl_quote"] is None
+    assert outcome["fee_status"] == "QUOTE_ESTIMATE_ONLY"
+
+
+def test_margin_trade_in_wrong_ledger_currency_is_not_marked_verified(db):
+    _add_margin_round_trip(
+        db, close_timestamp=1300, close_ledger_asset="XXBT",
+    )
+
+    result = CoreSpotRealizedOutcomeLedger(db).rebuild()
+    outcome = db.one(
+        "SELECT * FROM core_realized_outcomes WHERE opening_decision_id='D-MARGIN-OPEN'"
+    )
+
+    assert result["verified_net_outcomes"] == 0
+    assert outcome["net_verified"] == 0
+    assert outcome["verified_net_return_bps"] is None
