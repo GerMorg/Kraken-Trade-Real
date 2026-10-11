@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.58
+
+- Read Kraken Spot BalanceEx balances and calculate spendable funds after open-order holds, separate from total portfolio valuation.
+- Fail closed for new Spot cash spending when the extended balance cannot be read; total holdings remain available for valuation and diagnosis.
+- Gate cash Spot buys and sells in the shared trading authority using a common fee/slippage buffer and fresh available balances.
+- Serialize funding orders with ordinary core and Tactical submissions, and use available balances when sourcing FX or liquidating a funding source.
+- Reserve accepted cash-buy quote amounts through the Normal decision pass so several candidates cannot each plan to spend the same wallet snapshot after one FX conversion.
+- Add regression coverage for BalanceEx parsing, fail-closed behavior, insufficient free funds, and the shared quote-budget formula.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.58.
+
 ## 0.1.57
 
 - Normalize Python boolean parameters to lowercase REST form values before signing and sending authenticated Spot requests.
