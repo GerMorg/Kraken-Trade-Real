@@ -222,20 +222,36 @@ class ModelRegistry:
 
         if kind == "bounded_core_outcome_controller":
             try:
-                action = str(metrics.get("action") or "")
+                required_core_keys = {
+                    "strategy_min_edge_bps",
+                    "strategy_min_confidence",
+                    "strategy_adaptive_edge_floor_bps",
+                    "strategy_adaptive_min_confidence",
+                    "strategy_adaptive_cost_ratio",
+                }
+                if not required_core_keys.issubset(params):
+                    raise ValueError("INCOMPLETE_CORE_POLICY")
+                if (
+                    float(params["strategy_adaptive_edge_floor_bps"])
+                    > float(params["strategy_min_edge_bps"])
+                    or float(params["strategy_adaptive_min_confidence"])
+                    < float(params["strategy_min_confidence"])
+                    or float(params["strategy_adaptive_cost_ratio"]) < 1.10
+                ):
+                    raise ValueError("CORE_POLICY_RELATIONSHIP_INVALID")
                 common_quality = (
                     metrics.get("data_basis")
-                    == "gross_return_bps_minus_decision_expected_cost_bps"
+                    == "ledger_verified_non_margin_spot_net_return_bps"
+                    and metrics.get("data_scope")
+                    == "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY"
                     and metrics.get("exchange_fee_estimates_used") is False
-                    and metrics.get("verified_net_pnl_used") is False
+                    and metrics.get("verified_net_pnl_used") is True
                     and int(metrics.get("previous_samples", 0)) >= 30
                     and int(metrics.get("recent_samples", 0)) >= 30
                 )
-                recent_mean = float(metrics.get("recent_mean_after_expected_cost_bps", 0.0))
-                previous_mean = float(metrics.get("previous_mean_after_expected_cost_bps", 0.0))
-                recent_positive_rate = float(
-                    metrics.get("recent_positive_after_expected_cost_rate", 0.0)
-                )
+                recent_mean = float(metrics.get("recent_mean_verified_net_return_bps", 0.0))
+                previous_mean = float(metrics.get("previous_mean_verified_net_return_bps", 0.0))
+                recent_positive_rate = float(metrics.get("recent_positive_verified_net_rate", 0.0))
                 if action == "TIGHTEN":
                     action_quality = recent_mean <= -10.0 and recent_positive_rate < 0.45
                 elif action == "RESTORE_TOWARD_DEFAULTS":
@@ -252,65 +268,7 @@ class ModelRegistry:
             if not valid_metrics:
                 self.db.learning_event(
                     "ADAPTIVE_POLICY_NOT_PROMOTED", version,
-                    {"reason": "CORE_ENTRY_OUTCOME_QUALITY_GATE_FAILED"},
-                )
-                return False
-
-        # Hard bounds are enforced again at promotion, independently of the optimizer.
-        bounds = {
-            "strategy_min_edge_bps": (25.0, 80.0),
-            "strategy_min_confidence": (0.58, 0.85),
-            "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
-            "strategy_adaptive_min_confidence": (0.75, 0.95),
-            "strategy_adaptive_cost_ratio": (1.10, 1.50),
-            "strategy_stop_loss_pct": (0.5, 4.0),
-            "strategy_partial_profit_trigger_pct": (3.0, 25.0),
-            "strategy_partial_profit_fraction_pct": (25.0, 75.0),
-            "strategy_profit_lock_trigger_pct": (5.0, 25.0),
-            "strategy_profit_giveback_pct": (15.0, 60.0),
-            "strategy_profit_lock_floor_pct": (1.0, 12.0),
-            "tactical_min_expected_move_bps": (80.0, 1200.0),
-            "tactical_min_momentum_bps": (10.0, 300.0),
-            "tactical_min_volume_ratio": (1.0, 8.0),
-            "tactical_min_breakout_bps": (5.0, 250.0),
-            "tactical_max_spread_bps": (3.0, 60.0),
-            "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
-            "tactical_min_volatility_bps": (5.0, 50.0),
-            "tactical_max_volatility_bps": (25.0, 120.0),
-            "tactical_min_imbalance": (0.02, 0.50),
-            "tactical_adaptive_min_confidence": (0.60, 0.95),
-            "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
-            "tactical_portfolio_pct": (1.0, 25.0),
-            "tactical_position_limit_pct": (1.0, 80.0),
-            "tactical_stop_loss_pct": (0.35, 2.0),
-            "tactical_take_profit_pct": (1.0, 5.0),
-            "tactical_trailing_trigger_bps": (50.0, 500.0),
-            "tactical_trailing_stop_pct": (0.2, 1.5),
-            "tactical_max_hold_seconds": (300.0, 7200.0),
-        }
-        try:
-            for key, (lo, hi) in bounds.items():
-                if key in params and not lo <= float(params[key]) <= hi:
-                    raise ValueError(key)
-        except (TypeError, ValueError):
-            self.db.learning_event(
-                "ADAPTIVE_POLICY_NOT_PROMOTED", version,
-                {"reason": "PARAMETER_OUT_OF_BOUNDS"},
-            )
-            return False
-        if kind in {"bounded_online_controller", "path_replay_exit_policy"}:
-            try:
-                if (
-                    "tactical_min_volatility_bps" in params
-                    and "tactical_max_volatility_bps" in params
-                    and float(params["tactical_min_volatility_bps"])
-                    >= float(params["tactical_max_volatility_bps"])
-                ):
-                    raise ValueError("EMPTY_TACTICAL_VOLATILITY_BAND")
-            except (TypeError, ValueError):
-                self.db.learning_event(
-                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
-                    {"reason": "TACTICAL_VOLATILITY_POLICY_RELATIONSHIP_INVALID"},
+                    {"reason": "CORE_ENTRY_VERIFIED_NET_QUALITY_GATE_FAILED"},
                 )
                 return False
 
