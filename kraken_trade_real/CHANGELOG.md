@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.65
+
+- Train Tactical entry filters only from completed LIVE position episodes; historical SHADOW outcomes no longer contaminate live policy adaptation.
+- Aggregate partial-close rows into a single position outcome and exclude positions that still remain open when counting the 60-sample minimum or the 10-new-episode reevaluation gate.
+- Label the learner's data basis explicitly as configured-cost estimates, not ledger-verified exchange net PnL; immutable risk caps remain outside learning.
+- Add regression coverage for Shadow exclusion, multiple partial closes, and distinct-position sample counts.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.65.
+
 ## 0.1.64
 
 - Fall back to validated per-parameter defaults when learned model records contain malformed, non-numeric or non-finite values.
