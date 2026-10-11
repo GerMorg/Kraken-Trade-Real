@@ -349,7 +349,7 @@ class Database:
                        fee_currency='UNVERIFIED' OR fee_currency=''
                        OR (fee_currency='ZERO_FEE' AND ?='MARGIN_LEDGER_VERIFIED')
                      )""",
-                (str(fee_currency), encoded, str(base_asset), str(status), str(order_id), str(trade_id)),
+                (str(fee_currency), encoded, str(base_asset), str(order_id), str(trade_id), str(status)),
             )
             return cur.rowcount > 0
 
