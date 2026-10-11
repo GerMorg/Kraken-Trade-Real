@@ -26,14 +26,24 @@ def _trade(direction: str, path: list[dict], close: float = 1_040.0) -> dict:
     }
 
 
-def _point(t: float, price: float, *, peak: float | None = None,
-           trough: float | None = None, state: str = "OPEN") -> dict:
+def _point(
+    t: float,
+    price: float,
+    *,
+    peak: float | None = None,
+    trough: float | None = None,
+    state: str = "OPEN",
+    signal_direction: str = "",
+    signal_net_edge_bps: float = 0.0,
+) -> dict:
     return {
         "observed_at": t,
         "price": str(price),
         "peak_price": str(peak if peak is not None else price),
         "trough_price": str(trough if trough is not None else price),
         "state": state,
+        "signal_direction": signal_direction,
+        "signal_net_edge_bps": str(signal_net_edge_bps),
     }
 
 
@@ -44,6 +54,7 @@ def _policy(**overrides) -> dict:
         "tactical_trailing_trigger_bps": 500.0,
         "tactical_trailing_stop_pct": 0.7,
         "tactical_max_hold_seconds": 300,
+        "tactical_reversal_exit_bps": 120.0,
     }
     result.update(overrides)
     return result
@@ -105,6 +116,50 @@ def test_exit_replay_restores_a_trailing_position_baseline():
     )
     assert result is not None
     assert result["reason"] == "TRAILING_STOP"
+
+
+def test_exit_replay_triggers_on_opposite_signal_at_the_recorded_edge():
+    trade = _trade("LONG", [
+        _point(1_000, 100.0, signal_direction="LONG", signal_net_edge_bps=900),
+        _point(1_010, 100.5, peak=100.5, signal_direction="SHORT", signal_net_edge_bps=150),
+        _point(1_020, 100.6, peak=100.6, signal_direction="SHORT", signal_net_edge_bps=200),
+    ], close=1_040)
+    result = AdaptiveParameterOptimizer._simulate_tactical_exit(trade, _policy())
+    assert result is not None
+    assert result["reason"] == "SIGNAL_REVERSAL"
+    assert result["exit_at"] == 1_010
+
+
+def test_exit_replay_ignores_same_direction_or_below_threshold_signals():
+    same_direction = _trade("LONG", [
+        _point(1_000, 100.0, signal_direction="LONG", signal_net_edge_bps=900),
+        _point(1_010, 100.5, peak=100.5, signal_direction="LONG", signal_net_edge_bps=900),
+        _point(1_020, 100.6, peak=100.6, signal_direction="LONG", signal_net_edge_bps=900),
+    ], close=1_040)
+    below_threshold = _trade("LONG", [
+        _point(1_000, 100.0, signal_direction="LONG", signal_net_edge_bps=900),
+        _point(1_010, 100.5, peak=100.5, signal_direction="SHORT", signal_net_edge_bps=119.99),
+        _point(1_020, 100.6, peak=100.6, signal_direction="SHORT", signal_net_edge_bps=100),
+    ], close=1_040)
+    assert AdaptiveParameterOptimizer._simulate_tactical_exit(same_direction, _policy()) is None
+    assert AdaptiveParameterOptimizer._simulate_tactical_exit(below_threshold, _policy()) is None
+
+
+def test_reversal_threshold_changes_counterfactual_exit_time():
+    trade = _trade("LONG", [
+        _point(1_000, 100.0, signal_direction="LONG", signal_net_edge_bps=900),
+        _point(1_010, 100.5, peak=100.5, signal_direction="SHORT", signal_net_edge_bps=150),
+        _point(1_020, 100.6, peak=100.6, signal_direction="SHORT", signal_net_edge_bps=200),
+    ], close=1_040)
+    early = AdaptiveParameterOptimizer._simulate_tactical_exit(
+        trade, _policy(tactical_reversal_exit_bps=120),
+    )
+    later = AdaptiveParameterOptimizer._simulate_tactical_exit(
+        trade, _policy(tactical_reversal_exit_bps=180),
+    )
+    assert early is not None and later is not None
+    assert early["exit_at"] == 1_010
+    assert later["exit_at"] == 1_020
 
 
 def test_exit_optimizer_waits_for_sufficient_realized_paths(db):
