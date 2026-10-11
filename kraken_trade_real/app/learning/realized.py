@@ -7,6 +7,8 @@ import json
 import time
 from typing import Any
 
+from app.domain.symbols import canonical_asset
+
 
 D = Decimal
 ZERO = D("0")
@@ -27,11 +29,14 @@ def _stable_id(*parts: Any) -> str:
 
 
 class CoreSpotRealizedOutcomeLedger:
-    """Rebuild an auditable FIFO attribution ledger from app-managed Spot fills.
+    """Rebuild FIFO Spot attribution with separately gated verified net outcomes.
 
-    The reported TradesHistory fee is retained as an estimated quote-currency
-    commission. Outcomes are explicitly marked as not fee-verified and therefore
-    must not be used as verified net-PnL training labels.
+    TradesHistory fee amounts are never assumed to be quote-denominated. A net
+    label is verified only when both fill fees were attributed to the instrument's
+    quote asset, or were explicitly reported as zero, and neither leg involved
+    margin/leverage whose financing costs are not represented by spot trade fees.
+    Legacy/unresolved rows retain their estimate and never receive a fabricated
+    verified PnL value.
     """
 
     FEE_STATUS = "QUOTE_ESTIMATE_ONLY"
@@ -114,6 +119,23 @@ class CoreSpotRealizedOutcomeLedger:
                 })
                 continue
             fill_decision_id = str(row.get("fill_decision_id") or "")
+            fee_attribution = raw.get("_ledger_attribution", {})
+            if not isinstance(fee_attribution, dict):
+                fee_attribution = {}
+            attribution_status = str(fee_attribution.get("status") or "")
+            fee_currency = str(row.get("fee_currency") or "")
+            quote_fee_verified = bool(
+                (fee_est == ZERO and attribution_status == "ZERO_FEE_REPORTED")
+                or (
+                    fee_est > ZERO
+                    and attribution_status == "LEDGER_VERIFIED"
+                    and fee_currency not in {"", "UNVERIFIED", "ZERO_FEE"}
+                    and canonical_asset(fee_currency) == canonical_asset(quote_asset)
+                )
+            )
+            verified_fee_quote = fee_est if (
+                fee_est > ZERO and quote_fee_verified
+            ) else ZERO
             if not opening_decision_id:
                 anomaly(row, "MISSING_LOCAL_DECISION_ID", {})
                 continue
@@ -149,6 +171,8 @@ class CoreSpotRealizedOutcomeLedger:
                     "entry_price": price,
                     "remaining_quantity": quantity,
                     "remaining_entry_fee_est_quote": fee_est,
+                    "remaining_entry_fee_verified_quote": verified_fee_quote,
+                    "entry_fee_verified": quote_fee_verified,
                     "quote_asset": quote_asset,
                     "leverage": str(row.get("leverage") or "1"),
                     "margin": bool(int(row.get("margin") or 0)),
@@ -177,8 +201,41 @@ class CoreSpotRealizedOutcomeLedger:
                 )
                 entry_notional = entry_price * matched_qty
                 estimated_net = gross_pnl - allocated_entry_fee - allocated_exit_fee
+                allocated_verified_entry_fee = (
+                    lot["remaining_entry_fee_verified_quote"] * matched_qty / lot_qty_before
+                    if lot["entry_fee_verified"] and lot_qty_before > 0 else ZERO
+                )
+                allocated_verified_exit_fee = (
+                    verified_fee_quote * matched_qty / quantity if quote_fee_verified else ZERO
+                )
+                try:
+                    entry_leverage = _decimal(lot.get("leverage") or "1")
+                    exit_leverage = _decimal(row.get("leverage") or "1")
+                except (InvalidOperation, TypeError, ValueError):
+                    entry_leverage = exit_leverage = D("0")
+                no_margin_financing = (
+                    not bool(lot["margin"])
+                    and not bool(int(row.get("margin") or 0))
+                    and entry_leverage == D("1")
+                    and exit_leverage == D("1")
+                )
+                verified_net = (
+                    gross_pnl - allocated_verified_entry_fee - allocated_verified_exit_fee
+                    if lot["entry_fee_verified"] and quote_fee_verified
+                    and no_margin_financing
+                    and canonical_asset(lot["quote_asset"]) == canonical_asset(quote_asset)
+                    else None
+                )
+                verified_fees = (
+                    allocated_verified_entry_fee + allocated_verified_exit_fee
+                    if verified_net is not None else None
+                )
                 gross_bps = gross_pnl / entry_notional * BPS if entry_notional > 0 else ZERO
                 net_bps = estimated_net / entry_notional * BPS if entry_notional > 0 else ZERO
+                verified_net_bps = (
+                    verified_net / entry_notional * BPS
+                    if verified_net is not None and entry_notional > 0 else None
+                )
                 leg_id = _stable_id(lot["lot_id"], fill_key, str(matched_qty))
                 legs.append({
                     "leg_id": leg_id,
@@ -204,20 +261,30 @@ class CoreSpotRealizedOutcomeLedger:
                     "quote_asset": lot["quote_asset"],
                     "gross_return_bps": str(gross_bps),
                     "estimated_net_return_bps": str(net_bps),
-                    "fee_status": self.FEE_STATUS,
+                    "fee_status": "LEDGER_VERIFIED_SPOT_NET" if verified_net is not None else self.FEE_STATUS,
+                    "verified_fees_quote": str(verified_fees) if verified_fees is not None else None,
+                    "verified_net_pnl_quote": str(verified_net) if verified_net is not None else None,
+                    "verified_net_return_bps": str(verified_net_bps) if verified_net_bps is not None else None,
+                    "net_verified": 1 if verified_net is not None else 0,
                     "detail_json": json.dumps({
-                        "entry_fee_currency_field": "UNVERIFIED",
-                        "exit_fee_currency_field": row.get("fee_currency"),
-                        "net_verified": False,
-                        "quote_asset_matches": lot["quote_asset"] == quote_asset,
+                        "entry_fee_attribution_status": lot.get("entry_fee_attribution_status", ""),
+                        "entry_fee_currency": lot.get("entry_fee_currency", "UNVERIFIED"),
+                        "exit_fee_attribution_status": attribution_status,
+                        "exit_fee_currency": fee_currency,
+                        "net_verified": verified_net is not None,
+                        "quote_asset_matches": canonical_asset(lot["quote_asset"]) == canonical_asset(quote_asset),
                         "entry_leverage": lot["leverage"],
                         "entry_margin": lot["margin"],
+                        "exit_leverage": str(row.get("leverage") or "1"),
+                        "exit_margin": bool(int(row.get("margin") or 0)),
                         "entry_client_order_id": lot["client_order_id"],
                         "close_client_order_id": client_order_id,
                     }, sort_keys=True, default=str),
                 })
                 lot["remaining_quantity"] = lot_qty_before - matched_qty
                 lot["remaining_entry_fee_est_quote"] -= allocated_entry_fee
+                if lot["entry_fee_verified"]:
+                    lot["remaining_entry_fee_verified_quote"] -= allocated_verified_entry_fee
                 remaining_close_qty -= matched_qty
             if remaining_close_qty > 0:
                 anomaly(row, "REDUCE_ONLY_EXCEEDS_LOCAL_INVENTORY", {
@@ -299,12 +366,16 @@ class CoreSpotRealizedOutcomeLedger:
                     "entry_price": str(lot["entry_price"]),
                     "remaining_quantity": str(lot["remaining_quantity"]),
                     "remaining_entry_fee_est_quote": str(lot["remaining_entry_fee_est_quote"]),
+                    "remaining_entry_fee_verified_quote": str(lot["remaining_entry_fee_verified_quote"]),
+                    "entry_fee_verified": int(bool(lot["entry_fee_verified"])),
                     "quote_asset": lot["quote_asset"],
                     "detail_json": json.dumps({
                         "leverage": lot["leverage"],
                         "margin": lot["margin"],
                         "client_order_id": lot["client_order_id"],
                         "fee_status": self.FEE_STATUS,
+                        "entry_fee_currency": lot.get("entry_fee_currency", "UNVERIFIED"),
+                        "entry_fee_attribution_status": lot.get("entry_fee_attribution_status", ""),
                     }, sort_keys=True),
                 })
 
@@ -313,17 +384,20 @@ class CoreSpotRealizedOutcomeLedger:
             "close_order_id,close_trade_id,opening_decision_id,closing_decision_id,quantity,"
             "entry_price,exit_price,entry_notional_quote,gross_pnl_quote,entry_fee_est_quote,"
             "exit_fee_est_quote,estimated_net_pnl_quote,quote_asset,gross_return_bps,"
-            "estimated_net_return_bps,fee_status,detail_json"
+            "estimated_net_return_bps,fee_status,verified_fees_quote,verified_net_pnl_quote,"
+            "verified_net_return_bps,net_verified,detail_json"
         )
         outcome_columns = (
             "opening_decision_id,symbol,direction,first_opened_at,last_closed_at,matched_legs,"
             "closed_quantity,closed_notional_quote,gross_pnl_quote,fees_est_quote,"
             "estimated_net_pnl_quote,gross_return_bps,estimated_net_return_bps,quote_asset,"
-            "fee_status,net_verified,detail_json"
+            "fee_status,net_verified,verified_fees_quote,verified_net_pnl_quote,"
+            "verified_net_return_bps,detail_json"
         )
         lot_columns = (
             "lot_id,symbol,direction,opened_at,entry_order_id,entry_trade_id,opening_decision_id,"
-            "entry_price,remaining_quantity,remaining_entry_fee_est_quote,quote_asset,detail_json"
+            "entry_price,remaining_quantity,remaining_entry_fee_est_quote,"
+            "remaining_entry_fee_verified_quote,entry_fee_verified,quote_asset,detail_json"
         )
         anomaly_columns = (
             "anomaly_id,detected_at,symbol,order_id,trade_id,reason,detail_json"
