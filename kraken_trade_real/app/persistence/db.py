@@ -600,24 +600,41 @@ class Database:
         entry_client_order_id: str,
         setup_score: Any,
         state: str,
+        entry_policy: dict[str, Any] | None = None,
+        entry_context: dict[str, Any] | None = None,
     ) -> None:
+        """Persist Tactical position state without overwriting its entry snapshot.
+
+        Routine mark-to-market updates usually omit the optional JSON fields. In
+        that case, preserve the first immutable entry snapshot already stored.
+        """
+        policy_json = json.dumps(entry_policy or {}, sort_keys=True, default=str)
+        context_json = json.dumps(entry_context or {}, sort_keys=True, default=str)
         self.execute(
             """INSERT INTO tactical_positions(
                symbol,venue,direction,quantity,entry_price,peak_price,trough_price,
                notional_eur,leverage,opened_at,last_update,entry_client_order_id,
-               setup_score,state
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               setup_score,state,entry_policy_json,entry_context_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(symbol) DO UPDATE SET
                venue=excluded.venue,direction=excluded.direction,quantity=excluded.quantity,
                entry_price=excluded.entry_price,peak_price=excluded.peak_price,
                trough_price=excluded.trough_price,notional_eur=excluded.notional_eur,
                leverage=excluded.leverage,last_update=excluded.last_update,
                entry_client_order_id=excluded.entry_client_order_id,
-               setup_score=excluded.setup_score,state=excluded.state""",
+               setup_score=excluded.setup_score,state=excluded.state,
+               entry_policy_json=CASE
+                   WHEN excluded.entry_policy_json='{}'
+                   THEN tactical_positions.entry_policy_json
+                   ELSE excluded.entry_policy_json END,
+               entry_context_json=CASE
+                   WHEN excluded.entry_context_json='{}'
+                   THEN tactical_positions.entry_context_json
+                   ELSE excluded.entry_context_json END""",
             (
                 symbol, venue, direction, str(quantity), str(entry_price), str(peak_price),
                 str(trough_price), str(abs(Decimal(str(notional_eur)))), str(leverage), opened_at, time.time(),
-                entry_client_order_id, str(setup_score), state,
+                entry_client_order_id, str(setup_score), state, policy_json, context_json,
             ),
         )
 
