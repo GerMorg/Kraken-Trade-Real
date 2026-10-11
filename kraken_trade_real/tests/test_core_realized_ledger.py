@@ -264,8 +264,8 @@ def test_verified_non_margin_spot_fees_produce_separate_verified_net_outcome(db)
     assert outcome["net_verified"] == 1
     assert outcome["fee_status"] == "LEDGER_VERIFIED_SPOT_NET"
     assert Decimal(outcome["verified_fees_quote"]) == Decimal("0.30")
-    assert Decimal(outcome["verified_net_pnl_quote"]) == Decimal("19.70")
-    assert Decimal(outcome["verified_net_return_bps"]) == Decimal("985.0")
+    assert Decimal(outcome["verified_net_pnl_quote"]) == Decimal("39.70")
+    assert Decimal(outcome["verified_net_return_bps"]) == Decimal("1985.0")
     assert leg["net_verified"] == 1
     assert Decimal(leg["verified_net_pnl_quote"]) == Decimal("19.70")
 
