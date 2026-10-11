@@ -2,17 +2,20 @@
 
 Last reconciled against GitHub: 2026-10-11  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.78**  
-Latest runtime release commit (v0.1.78): `725fad7c73787d63b620b6fdc2baeb9c6e41ceb5`
+Main version: **0.1.79**  
+Latest runtime release commit (v0.1.79): `dbbedb1ca6035b13b847231d5641d16e22676ed2`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.78
+## Latest release — v0.1.79
 
-- Scope: keep the portfolio-wide risk_max_net_pct hard cap authoritative for both Core and Tactical entries. A Tactical risk_position_limit_pct is a per-position limit and must not widen the global net exposure limit.
-- Regression: the existing high-conviction Tactical test used an 80% position limit and incorrectly expected a 75%-of-equity entry to pass even though the configured global net cap is 50%. v0.1.78 changes that assertion to require a net_limit rejection.
-- User clarification for the v0.1.77 runtime log: the two observed cycles were the first two after installation. Their zero newly inserted fills and zero verified outcomes are an initial observation window, not proof of a sync defect. Continue monitoring across a longer period and use persistent sync/anomaly evidence before diagnosing failure.
-- Release must not be merged until all five CI jobs pass on the exact PR head and the version is consistent in config.yaml, pyproject.toml, Dockerfile, and Kraken User-Agent.
+- Scope: make Austrian tax-ledger disposal attribution use tracked acquisition-regime inventory rather than assuming the sale date determines whether the holding is Altvermögen or Neuvermögen.
+- Ambiguous legacy or mixed inventory is now marked incomplete and sent for manual review without fabricating a taxable gain, consuming an ambiguous lot, or asserting tax-neutral crypto-to-crypto rollover.
+- Automatic crypto-to-crypto basis carry is restricted to uniquely tracked Neuvermögen for transactions on/after 2022-03-01. Altvermögen and earlier swaps are explicitly review-required; this is conservative tax-reporting support, not a final tax determination.
+- Regression coverage added for Altvermögen sold after the reform, mixed Alt-/Neuvermögen, Altvermögen crypto swaps and pre-2022 swap treatment.
+- PR #88 merged as runtime commit `dbbedb1ca6035b13b847231d5641d16e22676ed2` only after all five CI jobs passed on the PR head; final PR CI recorded 293 passing tests. Main-branch post-merge CI must still be checked for this commit.
+- The supplied v0.1.77 runtime log covered only the first two post-install cycles; zero new fills or verified outcomes in that interval was not treated as proof of sync failure.
+- Release metadata must stay aligned across config.yaml, pyproject.toml, Dockerfile, and Kraken User-Agent.
 
 ## Recently merged releases
 
@@ -23,6 +26,7 @@ All listed PRs were merged only after all five CI jobs passed.
 - **0.1.77 — PR #82:** Added numerical context and `failed_checks` to `CYCLE_RISK_DECISION` so daily-loss, gross/net exposure, cash reserve, drawdown and position-limit blocks can be diagnosed from logs. Risk decisions themselves were not loosened.
 - **0.1.76 — PR #81:** Tactical cooldown is now a bounded, versioned learned parameter (30–600 seconds), hidden from HA options and protected against legacy `options.json` overrides. It increases after poor verified live outcomes and decreases cautiously only after improving outcomes. Hard trade-rate and risk caps remain immutable.
 - **0.1.78 — PR #85:** Fixed Tactical risk-gate inconsistency: a Tactical per-position allowance can no longer widen the portfolio-wide `risk_max_net_pct` hard cap. Regression coverage now requires a `net_limit` rejection for 75% projected net exposure when the global cap is 50%, even if the Tactical per-position cap is 80%.
+- **0.1.79 — PR #88:** Prevented Austrian tax-ledger attribution from equating disposal date with acquisition regime; legacy/mixed inventory and pre-effective-date crypto swaps are marked incomplete for review rather than receiving fabricated gains or automatic neutral treatment.
 - Obsolete PRs #30, #35 and #49 were closed as superseded by later releases and the newer adaptive-policy architecture.
 
 ## Findings from the supplied v0.1.56 log
