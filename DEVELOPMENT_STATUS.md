@@ -3,7 +3,7 @@
 Last reconciled against GitHub: 2026-10-11  
 Repository: `GerMorg/Kraken-Trade-Real`  
 Main version: **0.1.77**  
-Main commit: `aabe554cf0b3e2b9a1e7eaa5492df39366b1a839`
+Latest runtime release commit (v0.1.77): `aabe554cf0b3e2b9a1e7eaa5492df39366b1a839`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
@@ -15,7 +15,7 @@ All listed PRs were merged only after all five CI jobs passed.
 - **0.1.75 — PR #80:** Added early exchange-minimum checks for new/increased orders. Emits `CYCLE_ORDER_BELOW_MINIMUM`; does not round orders up or bypass risk/cash limits. Reduce-only dust handling and Futures quantity semantics remain separate.
 - **0.1.76 — PR #81:** Tactical cooldown is now a bounded, versioned learned parameter (30–600 seconds), hidden from HA options and protected against legacy `options.json` overrides. It increases after poor verified live outcomes and decreases cautiously only after improving outcomes. Hard trade-rate and risk caps remain immutable.
 - **0.1.77 — PR #82:** Added numerical context and `failed_checks` to `CYCLE_RISK_DECISION` so daily-loss, gross/net exposure, cash reserve, drawdown and position-limit blocks can be diagnosed from logs. Risk decisions themselves were not loosened.
-- Obsolete PR #49 was closed as superseded by the newer adaptive-policy architecture.
+- Obsolete PRs #30, #35 and #49 were closed as superseded by later releases and the newer adaptive-policy architecture.
 
 ## Findings from the supplied v0.1.56 log
 
