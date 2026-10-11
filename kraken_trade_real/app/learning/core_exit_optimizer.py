@@ -109,13 +109,17 @@ class CoreExitPolicyOptimizer:
                 or basis <= 0
                 or lot_count != 1
                 or not isinstance(order_ids, list)
-                or len(set(str(item) for item in order_ids if item)) != 1
+                or len(order_ids) != 1
+                or not str(order_ids[0] or "").strip()
                 or not isinstance(decision_ids, list)
-                or len(set(str(item) for item in decision_ids if item)) != 1
+                or len(decision_ids) != 1
+                or not str(decision_ids[0] or "").strip()
             ):
                 continue
 
-            decision_id = str(next((item for item in decision_ids if item), ""))
+            expected_order_id = str(order_ids[0])
+            decision_id = str(decision_ids[0])
+            eligibility_reason = str(row.get("eligibility_reason") or "")
             decision = self.db.one(
                 """SELECT expected_cost_bps,strategy_version
                    FROM decisions WHERE decision_id=?""",
@@ -155,6 +159,10 @@ class CoreExitPolicyOptimizer:
                     or quality.get("basis_positive") is not True
                     or quality.get("quantity_positive") is not True
                     or quality.get("eligible_for_learning") is not True
+                    or str(quality.get("direction") or "").upper() != direction
+                    or quality.get("open_order_ids") != [expected_order_id]
+                    or quality.get("open_lot_count") != 1
+                    or str(quality.get("eligibility_reason") or "") != eligibility_reason
                     or not policy_snapshot
                 ):
                     valid_path = False
