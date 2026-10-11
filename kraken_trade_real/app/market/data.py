@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from app.domain.models import Instrument, MarketSnapshot
+from app.domain.symbols import canonical_asset
 
 
 D = Decimal
@@ -69,6 +70,9 @@ class MarketData:
             d(raw.get("liquidationPressure"))
             if raw.get("liquidationPressure") is not None
             else None,
+            canonical_asset(instrument.quote),
+            volume * last if instrument.venue == "spot" and instrument.product_type.value != "DERIVATIVE" else None,
+            None,
         )
 
     def enrich_orderbook(
