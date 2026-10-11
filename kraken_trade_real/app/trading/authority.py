@@ -315,7 +315,6 @@ class TradingAuthority:
             # 'ofs'; it does not accept 'limit', 'with_cursor' or 'cursor'.
             # Keep page_size in the signature for compatibility, but never send
             # it to Kraken or discard rows from an exchange response.
-            _requested_page_size = max(1, min(50, int(page_size)))
             for _ in range(max_pages):
                 request_params: dict[str, Any] = {
                     "start": start_at,
