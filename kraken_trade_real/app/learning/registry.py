@@ -12,6 +12,7 @@ from app.config.adaptive import (
     LEARNED_TACTICAL_KEYS,
     TACTICAL_DEFAULTS,
     TACTICAL_POLICY_BOUNDS,
+    tactical_minimum_move_floors,
 )
 
 
@@ -263,6 +264,14 @@ class ModelRegistry:
                 effective["tactical_take_profit_pct"]
             ):
                 return "TACTICAL_STOP_MUST_BE_BELOW_TARGET"
+
+            adaptive_move_floor, normal_move_floor = tactical_minimum_move_floors(
+                effective["tactical_max_spread_bps"],
+            )
+            if float(effective["tactical_adaptive_min_expected_move_bps"]) < adaptive_move_floor:
+                return "TACTICAL_ADAPTIVE_MOVE_BELOW_ESTIMATED_COST_FLOOR"
+            if float(effective["tactical_min_expected_move_bps"]) < normal_move_floor:
+                return "TACTICAL_MOVE_BELOW_ESTIMATED_ROUND_TRIP_COST_FLOOR"
 
             # These are safety/operation controls, not learnable policy parameters.
             # A candidate can tune entry/exit behaviour, but cannot silently raise
