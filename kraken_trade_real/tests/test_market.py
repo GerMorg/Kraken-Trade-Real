@@ -313,3 +313,23 @@ def test_features_use_eur_normalized_liquidity_when_available():
     features = FeatureEngine().calculate(snap)
 
     assert features["liquidity"] == Decimal("10000")
+
+def test_held_position_stays_in_history_candidates_when_entry_filter_drops_it(instrument):
+    from app.market.scanner import MarketScanner
+
+    candidates, added = MarketScanner.include_held_positions_in_history(
+        history_candidates=[],
+        held_positions=[instrument],
+        available_ticker_symbols={instrument.symbol},
+    )
+
+    assert candidates == [instrument]
+    assert added == 1
+
+    repeated, added_again = MarketScanner.include_held_positions_in_history(
+        history_candidates=candidates,
+        held_positions=[instrument],
+        available_ticker_symbols={instrument.symbol},
+    )
+    assert repeated == [instrument]
+    assert added_again == 0
