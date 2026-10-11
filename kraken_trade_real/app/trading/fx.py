@@ -72,6 +72,47 @@ class FXConversionManager:
         except Exception:
             return D("0")
 
+    def _available_cash_balance(self, asset: str) -> D:
+        available = getattr(self.portfolio, "available_cash_balance", None)
+        if callable(available):
+            return D(str(available(asset)))
+        return D(str(self.portfolio.cash_balance(asset)))
+
+    def _exchange_available_balances(self) -> dict[str, D] | None:
+        """Read per-asset free balances, subtracting amounts held by open orders."""
+        extended_reader = getattr(self.authority.gateway, "spot_balance_extended", None)
+        try:
+            if callable(extended_reader):
+                raw = extended_reader()
+                if not isinstance(raw, dict):
+                    return None
+                balances: dict[str, D] = {}
+                for asset, row in raw.items():
+                    if not isinstance(row, dict):
+                        return None
+                    free = (
+                        D(str(row.get("balance") or "0"))
+                        + D(str(row.get("credit") or "0"))
+                        - D(str(row.get("credit_used") or "0"))
+                        - D(str(row.get("hold_trade") or "0"))
+                    )
+                    balances[canonical_asset(asset)] = max(D("0"), free)
+                return balances
+            raw = self.authority.gateway.spot_balance()
+            if not isinstance(raw, dict):
+                return None
+            return {
+                canonical_asset(asset): max(D("0"), D(str(quantity or "0")))
+                for asset, quantity in raw.items()
+            }
+        except Exception as exc:
+            self.db.event(
+                "FX_AVAILABLE_BALANCE_READ_FAILED",
+                "WARNING",
+                {"error_type": type(exc).__name__, "error": str(exc)[:300]},
+            )
+            return None
+
     def _daily_count(self) -> int:
         row = self.db.one(
             "SELECT COUNT(*) AS n FROM orders WHERE submitted_at IS NOT NULL "
@@ -118,7 +159,9 @@ class FXConversionManager:
             return {"ready": False, "reason": "POSITION_FUNDING_EDGE_TOO_LOW",
                     "dependent_net_edge_bps": str(dependent_edge_bps),
                     "required_min_edge_bps": str(self._position_switch_min_edge_bps())}
-        balances = self.authority.gateway.spot_balance()
+        balances = self._exchange_available_balances()
+        if balances is None:
+            return {"ready": False, "reason": "POSITION_FUNDING_BALANCE_UNAVAILABLE"}
         fx_pair = self._fx_pair()
         fx_bid = self._price(fx_pair, "sell") if fx_pair is not None else D("0")
         fx_ask = self._price(fx_pair, "buy") if fx_pair is not None else D("0")
@@ -204,23 +247,17 @@ class FXConversionManager:
         return {"ready": False, "reason": "POSITION_FUNDING_SOURCE_TOO_SMALL"}
 
     def _exchange_cash_balance(self, asset: str) -> D | None:
-        """Read fresh balances after a just-confirmed position liquidation."""
-        try:
-            balances = self.authority.gateway.spot_balance()
-        except Exception:
+        """Read fresh spendable funds after a confirmed order."""
+        balances = self._exchange_available_balances()
+        if balances is None:
             return None
-        target = canonical_asset(asset)
-        total = D("0")
-        for raw_asset, raw_quantity in (balances or {}).items():
-            if canonical_asset(raw_asset) == target:
-                total += D(str(raw_quantity or "0"))
-        return total
+        return balances.get(canonical_asset(asset), D("0"))
 
     def _convert_cash(self, target: str, required: D, cycle_id: str,
                        dependent_edge_bps: D, source_hint: str | None = None,
                        already_funded: bool = False) -> dict[str, Any]:
         target = canonical_asset(target)
-        available = self.portfolio.cash_balance(target)
+        available = self._available_cash_balance(target)
         if already_funded:
             refreshed = self._exchange_cash_balance(target)
             if refreshed is None:
@@ -245,7 +282,7 @@ class FXConversionManager:
                         "source_asset": source}
             source_available = refreshed_source
         else:
-            source_available = self.portfolio.cash_balance(source)
+            source_available = self._available_cash_balance(source)
 
         missing = max(D("0"), required - available)
         cost_bps = self._fx_cost_bps()
@@ -313,7 +350,7 @@ class FXConversionManager:
         # Direct cash conversion first. This is deliberately preferred to selling a position.
         if target in {"EUR", "USD"}:
             direct_source = "EUR" if target == "USD" else "USD"
-            if self.portfolio.cash_balance(direct_source) > 0:
+            if self._available_cash_balance(direct_source) > 0:
                 result = self._convert_cash(target, required_quote, cycle_id, dependent_edge_bps)
                 if result.get("ready"):
                     return result
