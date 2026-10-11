@@ -359,7 +359,9 @@ class CoreExitPolicyOptimizer:
         baseline_by_key: dict[str, dict[str, Any]] = {}
         aligned: list[dict[str, Any]] = []
         for episode in episodes:
-            baseline = self._simulate(episode)
+            # Counterfactual comparisons must use the active policy that will be
+            # promoted/replaced, not a different historical policy snapshot.
+            baseline = self._simulate(episode, current_policy)
             if baseline is None or not self._baseline_matches(episode, baseline):
                 continue
             episode["baseline"] = baseline
