@@ -198,7 +198,7 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
             (
                 f"loss-{index}", "BTC/USD", "LONG", "100", "99", "1",
                 "-1", "0.1", "-1.1", closed - 300, closed, 300,
-                "STOP_LOSS", "0.8", "{}",
+                "STOP_LOSS", "0.8", '{"mode":"LIVE"}',
             ),
         )
     optimizer = AdaptiveParameterOptimizer(db, registry)
@@ -470,4 +470,53 @@ def test_adaptive_config_restores_defaults_for_malformed_or_nonfinite_policy_val
             "tactical_min_expected_move_bps",
             "tactical_max_spread_bps",
         )
+    )
+
+def test_tactical_entry_optimizer_ignores_shadow_rows_and_aggregates_partial_closes(db):
+    registry = ModelRegistry(db)
+    now = 1_800_000_000.0
+
+    def insert_trade(trade_id, symbol, opened, closed, mode, net_pnl):
+        db.execute(
+            """INSERT INTO tactical_trades(
+                trade_id,symbol,direction,entry_price,exit_price,quantity,gross_pnl_eur,
+                fees_eur,net_pnl_eur,opened_at,closed_at,hold_seconds,exit_reason,
+                setup_score,detail_json
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                trade_id, symbol, "LONG", "100", "99", "1",
+                str(net_pnl + 0.1), "0.1", str(net_pnl), opened, closed,
+                max(1.0, closed - opened), "STOP_LOSS", "0.8",
+                json.dumps({"mode": mode}),
+            ),
+        )
+
+    # 60 LIVE trade rows correspond to only 59 completed positions because
+    # the first position has two partial-close rows.
+    for index in range(59):
+        closed = now - (59 - index) * 3600
+        opened = closed - 300
+        if index == 0:
+            insert_trade("live-partial-a", "BTC/USD", opened, closed - 10, "LIVE", -1.0)
+            insert_trade("live-partial-b", "BTC/USD", opened, closed, "LIVE", -0.1)
+        else:
+            insert_trade(
+                f"live-{index}", f"ASSET{index}/USD", opened, closed, "LIVE", -1.1,
+            )
+
+    # Even large wins in historical shadow mode must not be mixed into live
+    # policy selection after an installation is switched into real execution.
+    for index in range(80):
+        closed = now - (80 - index) * 1800
+        insert_trade(
+            f"shadow-{index}", f"SHADOW{index}/USD", closed - 60, closed, "SHADOW", 100.0,
+        )
+
+    result = AdaptiveParameterOptimizer(db, registry).optimize_tactical(now)
+
+    assert result["status"] == "INSUFFICIENT_REALIZED_TRADES"
+    assert result["samples"] == 59
+    assert result["excluded_non_live_rows"] == 80
+    assert result["outcome_basis"] == (
+        "LIVE_POSITION_EPISODES_WITH_CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED"
     )
