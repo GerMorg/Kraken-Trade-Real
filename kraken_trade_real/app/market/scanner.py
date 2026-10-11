@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 from decimal import Decimal
@@ -23,6 +24,117 @@ class MarketScanner:
         self.min_liquidity = D(str(min_liquidity_eur))
         self.max_spread = D(str(max_spread_bps))
         self.freshness_seconds = freshness_seconds
+
+    FX_CONVERSION_ASSETS = frozenset({
+        "EUR", "USD", "GBP", "CHF", "CAD", "AUD", "JPY", "NZD",
+        "USDT", "USDC", "DAI",
+    })
+
+    def normalize_liquidity_eur(
+        self,
+        instruments: Iterable[Instrument],
+        snapshots: dict[str, MarketSnapshot],
+        *,
+        conversion_snapshots: dict[str, MarketSnapshot] | None = None,
+    ) -> dict[str, Any]:
+        """Set each Spot market's 24h quote turnover converted into EUR.
+
+        Kraken's Spot Ticker `v[1]` is base-asset volume, not quote or EUR
+        turnover. Futures contract volumes are deliberately left unnormalized
+        because their nominal units differ across contracts.
+        """
+        instrument_list = list(instruments)
+        rates_source = conversion_snapshots if conversion_snapshots is not None else snapshots
+        graph: dict[str, list[tuple[str, D]]] = {}
+
+        for instrument in instrument_list:
+            if (
+                instrument.venue != "spot"
+                or instrument.product_type.value == "DERIVATIVE"
+                or not instrument.tradeable
+            ):
+                continue
+            snap = rates_source.get(instrument.symbol)
+            if (
+                snap is None
+                or snap.age_seconds > self.freshness_seconds
+                or snap.price <= 0
+            ):
+                continue
+            base = canonical_asset(instrument.base)
+            quote = canonical_asset(instrument.quote)
+            if not base or not quote or base == quote:
+                continue
+            graph.setdefault(base, []).append((quote, snap.price))
+            graph.setdefault(quote, []).append((base, D("1") / snap.price))
+
+        def to_eur_rate(asset: str) -> D | None:
+            source = canonical_asset(asset)
+            if not source:
+                return None
+            if source == "EUR":
+                return D("1")
+            # Breadth-first traversal prefers the shortest available conversion.
+            # A non-fiat quote may convert directly into a supported currency,
+            # but intermediate hops are restricted to currencies/stablecoins.
+            queue: list[tuple[str, D]] = [(source, D("1"))]
+            visited = {source}
+            index = 0
+            while index < len(queue):
+                current, rate = queue[index]
+                index += 1
+                for neighbor, multiplier in graph.get(current, ()):
+                    if neighbor in visited:
+                        continue
+                    if neighbor != "EUR" and neighbor not in self.FX_CONVERSION_ASSETS:
+                        continue
+                    next_rate = rate * multiplier
+                    if neighbor == "EUR":
+                        return next_rate if next_rate > 0 else None
+                    visited.add(neighbor)
+                    queue.append((neighbor, next_rate))
+            return None
+
+        normalized = 0
+        unavailable = 0
+        for instrument in instrument_list:
+            snap = snapshots.get(instrument.symbol)
+            if snap is None:
+                continue
+            if instrument.venue != "spot" or instrument.product_type.value == "DERIVATIVE":
+                snapshots[instrument.symbol] = replace(
+                    snap,
+                    quote_asset=canonical_asset(instrument.quote),
+                    liquidity_eur_24h=None,
+                )
+                continue
+
+            quote = canonical_asset(instrument.quote)
+            turnover_quote = snap.volume_24h_quote
+            if turnover_quote is None:
+                turnover_quote = snap.volume_24h * snap.price
+            rate = to_eur_rate(quote)
+            liquidity_eur = (
+                turnover_quote * rate
+                if rate is not None and turnover_quote >= 0
+                else None
+            )
+            snapshots[instrument.symbol] = replace(
+                snap,
+                quote_asset=quote,
+                volume_24h_quote=turnover_quote,
+                liquidity_eur_24h=liquidity_eur,
+            )
+            if liquidity_eur is None:
+                unavailable += 1
+            else:
+                normalized += 1
+
+        return {
+            "normalized_spot_markets": normalized,
+            "unavailable_spot_markets": unavailable,
+            "fx_conversion_markets": len(graph) // 2,
+        }
 
     @staticmethod
     def product_family(instrument: Instrument) -> str:
