@@ -50,6 +50,7 @@ LEARNED_TACTICAL_KEYS = {
     "tactical_trailing_trigger_bps",
     "tactical_trailing_stop_pct",
     "tactical_max_hold_seconds",
+    "tactical_reversal_exit_bps",
 }
 
 TACTICAL_DEFAULTS: dict[str, Any] = {
@@ -135,6 +136,7 @@ class AdaptiveConfig:
             "tactical_trailing_trigger_bps": (50.0, 500.0),
             "tactical_trailing_stop_pct": (0.2, 1.5),
             "tactical_max_hold_seconds": (300, 7200),
+            "tactical_reversal_exit_bps": (30.0, 500.0),
         }.items():
             try:
                 value = float(merged[name])
