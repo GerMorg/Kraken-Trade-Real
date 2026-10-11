@@ -393,11 +393,12 @@ class AdaptiveParameterOptimizer:
     def optimize_core_entry_policy(self, now: float | None = None) -> dict[str, Any]:
         """Adapt Normal entry gates only from fully verified cash-Spot net returns.
 
-        The outcome ledger marks a decision verified only if all FIFO legs have
-        ledger-attributed quote-currency fees (or explicitly reported zero fees),
-        consistent entry/exit fills, no remaining inventory, and no Margin or
-        leverage financing that would be absent from the PnL. Estimated-only and
-        Spot-Margin outcomes are deliberately excluded from this controller.
+        The outcome ledger marks a decision verified only when all closing FIFO
+        legs are fully attributed. It accepts non-margin Spot outcomes with
+        quote-currency ledger fees, and Spot-Margin outcomes only when Kraken's
+        linked Margin ledger provides quote-currency realised P/L and fees and
+        the position closed before any four-hour rollover could accrue.
+        Estimated-only, ambiguous, and rollover-exposed outcomes are excluded.
         The policy is bounded and never changes hard risk caps.
         """
         now = time.time() if now is None else float(now)
@@ -411,7 +412,7 @@ class AdaptiveParameterOptimizer:
                WHERE o.last_closed_at >= ?
                  AND lower(d.strategy_version) NOT LIKE '%tactical%'
                  AND o.net_verified=1
-                 AND o.fee_status='LEDGER_VERIFIED_SPOT_NET'
+                 AND o.fee_status IN ('LEDGER_VERIFIED_SPOT_NET','LEDGER_VERIFIED_MARGIN_NET','LEDGER_VERIFIED_MIXED_NET')
                  AND CAST(o.verified_net_return_bps AS REAL) IS NOT NULL
                  AND CAST(o.verified_net_pnl_quote AS REAL) IS NOT NULL
                  AND CAST(o.verified_fees_quote AS REAL) >= 0
@@ -427,10 +428,10 @@ class AdaptiveParameterOptimizer:
         rows.reverse()
         if len(rows) < self.MIN_CORE_OUTCOMES:
             return {
-                "status": "INSUFFICIENT_VERIFIED_CLOSED_SPOT_OUTCOMES",
+                "status": "INSUFFICIENT_VERIFIED_CLOSED_CORE_OUTCOMES",
                 "samples": len(rows),
                 "minimum_samples": self.MIN_CORE_OUTCOMES,
-                "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
+                "data_scope": "APP_MANAGED_QUOTE_LEDGER_VERIFIED_SPOT_AND_SHORT_HOLD_MARGIN_NET_ONLY",
             }
 
         last = self.db.one(
@@ -634,10 +635,10 @@ class AdaptiveParameterOptimizer:
             "previous_positive_verified_net_rate": before["positive_verified_net_rate"],
             "recent_positive_verified_net_rate": after["positive_verified_net_rate"],
             "verified_fee_verified_samples": len(clean),
-            "data_basis": "ledger_verified_non_margin_spot_net_return_bps",
+            "data_basis": "ledger_verified_spot_and_short_hold_margin_net_return_bps",
             "exchange_fee_estimates_used": False,
             "verified_net_pnl_used": True,
-            "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
+            "data_scope": "APP_MANAGED_QUOTE_LEDGER_VERIFIED_SPOT_AND_SHORT_HOLD_MARGIN_NET_ONLY",
             "changed_parameters": changed,
         }
         if not changed:
