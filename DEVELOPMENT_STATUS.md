@@ -2,7 +2,7 @@
 
 Last reconciled against GitHub: 2026-10-11  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.78** (v0.1.78 in review on fix/tactical-global-net-limit-v0.1.78)  
+Main version: **0.1.78**  
 Latest runtime release commit (v0.1.78): `725fad7c73787d63b620b6fdc2baeb9c6e41ceb5`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
