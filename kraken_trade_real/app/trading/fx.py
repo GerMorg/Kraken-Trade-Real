@@ -339,7 +339,7 @@ class FXConversionManager:
                            dependent_edge_bps: D = D("0"),
                            protected_symbol: str | None = None) -> dict[str, Any]:
         target = canonical_asset(quote)
-        available = self.portfolio.cash_balance(target)
+        available = self._available_cash_balance(target)
         if available >= required_quote:
             return {"ready": True, "converted": False, "reason": "QUOTE_FUNDS_AVAILABLE",
                     "available_quote": str(available)}
