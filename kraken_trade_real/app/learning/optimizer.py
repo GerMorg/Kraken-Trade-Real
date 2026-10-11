@@ -6,7 +6,11 @@ import math
 import time
 from typing import Any
 
-from app.config.adaptive import CORE_DEFAULTS, TACTICAL_DEFAULTS
+from app.config.adaptive import (
+    CORE_DEFAULTS,
+    TACTICAL_DEFAULTS,
+    tactical_minimum_move_floors,
+)
 
 
 class AdaptiveParameterOptimizer:
@@ -299,6 +303,25 @@ class AdaptiveParameterOptimizer:
                     120.0, float(candidate["tactical_min_volatility_bps"]) + 5.0
                 )
             reason = "POSITIVE_IMPROVING_EXPECTANCY_SMALL_ENTRY_RELAXATION"
+
+        # A favourable recent window may relax selectivity, but never below the
+        # actual configured cost floor. The registry and runtime overlay repeat this
+        # guard independently, so malformed/stale candidates also remain safe.
+        adaptive_move_floor, normal_move_floor = tactical_minimum_move_floors(
+            candidate.get("tactical_max_spread_bps", 25.0),
+            entry_fee_bps=getattr(self.config, "tactical_entry_fee_bps", 80.0),
+            exit_fee_bps=getattr(self.config, "tactical_exit_fee_bps", 80.0),
+            expected_slippage_bps=getattr(self.config, "tactical_expected_slippage_bps", 25.0),
+            safety_buffer_bps=getattr(self.config, "tactical_safety_buffer_bps", 30.0),
+        )
+        candidate["tactical_adaptive_min_expected_move_bps"] = max(
+            float(candidate.get("tactical_adaptive_min_expected_move_bps", 230.0)),
+            adaptive_move_floor,
+        )
+        candidate["tactical_min_expected_move_bps"] = max(
+            float(candidate.get("tactical_min_expected_move_bps", 280.0)),
+            normal_move_floor,
+        )
 
         # Avoid churn and duplicate versions when the measured policy does not change.
         changed = {
