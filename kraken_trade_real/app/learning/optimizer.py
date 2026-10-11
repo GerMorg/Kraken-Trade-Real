@@ -449,7 +449,7 @@ class AdaptiveParameterOptimizer:
                    WHERE o.last_closed_at > ?
                      AND lower(d.strategy_version) NOT LIKE '%tactical%'
                      AND o.net_verified=1
-                     AND o.fee_status='LEDGER_VERIFIED_SPOT_NET'
+                     AND o.fee_status IN ('LEDGER_VERIFIED_SPOT_NET','LEDGER_VERIFIED_MARGIN_NET','LEDGER_VERIFIED_MIXED_NET')
                      AND CAST(o.verified_net_return_bps AS REAL) IS NOT NULL
                      AND CAST(o.verified_net_pnl_quote AS REAL) IS NOT NULL
                      AND CAST(o.verified_fees_quote AS REAL) >= 0
