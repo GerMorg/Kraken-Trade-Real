@@ -150,7 +150,6 @@ class Config:
     tactical_adaptive_min_net_edge_bps: float
     tactical_seed_history: bool
     tactical_diagnostics_interval_seconds: int
-    profit_protection_legacy_defaults_overridden: bool = False
     tactical_position_limit_legacy_default_overridden: bool = False
 
     @classmethod
@@ -171,18 +170,6 @@ class Config:
                 return float(raw.get(name, default))
             except (TypeError, ValueError):
                 return default
-
-        legacy_profit_defaults = (
-            "strategy_partial_profit_trigger_pct" in raw
-            and raw_float("strategy_partial_profit_trigger_pct", 3.5) == 3.5
-            and raw_float("strategy_profit_lock_trigger_pct", 5.0) == 5.0
-            and raw_float("strategy_profit_lock_floor_pct", 2.0) == 2.0
-        )
-        if legacy_profit_defaults:
-            raw = dict(raw)
-            raw["strategy_partial_profit_trigger_pct"] = 10.0
-            raw["strategy_profit_lock_trigger_pct"] = 10.0
-            raw["strategy_profit_lock_floor_pct"] = 5.0
 
         legacy_tactical_position_limit = (
             "tactical_position_limit_pct" in raw
@@ -346,7 +333,6 @@ class Config:
             tactical_adaptive_min_net_edge_bps=f("tactical_adaptive_min_net_edge_bps", 15.0, 1.0, 1000.0),
             tactical_seed_history=b("tactical_seed_history", True),
             tactical_diagnostics_interval_seconds=i("tactical_diagnostics_interval_seconds", 60, 10),
-            profit_protection_legacy_defaults_overridden=legacy_profit_defaults,
             tactical_position_limit_legacy_default_overridden=legacy_tactical_position_limit,
         )
         cls.validate(cfg)
