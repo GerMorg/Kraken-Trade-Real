@@ -7,6 +7,14 @@ import os
 
 # These options are now internal, versioned learning parameters. Ignore legacy HA
 # values even when an existing installation still has them in options.json.
+# These mode switches are application-owned. Adaptive entry evaluation must stay
+# enabled so the learner can compare candidates and the same policy used to train
+# decisions is used in live execution. They are intentionally not HA options.
+APP_CONTROLLED_MODE_KEYS = {
+    "strategy_adaptive_edge_enabled",
+    "tactical_adaptive_entry_enabled",
+}
+
 LEARNED_OPTION_KEYS = {
     "strategy_min_edge_bps",
     "strategy_min_confidence",
@@ -165,7 +173,8 @@ class Config:
         except (FileNotFoundError, json.JSONDecodeError):
             raw = {}
         if isinstance(raw, dict):
-            raw = {key: value for key, value in raw.items() if key not in LEARNED_OPTION_KEYS}
+            internal_keys = LEARNED_OPTION_KEYS | APP_CONTROLLED_MODE_KEYS
+            raw = {key: value for key, value in raw.items() if key not in internal_keys}
 
         # v0.1.38 introduced these options with legacy defaults 3.5/5/2. If an
         # existing HA options file still has that untouched default triplet,

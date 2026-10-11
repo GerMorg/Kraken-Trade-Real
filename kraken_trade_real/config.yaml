@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.67
+version: 0.1.68
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -41,7 +41,6 @@ options:
   market_history_cache_seconds: 900
   market_exploration_candidate_limit: 80
   market_exploration_slots_per_family: 2
-  strategy_adaptive_edge_enabled: true
   strategy_entry_fee_bps: 40.0
   strategy_exit_fee_bps: 80.0
   strategy_execution_overhead_bps: 8.0
@@ -102,7 +101,6 @@ options:
   tactical_trade_lookback_seconds: 900
   tactical_short_leverage: 2.0
   tactical_order_confirm_seconds: 5
-  tactical_adaptive_entry_enabled: true
   tactical_seed_history: true
   tactical_diagnostics_interval_seconds: 60
 schema:
@@ -128,7 +126,6 @@ schema:
   market_history_cache_seconds: int
   market_exploration_candidate_limit: int
   market_exploration_slots_per_family: int
-  strategy_adaptive_edge_enabled: bool
   strategy_entry_fee_bps: float
   strategy_exit_fee_bps: float
   strategy_execution_overhead_bps: float
@@ -189,6 +186,5 @@ schema:
   tactical_trade_lookback_seconds: int
   tactical_short_leverage: float
   tactical_order_confirm_seconds: int
-  tactical_adaptive_entry_enabled: bool
   tactical_seed_history: bool
   tactical_diagnostics_interval_seconds: int

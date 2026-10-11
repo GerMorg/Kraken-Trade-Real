@@ -66,3 +66,17 @@ def test_legacy_tactical_position_limit_migrates_only_untouched_default(tmp_path
     cfg = Config.load(str(path))
     assert cfg.tactical_position_limit_pct == 15.0
     assert cfg.tactical_position_limit_legacy_default_overridden is False
+
+
+def test_adaptive_strategy_modes_are_internal_and_cannot_be_disabled_by_legacy_options(tmp_path):
+    path = tmp_path / "options.json"
+    path.write_text(
+        '{"strategy_adaptive_edge_enabled":false,'
+        '"tactical_adaptive_entry_enabled":false}',
+        encoding="utf-8",
+    )
+
+    cfg = Config.load(str(path))
+
+    assert cfg.strategy_adaptive_edge_enabled is True
+    assert cfg.tactical_adaptive_entry_enabled is True
