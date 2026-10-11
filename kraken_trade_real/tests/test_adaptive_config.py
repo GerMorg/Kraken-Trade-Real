@@ -36,6 +36,11 @@ class FakeRegistry:
                 "tactical_trailing_trigger_bps": 150,
                 "tactical_trailing_stop_pct": 0.55,
                 "tactical_max_hold_seconds": 900,
+                "tactical_min_volatility_bps": 15.0,
+                "tactical_max_volatility_bps": 70.0,
+                "tactical_min_imbalance": 0.15,
+                "tactical_adaptive_min_confidence": 0.82,
+                "tactical_adaptive_min_net_edge_bps": 20.0,
             }
         return {}
 
@@ -61,6 +66,11 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.tactical_trailing_trigger_bps == 150
     assert config.tactical_trailing_stop_pct == 0.55
     assert config.tactical_max_hold_seconds == 900
+    assert config.tactical_min_volatility_bps == 15.0
+    assert config.tactical_max_volatility_bps == 70.0
+    assert config.tactical_min_imbalance == 0.15
+    assert config.tactical_adaptive_min_confidence == 0.82
+    assert config.tactical_adaptive_min_net_edge_bps == 20.0
     # Core policy values are supplied by its own versioned model; unrelated settings remain base-config owned.
     assert config.strategy_min_edge_bps == 33.0
     assert config.strategy_stop_loss_pct == 2.5
@@ -98,6 +108,11 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
         "tactical_trailing_trigger_bps": 99999,
         "tactical_trailing_stop_pct": 99,
         "tactical_max_hold_seconds": 1,
+        "tactical_min_volatility_bps": 999,
+        "tactical_max_volatility_bps": 1,
+        "tactical_min_imbalance": 0.99,
+        "tactical_adaptive_min_confidence": 0.01,
+        "tactical_adaptive_min_net_edge_bps": 999,
     }), encoding="utf-8")
     config = Config.load(str(path))
     assert config.tactical_min_expected_move_bps == 280.0
@@ -112,6 +127,11 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_trailing_trigger_bps == 100.0
     assert config.tactical_trailing_stop_pct == 0.7
     assert config.tactical_max_hold_seconds == 1800
+    assert config.tactical_min_volatility_bps == 12.0
+    assert config.tactical_max_volatility_bps == 55.0
+    assert config.tactical_min_imbalance == 0.10
+    assert config.tactical_adaptive_min_confidence == 0.75
+    assert config.tactical_adaptive_min_net_edge_bps == 15.0
 
 
 def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
@@ -137,9 +157,15 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
     assert result["promoted"] is True
     assert result["changed_parameters"]["tactical_min_expected_move_bps"] > 280
     assert result["changed_parameters"]["tactical_portfolio_pct"] < 25
+    assert result["changed_parameters"]["tactical_min_volatility_bps"] > 12
+    assert result["changed_parameters"]["tactical_max_volatility_bps"] < 55
+    assert result["changed_parameters"]["tactical_min_imbalance"] > 0.10
+    assert result["changed_parameters"]["tactical_adaptive_min_confidence"] > 0.75
+    assert result["changed_parameters"]["tactical_adaptive_min_net_edge_bps"] > 15
     active = registry.parameters(registry.active("strategy_tactical"), family="strategy_tactical")
     assert active["tactical_min_expected_move_bps"] <= 1200
     assert 1 <= active["tactical_portfolio_pct"] <= 25
+    assert active["tactical_min_volatility_bps"] < active["tactical_max_volatility_bps"]
     repeated = optimizer.optimize_tactical(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_TRADE_DATA"
     assert repeated["new_trades_since_last_evaluation"] == 0
@@ -259,3 +285,22 @@ def test_core_optimizer_tightens_entry_policy_from_closed_gross_outcomes(db):
     repeated = optimizer.optimize_core_entry_policy(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_CORE_OUTCOMES"
     assert repeated["new_closed_outcomes_since_last_evaluation"] == 0
+
+def test_adaptive_config_restores_safe_tactical_volatility_band_when_registry_is_invalid():
+    class InvalidVolatilityRegistry:
+        def active(self, family="decision"):
+            return "invalid-policy"
+
+        def parameters(self, version=None, family="decision"):
+            if family == "strategy_tactical":
+                return {
+                    "tactical_min_volatility_bps": 80.0,
+                    "tactical_max_volatility_bps": 20.0,
+                }
+            return {}
+
+    config = AdaptiveConfig(SimpleNamespace(), InvalidVolatilityRegistry())
+
+    assert config.tactical_min_volatility_bps == 12.0
+    assert config.tactical_max_volatility_bps == 55.0
+

@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.53
+version: 0.1.54
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -89,9 +89,6 @@ options:
   tactical_candidate_limit: 12
   tactical_poll_seconds: 10
   tactical_market_max_age_seconds: 5
-  tactical_min_volatility_bps: 12.0
-  tactical_max_volatility_bps: 55.0
-  tactical_min_imbalance: 0.10
   tactical_entry_fee_bps: 80.0
   tactical_exit_fee_bps: 80.0
   tactical_margin_open_fee_bps: 5.0
@@ -107,8 +104,6 @@ options:
   tactical_short_leverage: 2.0
   tactical_order_confirm_seconds: 5
   tactical_adaptive_entry_enabled: true
-  tactical_adaptive_min_confidence: 0.75
-  tactical_adaptive_min_net_edge_bps: 15.0
   tactical_seed_history: true
   tactical_diagnostics_interval_seconds: 60
 schema:
@@ -182,9 +177,6 @@ schema:
   tactical_candidate_limit: int
   tactical_poll_seconds: int
   tactical_market_max_age_seconds: int
-  tactical_min_volatility_bps: float
-  tactical_max_volatility_bps: float
-  tactical_min_imbalance: float
   tactical_entry_fee_bps: float
   tactical_exit_fee_bps: float
   tactical_margin_open_fee_bps: float
@@ -200,7 +192,5 @@ schema:
   tactical_short_leverage: float
   tactical_order_confirm_seconds: int
   tactical_adaptive_entry_enabled: bool
-  tactical_adaptive_min_confidence: float
-  tactical_adaptive_min_net_edge_bps: float
   tactical_seed_history: bool
   tactical_diagnostics_interval_seconds: int

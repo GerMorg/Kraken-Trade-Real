@@ -40,6 +40,11 @@ LEARNED_TACTICAL_KEYS = {
     "tactical_max_spread_bps",
     "tactical_min_expected_move_bps",
     "tactical_adaptive_min_expected_move_bps",
+    "tactical_min_volatility_bps",
+    "tactical_max_volatility_bps",
+    "tactical_min_imbalance",
+    "tactical_adaptive_min_confidence",
+    "tactical_adaptive_min_net_edge_bps",
     "tactical_stop_loss_pct",
     "tactical_take_profit_pct",
     "tactical_trailing_trigger_bps",
@@ -120,6 +125,11 @@ class AdaptiveConfig:
             "tactical_max_spread_bps": (3.0, 60.0),
             "tactical_min_expected_move_bps": (80.0, 1200.0),
             "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
+            "tactical_min_volatility_bps": (5.0, 50.0),
+            "tactical_max_volatility_bps": (25.0, 120.0),
+            "tactical_min_imbalance": (0.02, 0.50),
+            "tactical_adaptive_min_confidence": (0.60, 0.95),
+            "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
             "tactical_stop_loss_pct": (0.35, 2.0),
             "tactical_take_profit_pct": (1.0, 5.0),
             "tactical_trailing_trigger_bps": (50.0, 500.0),
@@ -153,6 +163,14 @@ class AdaptiveConfig:
         if not (core_stop < core_partial <= core_lock and core_floor < core_lock):
             for key in CORE_EXIT_POLICY_BOUNDS:
                 merged[key] = CORE_DEFAULTS[key]
+
+        # Keep Tactical volatility filters strictly ordered. A malformed model
+        # record must not create an empty or impossible volatility band.
+        tactical_min_vol = float(merged.get("tactical_min_volatility_bps", 12.0))
+        tactical_max_vol = float(merged.get("tactical_max_volatility_bps", 55.0))
+        if tactical_min_vol >= tactical_max_vol:
+            merged["tactical_min_volatility_bps"] = TACTICAL_DEFAULTS["tactical_min_volatility_bps"]
+            merged["tactical_max_volatility_bps"] = TACTICAL_DEFAULTS["tactical_max_volatility_bps"]
 
         # Tactical stop must remain below its profit target.
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
