@@ -990,6 +990,12 @@ class TradingRuntime:
             # this decision pass. BalanceEx is refreshed only at defined points;
             # without this ledger, every candidate could reuse the same snapshot.
             cycle_quote_reserved: dict[str, D] = {}
+            def available_spot_balance(asset: str) -> D:
+                reader = getattr(self.portfolio, "available_cash_balance", None)
+                if callable(reader):
+                    return D(str(reader(asset)))
+                return D(str(self.portfolio.cash_balance(asset)))
+
             for instrument in selected:
                 cash_budget_quote: D | None = None
                 cash_budget_asset = ""
@@ -1335,17 +1341,9 @@ class TradingRuntime:
                     )
                     if provisional_qty is not None:
                         provisional_quote = provisional_qty * snap.price
-                        spendable_reader = getattr(
-                            self.portfolio, "available_cash_balance", None
-                        )
-                        spendable_quote = (
-                            D(str(spendable_reader(instrument.quote)))
-                            if callable(spendable_reader)
-                            else self.portfolio.cash_balance(instrument.quote)
-                        )
                         spendable_quote = max(
                             D("0"),
-                            spendable_quote
+                            available_spot_balance(instrument.quote)
                             - cycle_quote_reserved.get(canonical_asset(instrument.quote), D("0")),
                         )
                         fx_needed = spendable_quote + D("0.00000001") < provisional_quote
@@ -1463,7 +1461,7 @@ class TradingRuntime:
                         instrument,
                         snap.price,
                         quantity,
-                        self.portfolio.cash_balance(instrument.base),
+                        available_spot_balance(instrument.base),
                         flattening=decision.target_position_eur == 0,
                     )
                     if reduction_quantity_status in {
@@ -1477,7 +1475,7 @@ class TradingRuntime:
                             requested_quantity=str(requested_quantity),
                             order_quantity=str(quantity),
                             available_base_quantity=str(
-                                self.portfolio.cash_balance(instrument.base)
+                                available_spot_balance(instrument.base)
                             ),
                             current_position_eur=str(decision.current_position_eur),
                             target_position_eur=str(decision.target_position_eur),
@@ -1500,7 +1498,7 @@ class TradingRuntime:
                                 minimum_orderable_spot_quantity(instrument, snap.price)
                             ),
                             available_base_quantity=str(
-                                self.portfolio.cash_balance(instrument.base)
+                                available_spot_balance(instrument.base)
                             ),
                             current_position_eur=str(decision.current_position_eur),
                             target_position_eur=str(decision.target_position_eur),
@@ -1581,14 +1579,7 @@ class TradingRuntime:
                     cash_budget_quote = spot_cash_required_quote(
                         quantity, cash_budget_price, self.config
                     )
-                    spendable_reader = getattr(
-                        self.portfolio, "available_cash_balance", None
-                    )
-                    available_quote = (
-                        D(str(spendable_reader(instrument.quote)))
-                        if callable(spendable_reader)
-                        else self.portfolio.cash_balance(instrument.quote)
-                    )
+                    available_quote = available_spot_balance(instrument.quote)
                     reserved_quote = cycle_quote_reserved.get(cash_budget_asset, D("0"))
                     available_quote = max(D("0"), available_quote - reserved_quote)
                     if available_quote + D("0.00000001") < cash_budget_quote:
@@ -1641,11 +1632,7 @@ class TradingRuntime:
                         # also refreshes BalanceEx holds before any new cash order.
                         self.portfolio.set_market_context(self.instruments,latest_spot_payload)
                         portfolio = self.portfolio.reconcile()
-                        available_quote = (
-                            D(str(spendable_reader(instrument.quote)))
-                            if callable(spendable_reader)
-                            else self.portfolio.cash_balance(instrument.quote)
-                        )
+                        available_quote = available_spot_balance(instrument.quote)
                         if available_quote + D("0.00000001") < cash_budget_quote:
                             reason="FX_FUNDING_INSUFFICIENT_AFTER_FILL"
                             blockers.append(f"{instrument.symbol}:{reason}")
