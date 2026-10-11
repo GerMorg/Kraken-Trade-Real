@@ -90,19 +90,56 @@ class PositionProfitProtection:
         current_pct: D,
     ) -> dict[str, Any] | None:
         """Create or reuse a position epoch; never label an inherited/manual path learnable."""
-        order_ids = sorted({
-            str(value).strip()
-            for value in getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
-            if str(value).strip()
-        })
-        direction = str(
-            getattr(portfolio, "spot_margin_position_directions", {}).get(symbol, "MIXED")
-            or "MIXED"
-        ).upper()
-        lot_count = int(
-            getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, len(order_ids))
-            or 0
+        is_cash_spot = symbol in getattr(portfolio, "spot_cash_position_symbols", ())
+        source = (
+            "APP_MANAGED_SPOT_WALLET_LEDGER"
+            if is_cash_spot
+            else "KRAKEN_OPENPOSITIONS_AGGREGATED"
         )
+        if is_cash_spot:
+            # Read the exact FIFO inventory contract used to prove this wallet
+            # quantity is app-managed cash Spot rather than manual/inherited assets.
+            ledger_lots = self.db.query(
+                """SELECT symbol,direction,entry_order_id,opening_decision_id,
+                          remaining_quantity,detail_json
+                   FROM core_inventory_lots
+                   WHERE symbol=? AND CAST(remaining_quantity AS REAL)>0
+                   ORDER BY opened_at,lot_id""",
+                (symbol,),
+            )
+            order_ids = sorted({
+                str(lot.get("entry_order_id") or "").strip()
+                for lot in ledger_lots
+                if str(lot.get("entry_order_id") or "").strip()
+            })
+            decision_ids_from_lots = sorted({
+                str(lot.get("opening_decision_id") or "").strip()
+                for lot in ledger_lots
+                if str(lot.get("opening_decision_id") or "").strip()
+            })
+            directions = {
+                str(lot.get("direction") or "").upper()
+                for lot in ledger_lots
+            }
+            direction = next(iter(directions)) if len(directions) == 1 else "MIXED"
+            # Multiple partial fills of one exchange order are one position lot
+            # for learning eligibility; distinct open orders remain ambiguous.
+            lot_count = len(order_ids)
+        else:
+            order_ids = sorted({
+                str(value).strip()
+                for value in getattr(portfolio, "spot_margin_open_order_ids", {}).get(symbol, ())
+                if str(value).strip()
+            })
+            direction = str(
+                getattr(portfolio, "spot_margin_position_directions", {}).get(symbol, "MIXED")
+                or "MIXED"
+            ).upper()
+            lot_count = int(
+                getattr(portfolio, "spot_margin_open_lot_count", {}).get(symbol, len(order_ids))
+                or 0
+            )
+            decision_ids_from_lots = []
         active = self.db.active_core_exit_episode(symbol)
         same_identity = False
         if active is not None:
@@ -110,9 +147,19 @@ class PositionProfitProtection:
                 stored_ids = sorted(json.loads(active.get("open_order_ids_json") or "[]"))
             except (TypeError, ValueError):
                 stored_ids = []
+            try:
+                active_detail = json.loads(active.get("detail_json") or "{}")
+            except (TypeError, ValueError):
+                active_detail = {}
+            if not isinstance(active_detail, dict):
+                active_detail = {}
+            active_source = str(
+                active_detail.get("source") or "KRAKEN_OPENPOSITIONS_AGGREGATED"
+            )
             same_identity = (
                 stored_ids == order_ids
                 and str(active.get("direction") or "").upper() == direction
+                and active_source == source
             )
             if not same_identity:
                 self.db.close_core_exit_episode(
@@ -169,6 +216,11 @@ class PositionProfitProtection:
             str(row.get("decision_id") or "")
             for row in opening_rows if str(row.get("decision_id") or "")
         })
+        if is_cash_spot:
+            # Cross-check the decision set reconstructed from FIFO lots against
+            # the order joins; disagreement invalidates the episode for learning.
+            if set(decision_ids) != set(decision_ids_from_lots):
+                decision_ids = []
         matching_open_order = (
             opening_rows[0]
             if len(order_ids) == 1
@@ -216,7 +268,11 @@ class PositionProfitProtection:
             reason = "POSITION_PNL_OR_BASIS_UNAVAILABLE"
             episode_opened_at = observed_at
         elif len(order_ids) != 1 or lot_count != 1:
-            reason = "MULTIPLE_OPEN_MARGIN_LOTS"
+            reason = (
+                "MULTIPLE_OPEN_SPOT_ORDERS"
+                if is_cash_spot
+                else "MULTIPLE_OPEN_MARGIN_LOTS"
+            )
             episode_opened_at = observed_at
         elif matching_open_order is None or len(decision_ids) != 1:
             reason = "EXTERNAL_OR_UNATTRIBUTED_POSITION"
@@ -251,7 +307,12 @@ class PositionProfitProtection:
             eligibility_reason=reason,
             exit_policy_snapshot=policy,
             detail={
-                "source": "KRAKEN_OPENPOSITIONS_AGGREGATED",
+                "source": source,
+                "pnl_basis": (
+                    "FIFO_ENTRY_COST_GROSS_MARK_TO_MARKET"
+                    if is_cash_spot
+                    else "KRAKEN_OPENPOSITIONS_NET_PNL"
+                ),
                 "cycle_id": cycle_id,
                 "cycle_started_at": cycle_started_at,
                 "order_created_at": order_created_at,
