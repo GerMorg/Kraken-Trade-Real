@@ -1140,7 +1140,15 @@ class TacticalTrader:
 
             opposite = self._opposite_signal(position)
             reversal_edge = D(str(getattr(self.config, "tactical_reversal_exit_bps", 120)))
-            if not reason and opposite is not None and opposite.net_edge_bps >= reversal_edge:
+            # A reversal exit requires an actionable signal in the other direction.
+            # _build_signal() returns whichever side wins its setup score; it does
+            # not guarantee that the result is opposite to the held position.
+            if (
+                not reason
+                and opposite is not None
+                and opposite.direction != position.direction
+                and opposite.net_edge_bps >= reversal_edge
+            ):
                 reason = "SIGNAL_REVERSAL"
             self.db.save_tactical_position(
                 position.symbol,
