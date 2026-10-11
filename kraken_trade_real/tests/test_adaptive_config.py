@@ -232,7 +232,7 @@ def test_legacy_ha_options_cannot_override_learned_core_parameters(tmp_path):
     assert config.strategy_profit_lock_floor_pct == 5.0
 
 
-def test_core_optimizer_tightens_entry_policy_from_closed_gross_outcomes(db):
+def test_core_optimizer_tightens_entry_policy_from_verified_net_outcomes(db):
     registry = ModelRegistry(db)
     optimizer = AdaptiveParameterOptimizer(db, registry)
     now = 1_800_000_000.0
@@ -257,21 +257,25 @@ def test_core_optimizer_tightens_entry_policy_from_closed_gross_outcomes(db):
                  opening_decision_id,symbol,direction,first_opened_at,last_closed_at,
                  matched_legs,closed_quantity,closed_notional_quote,gross_pnl_quote,
                  fees_est_quote,estimated_net_pnl_quote,gross_return_bps,
-                 estimated_net_return_bps,quote_asset,fee_status,net_verified,detail_json
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 estimated_net_return_bps,quote_asset,fee_status,net_verified,
+                 verified_fees_quote,verified_net_pnl_quote,verified_net_return_bps,detail_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 decision_id, "XBT/EUR", "LONG", closed_at - 600, closed_at, 1,
                 "1", "100", "-0.5", "0.2", "-0.7", "-50",
-                "-70", "ZEUR", "QUOTE_ESTIMATE_ONLY", 0, "{}",
+                "-70", "ZEUR", "LEDGER_VERIFIED_SPOT_NET", 1,
+                "0.2", "-0.7", "-70", "{}",
             ),
         )
 
     result = optimizer.optimize_core_entry_policy(now)
-    assert result["status"] == "PROMOTED"
+    assert result["status"] == "PROMOTED", result
     assert result["promoted"] is True
     assert result["action"] == "TIGHTEN"
+    assert result["data_basis"] == "ledger_verified_non_margin_spot_net_return_bps"
+    assert result["data_scope"] == "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY"
     assert result["exchange_fee_estimates_used"] is False
-    assert result["verified_net_pnl_used"] is False
+    assert result["verified_net_pnl_used"] is True
 
     active_version = registry.active("strategy_core")
     assert active_version.startswith("core-entry-policy-")
@@ -285,6 +289,48 @@ def test_core_optimizer_tightens_entry_policy_from_closed_gross_outcomes(db):
     repeated = optimizer.optimize_core_entry_policy(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_CORE_OUTCOMES"
     assert repeated["new_closed_outcomes_since_last_evaluation"] == 0
+
+
+def test_core_optimizer_ignores_estimated_only_spot_outcomes(db):
+    registry = ModelRegistry(db)
+    optimizer = AdaptiveParameterOptimizer(db, registry)
+    now = 1_800_000_000.0
+
+    for index in range(60):
+        decision_id = f"estimated-core-decision-{index}"
+        closed_at = now - (60 - index) * 3600.0
+        db.execute(
+            """INSERT INTO decisions(
+                 decision_id,created_at,symbol,direction,target_notional_eur,leverage,
+                 expected_return_bps,expected_cost_bps,confidence,regime,news_effect_bps,
+                 gemini_effect_bps,strategy_version,model_version,config_hash,rationale_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                decision_id, closed_at - 600, "XBT/EUR", "LONG", "100", "1",
+                "150", "20", "0.70", "TRENDING", "0", "0",
+                "core-v1", "baseline-v1", "test", "{}",
+            ),
+        )
+        db.execute(
+            """INSERT INTO core_realized_outcomes(
+                 opening_decision_id,symbol,direction,first_opened_at,last_closed_at,
+                 matched_legs,closed_quantity,closed_notional_quote,gross_pnl_quote,
+                 fees_est_quote,estimated_net_pnl_quote,gross_return_bps,
+                 estimated_net_return_bps,quote_asset,fee_status,net_verified,
+                 verified_fees_quote,verified_net_pnl_quote,verified_net_return_bps,detail_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                decision_id, "XBT/EUR", "LONG", closed_at - 600, closed_at, 1,
+                "1", "100", "-0.5", "0.2", "-0.7", "-50",
+                "-70", "ZEUR", "QUOTE_ESTIMATE_ONLY", 0,
+                None, None, None, "{}",
+            ),
+        )
+
+    result = optimizer.optimize_core_entry_policy(now)
+    assert result["status"] == "INSUFFICIENT_VERIFIED_CLOSED_SPOT_OUTCOMES"
+    assert result["samples"] == 0
+    assert registry.active("strategy_core") == "core-entry-baseline-v1"
 
 def test_adaptive_config_restores_safe_tactical_volatility_band_when_registry_is_invalid():
     class InvalidVolatilityRegistry:
