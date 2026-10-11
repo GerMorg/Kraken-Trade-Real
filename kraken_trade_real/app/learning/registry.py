@@ -239,6 +239,7 @@ class ModelRegistry:
                     or float(params["strategy_adaptive_cost_ratio"]) < 1.10
                 ):
                     raise ValueError("CORE_POLICY_RELATIONSHIP_INVALID")
+                action = str(metrics.get("action") or "")
                 common_quality = (
                     metrics.get("data_basis")
                     == "ledger_verified_non_margin_spot_net_return_bps"
