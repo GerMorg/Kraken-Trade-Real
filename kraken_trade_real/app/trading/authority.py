@@ -790,6 +790,13 @@ class TradingAuthority:
             }
 
     def submit_funding_order(self, intent: OrderIntent, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        """Serialize funding-order submissions with all other live order requests."""
+        with self._submission_lock:
+            return self._submit_funding_order_locked(intent, timeout_seconds=timeout_seconds)
+
+    def _submit_funding_order_locked(
+        self, intent: OrderIntent, *, timeout_seconds: float = 30.0
+    ) -> dict[str, Any]:
         """Submit a preparatory funding order and confirm its exchange-side fill."""
         if not is_valid_kraken_client_order_id(intent.client_order_id):
             return {"state": OrderState.REJECTED.value, "reason": "INVALID_CLIENT_ORDER_ID"}
