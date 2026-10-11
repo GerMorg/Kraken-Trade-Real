@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.57",
+                "User-Agent": "Kraken-Trade-Real/0.1.58",
                 **(headers or {}),
             },
             method=method,
@@ -267,6 +267,15 @@ class KrakenGateway:
 
     def spot_balance(self):
         return self.spot_private("Balance")
+
+    def spot_balance_extended(self):
+        """Return total and held Spot balances from Kraken's BalanceEx endpoint.
+
+        Available funds are computed per asset as
+        balance + credit - credit_used - hold_trade. Unlike Balance, this
+        endpoint reveals funds already reserved by open Spot orders.
+        """
+        return self.spot_private("BalanceEx")
 
     def spot_open_orders(self):
         return self.spot_private("OpenOrders")
