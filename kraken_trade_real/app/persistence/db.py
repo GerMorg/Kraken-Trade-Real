@@ -74,7 +74,16 @@ class Database:
                     con.execute(f"ALTER TABLE fills ADD COLUMN {name} {definition}")
             con.execute("CREATE INDEX IF NOT EXISTS idx_fills_decision_time ON fills(decision_id, created_at)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_fills_client_order ON fills(client_order_id, created_at)")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','10')")
+            # Persist the policy and signal context that actually generated each
+            # Tactical entry. Keep this migration idempotent for existing HA DBs.
+            tcols = {row[1] for row in con.execute("PRAGMA table_info(tactical_positions)")}
+            for name, definition in {
+                "entry_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+                "entry_context_json": "TEXT NOT NULL DEFAULT '{}'",
+            }.items():
+                if name not in tcols:
+                    con.execute(f"ALTER TABLE tactical_positions ADD COLUMN {name} {definition}")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','11')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
