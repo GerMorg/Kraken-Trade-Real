@@ -467,8 +467,8 @@ class AdaptiveParameterOptimizer:
                 1.50, current["strategy_adaptive_cost_ratio"] + 0.05
             )
         elif (
-            after["mean_after_expected_cost_bps"] >= 15.0
-            and after["positive_after_expected_cost_rate"] >= 0.60
+            after["mean_verified_net_return_bps"] >= 15.0
+            and after["positive_verified_net_rate"] >= 0.60
             and after["mean_after_expected_cost_bps"]
                 >= before["mean_verified_net_return_bps"] + 5.0
         ):
