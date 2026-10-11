@@ -685,8 +685,24 @@ class TradingRuntime:
                             snapshot.closes,
                         )
                     snapshots[instrument.symbol]=snapshot
-                    feature_map[instrument.symbol]=self.features.calculate(snapshot)
-                    self.db.save_market(snapshot,feature_map[instrument.symbol])
+
+            # Revalue all history-bearing markets against the same full-universe
+            # ticker set used for FX conversion. The EUR/USD market itself may not
+            # make the history shortlist, but it is still needed to price USD quotes.
+            liquidity_diagnostics = self.scanner.normalize_liquidity_eur(
+                self.instruments,
+                snapshots,
+                conversion_snapshots=ticker_snapshots,
+            )
+            for symbol, snapshot in snapshots.items():
+                feature_map[symbol]=self.features.calculate(snapshot)
+                self.db.save_market(snapshot,feature_map[symbol])
+            self.audit.emit(
+                "CYCLE_EUR_LIQUIDITY_NORMALIZED",
+                "INFO",
+                cycle_id=cycle_id,
+                **liquidity_diagnostics,
+            )
 
             ranked=self.scanner.rank(
                 [instrument for instrument in history_candidates if instrument.symbol in snapshots],
