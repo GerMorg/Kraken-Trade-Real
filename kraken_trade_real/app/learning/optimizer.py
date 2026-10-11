@@ -391,7 +391,7 @@ class AdaptiveParameterOptimizer:
     }
 
     def optimize_core_entry_policy(self, now: float | None = None) -> dict[str, Any]:
-        """Adapt Normal entry gates only from fully verified cash-Spot net returns.
+        """Adapt Normal entry gates only from fully verified net returns: quote-ledger verified non-margin Spot outcomes, plus Spot-Margin episodes closed before rollover with verified quote-currency realised P/L and fees.
 
         The outcome ledger marks a decision verified only when all closing FIFO
         legs are fully attributed. It accepts non-margin Spot outcomes with
@@ -579,7 +579,7 @@ class AdaptiveParameterOptimizer:
         elif (
             after["mean_verified_net_return_bps"] >= 15.0
             and after["positive_verified_net_rate"] >= 0.60
-            and after["mean_after_expected_cost_bps"]
+            and after["mean_verified_net_return_bps"]
                 >= before["mean_verified_net_return_bps"] + 5.0
         ):
             action = "RESTORE_TOWARD_DEFAULTS"
