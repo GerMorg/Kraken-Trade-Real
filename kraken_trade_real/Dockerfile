@@ -1,6 +1,6 @@
 FROM ghcr.io/home-assistant/base:latest
 
-ARG BUILD_VERSION=0.1.78
+ARG BUILD_VERSION=0.1.79
 
 LABEL \
     io.hass.name="Kraken Trade Real" \
