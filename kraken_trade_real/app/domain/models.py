@@ -25,6 +25,11 @@ class MarketSnapshot:
     closes:tuple[Decimal,...]=(); depths_bid:tuple[tuple[Decimal,Decimal],...]=()
     depths_ask:tuple[tuple[Decimal,Decimal],...]=(); funding_rate:Decimal|None=None
     open_interest:Decimal|None=None; basis_bps:Decimal|None=None; liquidation_pressure:Decimal|None=None
+    # Raw Kraken volume is in base-asset units. Keep quote turnover and EUR
+    # liquidity separately to avoid comparing incompatible units across markets.
+    quote_asset:str=""
+    volume_24h_quote:Decimal|None=None
+    liquidity_eur_24h:Decimal|None=None
     @property
     def age_seconds(self)->float:return max(0.0,time.time()-self.timestamp)
     @property
