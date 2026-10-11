@@ -27,6 +27,8 @@ class FakeRegistry:
     def parameters(self, version=None, family="decision"):
         if family == "strategy_core":
             return {
+                "market_min_liquidity_eur": 75.0,
+                "market_max_spread_bps": 55.0,
                 "strategy_min_edge_bps": 33.0,
                 "strategy_stop_loss_pct": 2.5,
                 "strategy_partial_profit_trigger_pct": 8.0,
@@ -58,6 +60,8 @@ class FakeRegistry:
 
 def test_adaptive_config_overlays_only_managed_policy_parameters():
     base = SimpleNamespace(
+        market_min_liquidity_eur=50.0,
+        market_max_spread_bps=80.0,
         strategy_min_edge_bps=33.0,
         tactical_min_expected_move_bps=280.0,
         tactical_min_momentum_bps=40.0,
@@ -88,6 +92,8 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     # Values loaded from the registry are bounded again by the runtime overlay.
     assert config.tactical_reversal_exit_bps == 500.0
     # Core policy values are supplied by its own versioned model; unrelated settings remain base-config owned.
+    assert config.market_min_liquidity_eur == 75.0
+    assert config.market_max_spread_bps == 55.0
     assert config.strategy_min_edge_bps == 33.0
     assert config.strategy_stop_loss_pct == 2.5
     assert config.strategy_partial_profit_trigger_pct == 8.0
@@ -148,6 +154,8 @@ def test_decision_engine_uses_regime_specific_confidence_scale():
 def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     path = tmp_path / "options.json"
     path.write_text(json.dumps({
+        "market_min_liquidity_eur": 999999.0,
+        "market_max_spread_bps": 0.1,
         "tactical_min_expected_move_bps": 9999,
         "tactical_min_momentum_bps": 9999,
         "tactical_min_volume_ratio": 9999,
@@ -169,6 +177,8 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
         "tactical_reversal_exit_bps": 9999,
     }), encoding="utf-8")
     config = Config.load(str(path))
+    assert config.market_min_liquidity_eur == 50.0
+    assert config.market_max_spread_bps == 80.0
     assert config.tactical_min_expected_move_bps == 280.0
     assert config.tactical_min_momentum_bps == 40.0
     assert config.tactical_min_volume_ratio == 2.0
@@ -344,6 +354,8 @@ def test_core_optimizer_tightens_entry_policy_from_verified_net_outcomes(db):
     assert params["strategy_adaptive_edge_floor_bps"] <= params["strategy_min_edge_bps"]
     assert params["strategy_adaptive_min_confidence"] >= params["strategy_min_confidence"]
     assert params["strategy_adaptive_cost_ratio"] >= 1.10
+    assert params["market_min_liquidity_eur"] > 50.0
+    assert params["market_max_spread_bps"] < 80.0
 
     repeated = optimizer.optimize_core_entry_policy(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_CORE_OUTCOMES"
@@ -677,3 +689,24 @@ def test_positive_tactical_optimizer_never_promotes_moves_below_cost_floor(db):
     assert active["tactical_min_expected_move_bps"] >= (
         80.0 + 80.0 + active["tactical_max_spread_bps"] + 25.0 + 30.0 + 1.0
     )
+
+def test_adaptive_config_bounds_registry_market_filter_values():
+    class CorruptMarketPolicy:
+        def active(self, family="decision"):
+            return "corrupt-market-policy"
+
+        def parameters(self, version=None, family="decision"):
+            if family == "strategy_core":
+                return {
+                    "market_min_liquidity_eur": 999999.0,
+                    "market_max_spread_bps": 0.1,
+                }
+            return {}
+
+    config = AdaptiveConfig(
+        SimpleNamespace(market_min_liquidity_eur=50.0, market_max_spread_bps=80.0),
+        CorruptMarketPolicy(),
+    )
+
+    assert config.market_min_liquidity_eur == 1000.0
+    assert config.market_max_spread_bps == 20.0
