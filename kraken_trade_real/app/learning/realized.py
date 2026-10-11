@@ -173,6 +173,8 @@ class CoreSpotRealizedOutcomeLedger:
                     "remaining_entry_fee_est_quote": fee_est,
                     "remaining_entry_fee_verified_quote": verified_fee_quote,
                     "entry_fee_verified": quote_fee_verified,
+                    "entry_fee_currency": fee_currency,
+                    "entry_fee_attribution_status": attribution_status,
                     "quote_asset": quote_asset,
                     "leverage": str(row.get("leverage") or "1"),
                     "margin": bool(int(row.get("margin") or 0)),
@@ -316,7 +318,9 @@ class CoreSpotRealizedOutcomeLedger:
                 "estimated_net_pnl_quote": ZERO,
                 "quote_asset": leg["quote_asset"],
                 "fee_status": self.FEE_STATUS,
-                "net_verified": 0,
+                "net_verified": 1,
+                "verified_fees_quote": ZERO,
+                "verified_net_pnl_quote": ZERO,
                 "detail": [],
             })
             out["first_opened_at"] = min(out["first_opened_at"], float(leg["opened_at"]))
@@ -329,6 +333,13 @@ class CoreSpotRealizedOutcomeLedger:
                 _decimal(leg["entry_fee_est_quote"]) + _decimal(leg["exit_fee_est_quote"])
             )
             out["estimated_net_pnl_quote"] += _decimal(leg["estimated_net_pnl_quote"])
+            if int(leg.get("net_verified") or 0) == 1:
+                out["verified_fees_quote"] += _decimal(leg["verified_fees_quote"])
+                out["verified_net_pnl_quote"] += _decimal(leg["verified_net_pnl_quote"])
+            else:
+                # A decision-level outcome is verified only when every FIFO leg
+                # has quote-currency fee evidence and no unaccounted margin costs.
+                out["net_verified"] = 0
             out["detail"].append(leg["leg_id"])
 
         outcome_rows: list[dict[str, Any]] = []
@@ -336,10 +347,18 @@ class CoreSpotRealizedOutcomeLedger:
             notional = out["closed_notional_quote"]
             gross_bps = out["gross_pnl_quote"] / notional * BPS if notional > 0 else ZERO
             net_bps = out["estimated_net_pnl_quote"] / notional * BPS if notional > 0 else ZERO
+            verified_net_bps = (
+                out["verified_net_pnl_quote"] / notional * BPS
+                if out["net_verified"] and notional > 0 else None
+            )
             outcome_rows.append({
                 **out,
                 "gross_return_bps": str(gross_bps),
                 "estimated_net_return_bps": str(net_bps),
+                "verified_net_return_bps": str(verified_net_bps) if verified_net_bps is not None else None,
+                "verified_fees_quote": str(out["verified_fees_quote"]) if out["net_verified"] else None,
+                "verified_net_pnl_quote": str(out["verified_net_pnl_quote"]) if out["net_verified"] else None,
+                "fee_status": "LEDGER_VERIFIED_SPOT_NET" if out["net_verified"] else self.FEE_STATUS,
                 "closed_quantity": str(out["closed_quantity"]),
                 "closed_notional_quote": str(notional),
                 "gross_pnl_quote": str(out["gross_pnl_quote"]),
@@ -347,8 +366,9 @@ class CoreSpotRealizedOutcomeLedger:
                 "estimated_net_pnl_quote": str(out["estimated_net_pnl_quote"]),
                 "detail_json": json.dumps({
                     "leg_ids": out["detail"],
-                    "net_verified": False,
-                    "attribution_basis": "app-local-orders-and-Spot-TradesHistory",
+                    "net_verified": bool(out["net_verified"]),
+                    "attribution_basis": "app-local-orders-and-Spot-TradesHistory+QueryLedgers",
+                    "verified_scope": "non-margin Spot legs only; every entry/exit fee must be quote-denominated or explicitly zero",
                 }, sort_keys=True),
             })
 
@@ -447,5 +467,6 @@ class CoreSpotRealizedOutcomeLedger:
             "open_inventory_lots": len(open_lots),
             "attribution_anomalies": len(anomalies),
             "fee_status": self.FEE_STATUS,
-            "verified_net_outcomes": 0,
+            "verified_net_outcomes": sum(1 for item in outcome_rows if int(item["net_verified"]) == 1),
+            "estimated_only_outcomes": sum(1 for item in outcome_rows if int(item["net_verified"]) != 1),
         }
