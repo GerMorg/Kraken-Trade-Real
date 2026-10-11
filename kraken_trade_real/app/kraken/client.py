@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.56",
+                "User-Agent": "Kraken-Trade-Real/0.1.57",
                 **(headers or {}),
             },
             method=method,
@@ -129,7 +129,13 @@ class KrakenGateway:
         # arrives first can make an older in-flight request invalid at Kraken.
         with self._spot_private_lock:
             path = f"/0/private/{method}"
-            body = dict(params or {})
+            # urlencoded form bodies must encode REST booleans as lowercase
+            # literals. Python urlencode(True) emits "True", which Kraken's
+            # TradesHistory boolean flags reject with EGeneral:Invalid arguments.
+            body = {
+                key: ("true" if value is True else "false" if value is False else value)
+                for key, value in dict(params or {}).items()
+            }
             body["nonce"] = self._next_nonce()
             encoded = urlencode(body, doseq=True)
             result = self.http.request(
