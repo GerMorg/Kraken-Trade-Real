@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.54
+
+- Extend the versioned Tactical policy with minimum/maximum volatility, order-book imbalance, adaptive confidence, and minimum net-edge thresholds.
+- Apply bounded entry-threshold tightening after poor realized trade windows and cautious loosening only after positive, improving windows; enforce the volatility-band relationship both before runtime use and during model promotion.
+- Remove those learned strategy thresholds from the Home Assistant options/schema and ignore stale values in existing `options.json` files.
+- Add regression coverage for internal policy overlays, legacy-option isolation, parameter adaptation, promotion bounds, and corrupt volatility-band fallback.
+- Keep position/capital limits, daily-loss limits, leverage, and order-rate caps outside automatic optimization.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.54.
+
 ## 0.1.53
 
 - Add a Normal/Core Spot Margin exit-policy replay optimizer over persistently recorded, eligible, app-managed single-order episodes.
