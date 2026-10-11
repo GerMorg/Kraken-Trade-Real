@@ -275,6 +275,11 @@ class ModelRegistry:
             "tactical_min_breakout_bps": (5.0, 250.0),
             "tactical_max_spread_bps": (3.0, 60.0),
             "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
+            "tactical_min_volatility_bps": (5.0, 50.0),
+            "tactical_max_volatility_bps": (25.0, 120.0),
+            "tactical_min_imbalance": (0.02, 0.50),
+            "tactical_adaptive_min_confidence": (0.60, 0.95),
+            "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
             "tactical_portfolio_pct": (1.0, 25.0),
             "tactical_position_limit_pct": (1.0, 80.0),
             "tactical_stop_loss_pct": (0.35, 2.0),
@@ -293,6 +298,22 @@ class ModelRegistry:
                 {"reason": "PARAMETER_OUT_OF_BOUNDS"},
             )
             return False
+        if kind in {"bounded_online_controller", "path_replay_exit_policy"}:
+            try:
+                if (
+                    "tactical_min_volatility_bps" in params
+                    and "tactical_max_volatility_bps" in params
+                    and float(params["tactical_min_volatility_bps"])
+                    >= float(params["tactical_max_volatility_bps"])
+                ):
+                    raise ValueError("EMPTY_TACTICAL_VOLATILITY_BAND")
+            except (TypeError, ValueError):
+                self.db.learning_event(
+                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                    {"reason": "TACTICAL_VOLATILITY_POLICY_RELATIONSHIP_INVALID"},
+                )
+                return False
+
         if kind == "path_replay_core_exit_policy":
             try:
                 required_exit_keys = {
