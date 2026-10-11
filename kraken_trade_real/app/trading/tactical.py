@@ -623,7 +623,8 @@ class TacticalTrader:
         min_breakout = D(str(policy_snapshot.get("tactical_min_breakout_bps", 25)))
 
         context = self._news_effects.get(instrument.symbol, D("0")) + self._gemini_bps
-        context_block = D(str(getattr(self.config, "tactical_context_block_bps", 80)))
+        # Read the same atomically captured values that are written with this entry.
+        context_block = D(str(policy_snapshot.get("tactical_context_block_bps", 80)))
 
         long_score = self._score(
             momentum_60,
@@ -1469,6 +1470,7 @@ class TacticalTrader:
             "tactical_adaptive_min_expected_move_bps",
             "tactical_adaptive_min_confidence",
             "tactical_adaptive_min_net_edge_bps",
+            "tactical_context_block_bps",
             "tactical_adaptive_entry_enabled",
             "tactical_stop_loss_pct",
             "tactical_take_profit_pct",
@@ -1567,6 +1569,7 @@ class TacticalTrader:
             "adaptive_min_expected_move_bps": "tactical_adaptive_min_expected_move_bps",
             "adaptive_min_confidence": "tactical_adaptive_min_confidence",
             "adaptive_min_net_edge_bps": "tactical_adaptive_min_net_edge_bps",
+            "context_block_bps": "tactical_context_block_bps",
             "adaptive_entry_enabled": "tactical_adaptive_entry_enabled",
             "stop_loss_pct": "tactical_stop_loss_pct",
             "take_profit_pct": "tactical_take_profit_pct",
