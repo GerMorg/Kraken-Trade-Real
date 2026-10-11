@@ -94,7 +94,7 @@ def test_tactical_entry_snapshot_columns_migrate_idempotently(tmp_path):
     columns = {row["name"] for row in db.query("PRAGMA table_info(tactical_positions)")}
     assert "entry_policy_json" in columns
     assert "entry_context_json" in columns
-    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "11"
+    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "12"
 
     # Opening the existing database a second time is safe.
     reopened = Database(db_path)

@@ -44,6 +44,8 @@ def _add_fill(
     fee: str,
     quote_asset: str = "ZEUR",
     symbol: str = "XBT/EUR",
+    fee_currency: str = "UNVERIFIED",
+    fee_attribution_status: str = "",
 ):
     raw = {
         "ordertxid": exchange_order_id,
@@ -55,6 +57,12 @@ def _add_fill(
         "fee": fee,
         "trade_id": trade_id,
     }
+    if fee_attribution_status:
+        raw["_ledger_attribution"] = {
+            "status": fee_attribution_status,
+            "fee_currency": fee_currency,
+            "ledger_ids": [f"ledger-{trade_id}"],
+        }
     return db.save_attributed_fill(
         order_id=exchange_order_id,
         trade_id=trade_id,
@@ -64,7 +72,7 @@ def _add_fill(
         quantity=Decimal(quantity),
         price=Decimal(price),
         fee=Decimal(fee),
-        fee_currency="UNVERIFIED",
+        fee_currency=fee_currency,
         client_order_id=client_order_id,
         decision_id=decision_id,
         venue="spot",
@@ -223,3 +231,76 @@ def test_fifo_ledger_quarantines_unmatched_close_and_opposite_entry(db):
     leg = db.one("SELECT * FROM core_realized_legs")
     assert leg is not None
     assert Decimal(leg["gross_pnl_quote"]) == Decimal("10")
+
+def test_verified_non_margin_spot_fees_produce_separate_verified_net_outcome(db):
+    _add_order(
+        db, exchange_order_id="O-V-ENTRY", client_order_id="C-V-ENTRY",
+        decision_id="D-V-ENTRY", direction="LONG", side="buy", reduce_only=False,
+    )
+    _add_fill(
+        db, exchange_order_id="O-V-ENTRY", client_order_id="C-V-ENTRY",
+        decision_id="D-V-ENTRY", trade_id="T-V-ENTRY", timestamp=500,
+        side="buy", quantity="2", price="100", fee="0.20",
+        fee_currency="ZEUR", fee_attribution_status="LEDGER_VERIFIED",
+    )
+    _add_order(
+        db, exchange_order_id="O-V-CLOSE", client_order_id="C-V-CLOSE",
+        decision_id="D-V-CLOSE", direction="SHORT", side="sell", reduce_only=True,
+    )
+    _add_fill(
+        db, exchange_order_id="O-V-CLOSE", client_order_id="C-V-CLOSE",
+        decision_id="D-V-CLOSE", trade_id="T-V-CLOSE", timestamp=510,
+        side="sell", quantity="2", price="110", fee="0.10",
+        fee_currency="EUR", fee_attribution_status="LEDGER_VERIFIED",
+    )
+
+    result = CoreSpotRealizedOutcomeLedger(db).rebuild()
+    outcome = db.one(
+        "SELECT * FROM core_realized_outcomes WHERE opening_decision_id='D-V-ENTRY'"
+    )
+    leg = db.one("SELECT * FROM core_realized_legs WHERE leg_id IS NOT NULL")
+
+    assert result["verified_net_outcomes"] == 1
+    assert outcome["net_verified"] == 1
+    assert outcome["fee_status"] == "LEDGER_VERIFIED_SPOT_NET"
+    assert Decimal(outcome["verified_fees_quote"]) == Decimal("0.30")
+    assert Decimal(outcome["verified_net_pnl_quote"]) == Decimal("19.70")
+    assert Decimal(outcome["verified_net_return_bps"]) == Decimal("985.0")
+    assert leg["net_verified"] == 1
+    assert Decimal(leg["verified_net_pnl_quote"]) == Decimal("19.70")
+
+
+def test_base_asset_fee_is_not_mislabeled_as_verified_quote_net(db):
+    _add_order(
+        db, exchange_order_id="O-B-ENTRY", client_order_id="C-B-ENTRY",
+        decision_id="D-B-ENTRY", direction="LONG", side="buy", reduce_only=False,
+    )
+    _add_fill(
+        db, exchange_order_id="O-B-ENTRY", client_order_id="C-B-ENTRY",
+        decision_id="D-B-ENTRY", trade_id="T-B-ENTRY", timestamp=600,
+        side="buy", quantity="2", price="100", fee="0.02",
+        fee_currency="XBT", fee_attribution_status="LEDGER_VERIFIED",
+    )
+    _add_order(
+        db, exchange_order_id="O-B-CLOSE", client_order_id="C-B-CLOSE",
+        decision_id="D-B-CLOSE", direction="SHORT", side="sell", reduce_only=True,
+    )
+    _add_fill(
+        db, exchange_order_id="O-B-CLOSE", client_order_id="C-B-CLOSE",
+        decision_id="D-B-CLOSE", trade_id="T-B-CLOSE", timestamp=610,
+        side="sell", quantity="2", price="110", fee="0.10",
+        fee_currency="ZEUR", fee_attribution_status="LEDGER_VERIFIED",
+    )
+
+    CoreSpotRealizedOutcomeLedger(db).rebuild()
+    outcome = db.one(
+        "SELECT * FROM core_realized_outcomes WHERE opening_decision_id='D-B-ENTRY'"
+    )
+
+    assert outcome["net_verified"] == 0
+    assert outcome["verified_net_pnl_quote"] is None
+    assert outcome["verified_net_return_bps"] is None
+    # Estimated quote PnL is still available, with its estimate-only label.
+    assert outcome["estimated_net_pnl_quote"] is not None
+    assert outcome["fee_status"] == "QUOTE_ESTIMATE_ONLY"
+

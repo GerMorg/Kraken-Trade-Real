@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.56
+
+- Request linked ledger IDs in Kraken Spot trade history and resolve fee currency through QueryLedgers batches of at most 20 IDs; missing permission or ambiguous data leaves the fee explicitly unverified and never interrupts fill persistence.
+- Persist base-asset context and idempotently enrich previously unverified fills without changing their quantity, price or order attribution.
+- Separate ledger-backed verified net PnL from historical estimate-only PnL. Verified outcomes require quote-denominated or explicitly zero entry/exit fees and exclude margin/leverage episodes whose financing costs are not yet fully reconciled.
+- Preserve estimate-only fields for incomplete or non-quote fee data; verified columns remain null instead of receiving fabricated conversions.
+- Add schema migration v12 and regression tests for ledger fee matching, permission-denial fallback, duplicate enrichment, verified net calculations, and rejection of base-asset fees as quote net.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.56.
+
 ## 0.1.55
 
 - Capture the exact versioned Tactical entry policy and signal features alongside the opening decision before any order is submitted.

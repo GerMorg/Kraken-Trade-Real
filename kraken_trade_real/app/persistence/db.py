@@ -68,6 +68,7 @@ class Database:
                 "decision_id":"TEXT NOT NULL DEFAULT ''",
                 "venue":"TEXT NOT NULL DEFAULT 'spot'",
                 "quote_asset":"TEXT NOT NULL DEFAULT ''",
+                "base_asset":"TEXT NOT NULL DEFAULT ''",
                 "raw_json":"TEXT NOT NULL DEFAULT '{}'",
             }.items():
                 if name not in fcols:
@@ -83,7 +84,31 @@ class Database:
             }.items():
                 if name not in tcols:
                     con.execute(f"ALTER TABLE tactical_positions ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','11')")
+            # Verified-fee attribution columns are additive and nullable for old data.
+            # Existing estimates remain intact; verified fields are populated only
+            # when both entry and exit fees are independently traceable to quote asset.
+            for table, definitions in {
+                "core_realized_legs": {
+                    "verified_fees_quote": "TEXT",
+                    "verified_net_pnl_quote": "TEXT",
+                    "verified_net_return_bps": "TEXT",
+                    "net_verified": "INTEGER NOT NULL DEFAULT 0",
+                },
+                "core_realized_outcomes": {
+                    "verified_fees_quote": "TEXT",
+                    "verified_net_pnl_quote": "TEXT",
+                    "verified_net_return_bps": "TEXT",
+                },
+                "core_inventory_lots": {
+                    "remaining_entry_fee_verified_quote": "TEXT NOT NULL DEFAULT '0'",
+                    "entry_fee_verified": "INTEGER NOT NULL DEFAULT 0",
+                },
+            }.items():
+                existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+                for name, definition in definitions.items():
+                    if name not in existing:
+                        con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','12')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -269,20 +294,52 @@ class Database:
         venue: str,
         quote_asset: str,
         raw_payload: dict[str, Any],
+        base_asset: str = "",
     ) -> bool:
-        """Persist an exchange fill exactly once with its originating local decision."""
+        """Persist an exchange fill exactly once with exchange and decision context."""
         with self.connect() as con:
             cur = con.execute(
                 """INSERT OR IGNORE INTO fills(
                      order_id,trade_id,created_at,symbol,side,quantity,price,fee,fee_currency,
-                     client_order_id,decision_id,venue,quote_asset,raw_json
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     client_order_id,decision_id,venue,quote_asset,base_asset,raw_json
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(order_id), str(trade_id), float(created_at), str(symbol), str(side).lower(),
                     str(quantity), str(price), str(fee), str(fee_currency),
                     str(client_order_id), str(decision_id), str(venue), str(quote_asset),
-                    json.dumps(raw_payload, sort_keys=True, default=str),
+                    str(base_asset), json.dumps(raw_payload, sort_keys=True, default=str),
                 ),
+            )
+            return cur.rowcount > 0
+
+    def enrich_attributed_fill_fee(
+        self,
+        *,
+        order_id: str,
+        trade_id: str,
+        fee_currency: str,
+        raw_payload: dict[str, Any],
+        base_asset: str = "",
+    ) -> bool:
+        """Enrich legacy/unverified fill fee attribution without replacing trade data."""
+        attribution = raw_payload.get("_ledger_attribution")
+        status = attribution.get("status") if isinstance(attribution, dict) else ""
+        if status not in {"ZERO_FEE_REPORTED", "LEDGER_VERIFIED"}:
+            return False
+        if status == "LEDGER_VERIFIED" and (
+            not fee_currency or fee_currency == "UNVERIFIED" or fee_currency == "ZERO_FEE"
+        ):
+            return False
+        if status == "ZERO_FEE_REPORTED" and fee_currency != "ZERO_FEE":
+            return False
+        encoded = json.dumps(raw_payload, sort_keys=True, default=str)
+        with self.connect() as con:
+            cur = con.execute(
+                """UPDATE fills SET fee_currency=?,raw_json=?,
+                     base_asset=CASE WHEN base_asset='' THEN ? ELSE base_asset END
+                   WHERE order_id=? AND trade_id=?
+                     AND (fee_currency='UNVERIFIED' OR fee_currency='')""",
+                (str(fee_currency), encoded, str(base_asset), str(order_id), str(trade_id)),
             )
             return cur.rowcount > 0
 

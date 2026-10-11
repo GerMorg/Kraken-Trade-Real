@@ -39,7 +39,7 @@ class HTTP:
             data=data.encode("utf-8") if isinstance(data, str) else data,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Kraken-Trade-Real/0.1.55",
+                "User-Agent": "Kraken-Trade-Real/0.1.56",
                 **(headers or {}),
             },
             method=method,
@@ -270,6 +270,10 @@ class KrakenGateway:
 
     def spot_trades_history(self, params: dict[str, Any] | None = None):
         return self.spot_private("TradesHistory", params)
+
+    def spot_query_ledgers(self, params: dict[str, Any] | None = None):
+        """Query exact Spot ledger entries by up to 20 comma-delimited ledger IDs."""
+        return self.spot_private("QueryLedgers", params)
 
     def futures_accounts(self):
         return self.futures_private("accounts")

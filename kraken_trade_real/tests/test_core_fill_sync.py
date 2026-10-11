@@ -66,6 +66,7 @@ def test_spot_history_sync_paginates_durably_and_attributes_local_decision(
         assert params["with_cursor"] is True
         assert params["limit"] == 1
         assert params["trades"] is True
+        assert params["ledgers"] is True
         seen_cursors.append((params["start"], params["end"], params.get("cursor", "")))
         return pages.get(params.get("cursor", ""), {"trades": {}, "cursor": {}})
 
@@ -153,10 +154,116 @@ def test_legacy_fill_table_migrates_before_attribution_indexes_are_created(tmp_p
 
     migrated = Database(str(database_path))
     columns = {row["name"] for row in migrated.query("PRAGMA table_info(fills)")}
-    assert {"client_order_id", "decision_id", "venue", "quote_asset", "raw_json"} <= columns
+    assert {"client_order_id", "decision_id", "venue", "quote_asset", "base_asset", "raw_json"} <= columns
     assert migrated.one(
         "SELECT decision_id,raw_json FROM fills WHERE order_id='OOLD' AND trade_id='TOLD'"
     ) == {"decision_id": "", "raw_json": "{}"}
     assert migrated.one(
         "SELECT value FROM metadata WHERE key='schema_version'"
-    )["value"] == "11"
+    )["value"] == "12"
+
+def test_spot_history_fill_fee_currency_is_resolved_from_linked_ledgers(db, fake_gateway, instrument, config):
+    from app.trading.authority import TradingAuthority
+
+    now = time.time()
+    _insert_order(
+        db, order_id="O-FEE-LEDGER", client_id="C-FEE-LEDGER",
+        decision_id="D-FEE-LEDGER", symbol=instrument.symbol, at=now - 50,
+    )
+    trade = _trade("T-FEE-LEDGER", "O-FEE-LEDGER", now - 10, "100")
+    trade["ledgers"] = ["L-FEE", "L-OTHER"]
+    request_params = []
+
+    def history(params):
+        request_params.append(dict(params))
+        return {"trades": {"T-FEE-LEDGER": trade}, "cursor": {}}
+
+    def ledgers(params):
+        assert set(params["id"].split(",")) == {"L-FEE", "L-OTHER"}
+        return {
+            "L-FEE": {"type": "trade", "asset": str(instrument.quote), "fee": "0.01"},
+            "L-OTHER": {"type": "trade", "asset": str(instrument.base), "fee": "0"},
+        }
+
+    fake_gateway.spot_trades_history = history
+    fake_gateway.spot_query_ledgers = ledgers
+    result = TradingAuthority(config, fake_gateway, db, None, None, None).sync_spot_fills(
+        [instrument], max_pages=1,
+    )
+
+    fill = db.one("SELECT * FROM fills WHERE trade_id='T-FEE-LEDGER'")
+    assert result["status"] == "COMPLETE"
+    assert request_params[0]["ledgers"] is True
+    assert fill["fee_currency"] == str(instrument.quote)
+    assert fill["base_asset"] == str(instrument.base)
+    attribution = json.loads(fill["raw_json"])["_ledger_attribution"]
+    assert attribution["status"] == "LEDGER_VERIFIED"
+    assert attribution["fee_currency"] == str(instrument.quote)
+
+
+def test_spot_fill_ledgers_failure_never_blocks_fill_persistence(db, fake_gateway, instrument, config):
+    from app.trading.authority import TradingAuthority
+
+    now = time.time()
+    _insert_order(
+        db, order_id="O-FEE-FAIL", client_id="C-FEE-FAIL",
+        decision_id="D-FEE-FAIL", symbol=instrument.symbol, at=now - 50,
+    )
+    trade = _trade("T-FEE-FAIL", "O-FEE-FAIL", now - 10, "100")
+    trade["ledgers"] = ["L-MISSING"]
+    fake_gateway.spot_trades_history = lambda params: {"trades": {"T-FEE-FAIL": trade}, "cursor": {}}
+
+    def denied(_params):
+        raise RuntimeError("permission denied")
+
+    fake_gateway.spot_query_ledgers = denied
+    result = TradingAuthority(config, fake_gateway, db, None, None, None).sync_spot_fills(
+        [instrument], max_pages=1,
+    )
+
+    fill = db.one("SELECT * FROM fills WHERE trade_id='T-FEE-FAIL'")
+    assert result["status"] == "COMPLETE"
+    assert result["ledger_lookup_failures"] == 1
+    assert fill["fee_currency"] == "UNVERIFIED"
+    assert json.loads(fill["raw_json"])["_ledger_attribution"]["status"] == "UNVERIFIED"
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM events WHERE code='SPOT_FILL_LEDGER_LOOKUP_FAILED'"
+    )["n"] == 1
+
+
+def test_existing_unverified_fill_is_enriched_once_when_ledger_data_becomes_available(
+    db, fake_gateway, instrument, config
+):
+    from app.trading.authority import TradingAuthority
+
+    now = time.time()
+    _insert_order(
+        db, order_id="O-FEE-ENRICH", client_id="C-FEE-ENRICH",
+        decision_id="D-FEE-ENRICH", symbol=instrument.symbol, at=now - 50,
+    )
+    trade = _trade("T-FEE-ENRICH", "O-FEE-ENRICH", now - 10, "100")
+    db.save_attributed_fill(
+        order_id="O-FEE-ENRICH", trade_id="T-FEE-ENRICH", created_at=now - 10,
+        symbol=instrument.symbol, side="buy", quantity="0.01", price="100",
+        fee="0.01", fee_currency="UNVERIFIED", client_order_id="C-FEE-ENRICH",
+        decision_id="D-FEE-ENRICH", venue="spot", quote_asset=str(instrument.quote),
+        raw_payload=trade,
+    )
+    trade["ledgers"] = ["L-FEE-ENRICH"]
+    fake_gateway.spot_trades_history = lambda params: {"trades": {"T-FEE-ENRICH": trade}, "cursor": {}}
+    fake_gateway.spot_query_ledgers = lambda params: {
+        "L-FEE-ENRICH": {
+            "type": "trade", "asset": str(instrument.quote), "fee": "0.01",
+        }
+    }
+
+    TradingAuthority(config, fake_gateway, db, None, None, None).sync_spot_fills(
+        [instrument], max_pages=1,
+    )
+
+    fill = db.one("SELECT * FROM fills WHERE trade_id='T-FEE-ENRICH'")
+    assert fill["fee_currency"] == str(instrument.quote)
+    assert fill["quantity"] == "0.01"
+    assert fill["price"] == "100"
+    assert json.loads(fill["raw_json"])["_ledger_attribution"]["status"] == "LEDGER_VERIFIED"
+
