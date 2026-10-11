@@ -36,6 +36,82 @@ def _direction_value(direction: Any) -> str:
     return str(getattr(direction, "value", direction) or "").strip().upper()
 
 
+def _risk_diagnostic_context(
+    decision: Any, portfolio: Any, risk: Any, config: Any
+) -> dict[str, Any]:
+    """Expose the actual values behind each risk gate without changing decisions."""
+    equity = D(str(getattr(portfolio, "equity_eur", 0)))
+    current = D(str(getattr(decision, "current_position_eur", 0)))
+    target = D(str(getattr(decision, "target_position_eur", 0)))
+    gross_before = D(str(getattr(portfolio, "gross_eur", 0)))
+    net_before = D(str(getattr(portfolio, "net_eur", 0)))
+    gross_after = gross_before - abs(current) + abs(target)
+    net_after = net_before - current + target
+    daily_pnl = D(str(getattr(portfolio, "daily_pnl_eur", 0)))
+    daily_loss_limit = equity * D(str(config.risk_daily_loss_pct)) / D("100")
+    cash_reserve_min = equity * D(str(config.risk_cash_reserve_pct)) / D("100")
+    risk_profile = str(decision.rationale.get("risk_profile", "core")).lower()
+    position_limit_pct = D(str(config.risk_max_position_pct))
+    if risk_profile == "tactical":
+        position_limit_pct = min(
+            D("100"),
+            max(D("0.1"), D(str(decision.rationale.get("risk_position_limit_pct", "25")))),
+        )
+    net_limit_pct = D(str(config.risk_max_net_pct))
+    if risk_profile == "tactical":
+        net_limit_pct = max(net_limit_pct, position_limit_pct)
+
+    if equity > 0:
+        projected_gross_pct = gross_after / equity * D("100")
+        projected_net_pct = abs(net_after) / equity * D("100")
+        target_position_pct = abs(target) / equity * D("100")
+        gross_limit_eur = equity * D(str(config.risk_max_gross_pct)) / D("100")
+        net_limit_eur = equity * net_limit_pct / D("100")
+        position_limit_eur = equity * position_limit_pct / D("100")
+    else:
+        projected_gross_pct = projected_net_pct = target_position_pct = D("0")
+        gross_limit_eur = net_limit_eur = position_limit_eur = D("0")
+
+    return {
+        "equity_eur": str(equity),
+        "cash_eur": str(getattr(portfolio, "cash_eur", 0)),
+        "daily_pnl_eur": str(daily_pnl),
+        "daily_loss_limit_pct": str(config.risk_daily_loss_pct),
+        "daily_loss_limit_eur": str(daily_loss_limit),
+        "daily_loss_headroom_eur": str(daily_pnl + daily_loss_limit),
+        "drawdown_pct": str(getattr(portfolio, "drawdown_pct", 0)),
+        "drawdown_limit_pct": str(config.risk_max_drawdown_pct),
+        "gross_before_eur": str(gross_before),
+        "projected_gross_eur": str(gross_after),
+        "projected_gross_pct": str(projected_gross_pct),
+        "gross_limit_pct": str(config.risk_max_gross_pct),
+        "gross_limit_eur": str(gross_limit_eur),
+        "net_before_eur": str(net_before),
+        "projected_net_eur": str(net_after),
+        "projected_net_pct": str(projected_net_pct),
+        "net_limit_pct": str(net_limit_pct),
+        "net_limit_eur": str(net_limit_eur),
+        "target_position_pct": str(target_position_pct),
+        "position_limit_pct": str(position_limit_pct),
+        "position_limit_eur": str(position_limit_eur),
+        "cash_reserve_pct": str(config.risk_cash_reserve_pct),
+        "cash_reserve_min_eur": str(cash_reserve_min),
+        "open_positions_count": len(getattr(portfolio, "positions", {}) or {}),
+        "open_positions_limit": int(config.risk_max_open_positions),
+        "margin_used_eur": str(getattr(portfolio, "margin_used_eur", 0)),
+        "margin_limit_pct": str(config.risk_max_margin_pct),
+        "effective_leverage": str(getattr(risk, "effective_leverage", decision.leverage)),
+        "confidence": str(decision.signal.confidence),
+        "expected_return_bps": str(decision.signal.expected_return_bps),
+        "expected_cost_bps": str(decision.signal.expected_cost_bps),
+        "net_edge_bps": str(decision.signal.net_edge_bps),
+        "failed_checks": sorted(
+            key for key, passed in (getattr(risk, "checks", {}) or {}).items()
+            if not passed
+        ),
+    }
+
+
 def _requires_spot_margin_short_risk(
     instrument: Any, direction: Any, reduce_only: bool
 ) -> bool:
@@ -1449,6 +1525,7 @@ class TradingRuntime:
                         if decision.execution_direction else ""
                     ),
                     reduce_only=decision.reduce_only,
+                    **_risk_diagnostic_context(decision, portfolio, risk, self.config),
                 )
                 if not risk.allowed:
                     risk_rejected+=1
