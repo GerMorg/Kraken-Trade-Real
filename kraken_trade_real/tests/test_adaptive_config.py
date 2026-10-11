@@ -330,8 +330,8 @@ def test_core_optimizer_tightens_entry_policy_from_verified_net_outcomes(db):
     assert result["status"] == "PROMOTED", result
     assert result["promoted"] is True
     assert result["action"] == "TIGHTEN"
-    assert result["data_basis"] == "ledger_verified_non_margin_spot_net_return_bps"
-    assert result["data_scope"] == "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY"
+    assert result["data_basis"] == "ledger_verified_spot_and_short_hold_margin_net_return_bps"
+    assert result["data_scope"] == "APP_MANAGED_QUOTE_LEDGER_VERIFIED_SPOT_AND_SHORT_HOLD_MARGIN_NET_ONLY"
     assert result["exchange_fee_estimates_used"] is False
     assert result["verified_net_pnl_used"] is True
 
@@ -386,7 +386,7 @@ def test_core_optimizer_ignores_estimated_only_spot_outcomes(db):
         )
 
     result = optimizer.optimize_core_entry_policy(now)
-    assert result["status"] == "INSUFFICIENT_VERIFIED_CLOSED_SPOT_OUTCOMES"
+    assert result["status"] == "INSUFFICIENT_VERIFIED_CLOSED_CORE_OUTCOMES"
     assert result["samples"] == 0
     assert registry.active("strategy_core") == "core-entry-baseline-v1"
 
@@ -528,3 +528,44 @@ def test_tactical_entry_optimizer_ignores_shadow_rows_and_aggregates_partial_clo
     assert result["outcome_basis"] == (
         "LIVE_POSITION_EPISODES_WITH_CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED"
     )
+
+def test_core_optimizer_handles_positive_verified_outcomes_without_missing_stats(db):
+    registry = ModelRegistry(db)
+    optimizer = AdaptiveParameterOptimizer(db, registry)
+    now = 1_800_000_000.0
+
+    for index in range(60):
+        decision_id = f"positive-core-decision-{index}"
+        closed_at = now - (60 - index) * 3600.0
+        db.execute(
+            """INSERT INTO decisions(
+                 decision_id,created_at,symbol,direction,target_notional_eur,leverage,
+                 expected_return_bps,expected_cost_bps,confidence,regime,news_effect_bps,
+                 gemini_effect_bps,strategy_version,model_version,config_hash,rationale_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                decision_id, closed_at - 600, "XBT/EUR", "LONG", "100", "1",
+                "150", "20", "0.70", "TRENDING", "0", "0",
+                "core-v1", "baseline-v1", "test", "{}",
+            ),
+        )
+        db.execute(
+            """INSERT INTO core_realized_outcomes(
+                 opening_decision_id,symbol,direction,first_opened_at,last_closed_at,
+                 matched_legs,closed_quantity,closed_notional_quote,gross_pnl_quote,
+                 fees_est_quote,estimated_net_pnl_quote,gross_return_bps,
+                 estimated_net_return_bps,quote_asset,fee_status,net_verified,
+                 verified_fees_quote,verified_net_pnl_quote,verified_net_return_bps,detail_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                decision_id, "XBT/EUR", "LONG", closed_at - 600, closed_at, 1,
+                "1", "100", "1.0", "0.2", "0.8", "80",
+                "70", "ZEUR", "LEDGER_VERIFIED_SPOT_NET", 1,
+                "0.2", "0.8", "70", "{}",
+            ),
+        )
+
+    result = optimizer.optimize_core_entry_policy(now)
+    # A positive but non-improving recent window must not crash or loosen defaults.
+    assert result["status"] == "NO_SAFE_CORE_ADJUSTMENT", result
+    assert result["recent"]["mean_verified_net_return_bps"] == 70.0
