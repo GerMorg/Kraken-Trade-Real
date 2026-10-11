@@ -59,10 +59,27 @@ class RiskEngine:
         eq = p.equity_eur
 
         if eq <= 0:
+            # An already-open position can still need to be flattened after an
+            # insolvency, stale valuation, or extreme loss. A strictly valid
+            # reduce-only target cannot create exposure: it must reduce absolute
+            # position size and may not cross through zero into the other side.
+            # Do not let a non-positive equity snapshot trap that exposure.
+            if valid_reduction:
+                return RiskResult(
+                    True,
+                    "REDUCE_ONLY_EXIT_ALLOWED_NO_POSITIVE_EQUITY",
+                    {
+                        "equity_positive": False,
+                        "reduce_only_semantics": True,
+                        "valid_reduction": True,
+                        "new_exposure": False,
+                    },
+                    leverage,
+                )
             return RiskResult(
                 False,
                 "NO_POSITIVE_EQUITY",
-                {"equity_positive": False},
+                {"equity_positive": False, "valid_reduction": False},
                 leverage,
             )
 
