@@ -449,13 +449,14 @@ class TradingAuthority:
                             if str(ledger.get("type") or "").lower() != "trade":
                                 continue
                             asset = str(ledger.get("asset") or "").strip()
+                            ledger_fee: D | None = None
                             try:
-                                ledger_fee = D(str(ledger.get("fee") or "0"))
-                                if not ledger_fee.is_finite() or ledger_fee < 0:
-                                    continue
-                            except Exception:
-                                continue
-                            if asset:
+                                parsed_fee = D(str(ledger.get("fee") or "0"))
+                                if parsed_fee.is_finite() and parsed_fee >= 0:
+                                    ledger_fee = parsed_fee
+                            except (ArithmeticError, TypeError, ValueError):
+                                ledger_fee = None
+                            if ledger_fee is not None and asset:
                                 fees_by_asset[asset] = fees_by_asset.get(asset, D("0")) + ledger_fee
                         tolerance = max(D("0.00000001"), fee.copy_abs() * D("0.000001"))
                         matches = [
