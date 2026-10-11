@@ -127,6 +127,26 @@ class AdaptiveParameterOptimizer:
             candidate["tactical_adaptive_min_expected_move_bps"] = min(
                 800.0, float(current["tactical_adaptive_min_expected_move_bps"]) * 1.05
             )
+            candidate["tactical_min_volatility_bps"] = min(
+                50.0, float(current["tactical_min_volatility_bps"]) * 1.08
+            )
+            candidate["tactical_max_volatility_bps"] = max(
+                float(candidate["tactical_min_volatility_bps"]) + 5.0,
+                float(current["tactical_max_volatility_bps"]) * 0.95,
+            )
+            candidate["tactical_min_imbalance"] = min(
+                0.50, float(current["tactical_min_imbalance"]) * 1.05
+            )
+            candidate["tactical_adaptive_min_confidence"] = min(
+                0.95, float(current["tactical_adaptive_min_confidence"]) + 0.02
+            )
+            candidate["tactical_adaptive_min_net_edge_bps"] = min(
+                100.0, float(current["tactical_adaptive_min_net_edge_bps"]) * 1.05
+            )
+            if candidate["tactical_min_volatility_bps"] >= candidate["tactical_max_volatility_bps"]:
+                candidate["tactical_max_volatility_bps"] = min(
+                    120.0, float(candidate["tactical_min_volatility_bps"]) + 5.0
+                )
             candidate["tactical_portfolio_pct"] = max(
                 1.0, float(current["tactical_portfolio_pct"]) * 0.90
             )
@@ -154,6 +174,26 @@ class AdaptiveParameterOptimizer:
             candidate["tactical_adaptive_min_expected_move_bps"] = max(
                 80.0, float(current["tactical_adaptive_min_expected_move_bps"]) * 0.98
             )
+            candidate["tactical_min_volatility_bps"] = max(
+                5.0, float(current["tactical_min_volatility_bps"]) * 0.97
+            )
+            candidate["tactical_max_volatility_bps"] = min(
+                120.0, float(current["tactical_max_volatility_bps"]) * 1.02
+            )
+            candidate["tactical_min_imbalance"] = max(
+                0.02, float(current["tactical_min_imbalance"]) * 0.98
+            )
+            candidate["tactical_adaptive_min_confidence"] = max(
+                0.60, float(current["tactical_adaptive_min_confidence"]) - 0.01
+            )
+            candidate["tactical_adaptive_min_net_edge_bps"] = max(
+                5.0, float(current["tactical_adaptive_min_net_edge_bps"]) * 0.98
+            )
+            # Preserve a non-empty volatility band even at the numeric bounds.
+            if candidate["tactical_min_volatility_bps"] >= candidate["tactical_max_volatility_bps"]:
+                candidate["tactical_max_volatility_bps"] = min(
+                    120.0, float(candidate["tactical_min_volatility_bps"]) + 5.0
+                )
             reason = "POSITIVE_IMPROVING_EXPECTANCY_SMALL_ENTRY_RELAXATION"
 
         # Avoid churn and duplicate versions when the measured policy does not change.
