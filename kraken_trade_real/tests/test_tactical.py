@@ -617,3 +617,122 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     assert armed
     assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
     assert D(armed[0][2]["profit_floor_bps"]) == D("265")
+
+def test_trade_learning_context_uses_entry_time_policy_not_close_time_config():
+    entry_policy = {
+        "tactical_min_expected_move_bps": "315.0",
+        "tactical_min_momentum_bps": "55.0",
+        "tactical_min_volume_ratio": "2.4",
+        "tactical_min_breakout_bps": "30.0",
+        "tactical_max_spread_bps": "18.0",
+        "tactical_portfolio_pct": "20.0",
+        "tactical_min_volatility_bps": "14.0",
+        "tactical_max_volatility_bps": "65.0",
+        "tactical_min_imbalance": "0.14",
+        "tactical_adaptive_min_expected_move_bps": "250.0",
+        "tactical_adaptive_min_confidence": "0.80",
+        "tactical_adaptive_min_net_edge_bps": "22.0",
+        "tactical_adaptive_entry_enabled": True,
+        "tactical_stop_loss_pct": "0.8",
+        "tactical_take_profit_pct": "2.4",
+        "tactical_trailing_trigger_bps": "130.0",
+        "tactical_trailing_stop_pct": "0.5",
+        "tactical_max_hold_seconds": "1200",
+        "tactical_reversal_exit_bps": "140.0",
+    }
+    entry_context = {
+        "direction": "SHORT",
+        "score": "245",
+        "expected_move_bps": "315",
+        "expected_cost_bps": "120",
+        "net_edge_bps": "195",
+        "spread_bps": "8",
+        "momentum_60_bps": "-65",
+        "momentum_180_bps": "-110",
+        "volatility_bps": "25",
+        "volume_ratio": "2.4",
+        "breakout_bps": "30",
+        "imbalance": "-0.14",
+        "confidence": "0.82",
+        "reason": "VOL_BREAKOUT_SHORT",
+    }
+    trader = object.__new__(TacticalTrader)
+    # Simulate several learning refreshes changing the live configuration while
+    # the old position remains open.
+    trader.config = SimpleNamespace(
+        tactical_min_expected_move_bps=900.0,
+        tactical_min_momentum_bps=200.0,
+        tactical_min_volume_ratio=7.0,
+        tactical_min_breakout_bps=200.0,
+        tactical_max_spread_bps=3.0,
+        tactical_portfolio_pct=5.0,
+        tactical_min_volatility_bps=40.0,
+        tactical_max_volatility_bps=41.0,
+        tactical_min_imbalance=0.49,
+        tactical_adaptive_min_expected_move_bps=700.0,
+        tactical_adaptive_min_confidence=0.94,
+        tactical_adaptive_min_net_edge_bps=99.0,
+        tactical_adaptive_entry_enabled=True,
+        tactical_stop_loss_pct=1.9,
+        tactical_take_profit_pct=4.9,
+        tactical_trailing_trigger_bps=499.0,
+        tactical_trailing_stop_pct=1.4,
+        tactical_max_hold_seconds=7000,
+        tactical_reversal_exit_bps=4999.0,
+    )
+    position = TacticalPosition(
+        symbol="BTC/USD",
+        venue="spot",
+        direction=Direction.SHORT,
+        quantity=D("0.01"),
+        entry_price=D("100"),
+        peak_price=D("101"),
+        trough_price=D("96"),
+        notional_eur=D("100"),
+        leverage=D("2"),
+        opened_at=1000.0,
+        entry_client_order_id="entry-snapshot-1",
+        setup_score=D("245"),
+        entry_policy=entry_policy,
+        entry_context=entry_context,
+    )
+
+    context = trader._trade_learning_context(position, "LIVE")
+
+    assert context["entry_policy_snapshot"]["min_expected_move_bps"] == "315.0"
+    assert context["entry_policy_snapshot"]["max_spread_bps"] == "18.0"
+    assert context["entry_policy_snapshot"]["stop_loss_pct"] == "0.8"
+    assert context["entry_policy_snapshot"]["reversal_exit_bps"] == "140.0"
+    assert context["entry_policy_parameters"] == entry_policy
+    assert context["entry_context_snapshot"] == entry_context
+    assert context["entry_snapshot_source"] == "ENTRY_TIME_CAPTURED"
+
+
+def test_legacy_tactical_position_does_not_mislabel_close_time_settings_as_entry_snapshot():
+    trader = object.__new__(TacticalTrader)
+    trader.config = SimpleNamespace(
+        tactical_min_expected_move_bps=999.0,
+        tactical_min_momentum_bps=250.0,
+    )
+    position = TacticalPosition(
+        symbol="BTC/USD",
+        venue="spot",
+        direction=Direction.LONG,
+        quantity=D("0.01"),
+        entry_price=D("100"),
+        peak_price=D("101"),
+        trough_price=D("99"),
+        notional_eur=D("100"),
+        leverage=D("1"),
+        opened_at=1000.0,
+        entry_client_order_id="legacy-entry",
+        setup_score=D("100"),
+    )
+
+    context = trader._trade_learning_context(position, "LIVE")
+
+    assert context["entry_policy_snapshot"] == {}
+    assert context["entry_policy_parameters"] == {}
+    assert context["entry_context_snapshot"] == {}
+    assert context["entry_snapshot_source"] == "LEGACY_ENTRY_SNAPSHOT_MISSING"
+
