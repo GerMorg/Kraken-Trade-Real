@@ -618,6 +618,69 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
     assert D(armed[0][2]["profit_floor_bps"]) == D("265")
 
+def _reversal_test_trader(position_direction, signal_direction, signal_edge):
+    audit = DummyAudit()
+    trader = TacticalTrader(
+        cfg(), DummyDB(), audit, None, DummyWS(), None, None, None, None,
+    )
+    inst = instrument()
+    trader._candidates[inst.symbol] = inst
+    position = TacticalPosition(
+        symbol=inst.symbol,
+        venue="spot",
+        direction=position_direction,
+        quantity=D("0.1"),
+        entry_price=D("100"),
+        peak_price=D("100"),
+        trough_price=D("100"),
+        notional_eur=D("10"),
+        leverage=D("1"),
+        opened_at=4_900.0,
+        entry_client_order_id="test-order",
+        setup_score=D("200"),
+        state="OPEN",
+    )
+    trader._positions[position.symbol] = position
+    trader._fresh_position_state = lambda position, now: {
+        "price": D("101"),
+        "timestamp": now,
+    }
+    trader._opposite_signal = lambda position: SimpleNamespace(
+        direction=signal_direction,
+        net_edge_bps=D(str(signal_edge)),
+    )
+    exits = []
+    trader._exit = lambda *args: exits.append(args)
+    trader._manage_positions(5_000.0)
+    return trader, exits
+
+
+def test_tactical_same_direction_signal_does_not_trigger_reversal_exit():
+    trader, exits = _reversal_test_trader(
+        Direction.LONG, Direction.LONG, D("200"),
+    )
+    assert exits == []
+    assert not any(
+        event[0] == "TACTICAL_SIGNAL_REVERSAL_CONFIRMED"
+        for event in trader.audit.events
+    )
+
+
+def test_tactical_opposite_direction_signal_triggers_reversal_exit():
+    _, exits = _reversal_test_trader(
+        Direction.LONG, Direction.SHORT, D("200"),
+    )
+    assert len(exits) == 1
+    assert exits[0][2] == "SIGNAL_REVERSAL"
+
+
+def test_tactical_reversal_signal_below_edge_threshold_does_not_exit():
+    _, exits = _reversal_test_trader(
+        Direction.LONG, Direction.SHORT, D("119.99"),
+    )
+    assert exits == []
+
+
 def test_trade_learning_context_uses_entry_time_policy_not_close_time_config():
     entry_policy = {
         "tactical_min_expected_move_bps": "315.0",
