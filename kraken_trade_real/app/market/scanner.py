@@ -133,7 +133,7 @@ class MarketScanner:
         return {
             "normalized_spot_markets": normalized,
             "unavailable_spot_markets": unavailable,
-            "fx_conversion_markets": len(graph) // 2,
+            "fx_conversion_markets": sum(len(edges) for edges in graph.values()) // 2,
         }
 
     @staticmethod
