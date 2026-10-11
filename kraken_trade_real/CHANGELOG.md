@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.60
+
+- Require Tactical signal-reversal exits to confirm that the actionable signal direction is opposite to the held position; a strong same-direction setup can no longer trigger a false reversal close.
+- Add regression tests for same-direction signals, genuine opposite-direction signals and the configured minimum reversal edge.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.60.
+
 ## 0.1.59
 
 - Restrict Normal entry-policy training and promotion to fully closed non-margin Spot outcomes with verified quote-currency or explicitly zero fees.
