@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 D = Decimal
 CRYPTO_REFORM_DATE = datetime(2021, 3, 1, tzinfo=timezone.utc)
+CRYPTO_TAX_EFFECTIVE_DATE = datetime(2022, 3, 1, tzinfo=timezone.utc)
 CRYPTO_TAX_RATE = D("0.275")
 FIAT_QUOTES = {"EUR", "ZEUR", "USD", "ZUSD", "GBP", "ZGBP", "CHF", "JPY"}
 
@@ -106,18 +107,43 @@ class AustrianTaxLedger:
         proceeds_eur: D,
         timestamp: float,
         specific_cost_eur: D | None = None,
+        asset_regime: str | None = None,
     ) -> tuple[D, TaxPool]:
-        regime = self.classify_asset_regime(timestamp)
-        key = (asset.upper(), regime)
-        pool = self._pools.get(key, TaxPool(asset.upper(), regime, D("0"), D("0")))
-        if quantity <= 0 or proceeds_eur < 0 or pool.quantity < quantity:
-            raise ValueError("insufficient tracked quantity")
-        if regime == "NEUVERMÖGEN":
+        # The disposal timestamp does not determine whether inventory is
+        # Altvermögen or Neuvermögen. Resolve against the tracked inventory;
+        # if both regimes could supply this disposal, require an explicit choice.
+        asset_key = asset.upper()
+        allowed_regimes = ("ALTVERSMÖGEN", "NEUVERSMÖGEN")
+        if quantity <= 0 or proceeds_eur < 0:
+            raise ValueError("invalid disposal quantity or proceeds")
+        if asset_regime is not None:
+            regime = str(asset_regime).upper()
+            if regime not in allowed_regimes:
+                raise ValueError("invalid asset regime")
+            key = (asset_key, regime)
+            pool = self._pools.get(key, TaxPool(asset_key, regime, D("0"), D("0")))
+            if pool.quantity < quantity:
+                raise ValueError("insufficient tracked quantity for selected regime")
+        else:
+            candidates = [
+                regime for regime in allowed_regimes
+                if self._pools.get(
+                    (asset_key, regime), TaxPool(asset_key, regime, D("0"), D("0"))
+                ).quantity >= quantity
+            ]
+            if len(candidates) != 1:
+                raise ValueError("disposal regime is ambiguous or tracked quantity is insufficient")
+            regime = candidates[0]
+            key = (asset_key, regime)
+            pool = self._pools[key]
+        if regime == "NEUVERSMÖGEN":
             cost = pool.average_cost_eur * quantity
         elif specific_cost_eur is not None:
             cost = specific_cost_eur
         else:
             raise ValueError("Altvermögen requires documented specific cost basis")
+        if cost < 0 or cost > pool.cost_basis_eur:
+            raise ValueError("specific cost basis is outside tracked inventory cost")
         gain = proceeds_eur - cost
         remaining = TaxPool(pool.asset, pool.regime, pool.quantity - quantity, pool.cost_basis_eur - cost)
         self._pools[key] = remaining
@@ -130,12 +156,32 @@ class AustrianTaxLedger:
         received_asset: str,
         received_quantity: D,
         timestamp: float,
+        asset_regime: str | None = None,
     ) -> TaxPool:
-        regime = self.classify_asset_regime(timestamp)
-        key = (given_asset.upper(), regime)
-        pool = self._pools.get(key, TaxPool(given_asset.upper(), regime, D("0"), D("0")))
-        if given_quantity <= 0 or pool.quantity < given_quantity:
-            raise ValueError("insufficient tracked quantity for swap")
+        asset_key = given_asset.upper()
+        allowed_regimes = ("ALTVERSMÖGEN", "NEUVERSMÖGEN")
+        if asset_regime is None:
+            candidates = [
+                regime for regime in allowed_regimes
+                if self._pools.get(
+                    (asset_key, regime), TaxPool(asset_key, regime, D("0"), D("0"))
+                ).quantity >= given_quantity
+            ]
+            if len(candidates) != 1:
+                raise ValueError("swap regime is ambiguous or tracked quantity is insufficient")
+            regime = candidates[0]
+        else:
+            regime = str(asset_regime).upper()
+            if regime not in allowed_regimes:
+                raise ValueError("invalid asset regime")
+        if regime != "NEUVERSMÖGEN":
+            raise ValueError("Altvermögen crypto-to-crypto swaps require tax review")
+        if datetime.fromtimestamp(timestamp, timezone.utc) < CRYPTO_TAX_EFFECTIVE_DATE:
+            raise ValueError("pre-2022 crypto-to-crypto swaps require tax review")
+        key = (asset_key, regime)
+        pool = self._pools.get(key, TaxPool(asset_key, regime, D("0"), D("0")))
+        if given_quantity <= 0 or received_quantity <= 0 or pool.quantity < given_quantity:
+            raise ValueError("insufficient tracked quantity or invalid swap quantity")
         carried_cost = pool.average_cost_eur * given_quantity
         self._pools[key] = TaxPool(
             pool.asset, pool.regime, pool.quantity - given_quantity, pool.cost_basis_eur - carried_cost
@@ -165,11 +211,12 @@ class AustrianTaxLedger:
         source: str = "kraken",
         tax_neutral: bool = False,
         detail: dict[str, Any] | None = None,
+        asset_regime: str | None = None,
     ) -> TaxEvent:
         return TaxEvent(
             event_id, timestamp, year_from_ts(timestamp), venue, product_type, asset, quote_asset,
             event_type, quantity, proceeds_eur, acquisition_cost_eur, realized_gain_eur, fee_eur,
-            fee_asset, tax_class, self.classify_asset_regime(timestamp), tax_neutral,
+            fee_asset, tax_class, asset_regime or self.classify_asset_regime(timestamp), tax_neutral,
             kest_withheld_eur, foreign_tax_eur, complete, source, detail or {},
         )
 
@@ -224,6 +271,42 @@ class AustrianTaxLedger:
 
         is_crypto_quote = quote not in FIAT_QUOTES
         if is_crypto_quote and side in {"BUY", "SELL"}:
+            # Crypto-to-crypto tax neutrality applies to qualifying Neuvermögen
+            # from 1 March 2022. The traded-away asset's acquisition regime must
+            # be known; never silently treat an Altvermögen disposal as neutral.
+            sold_asset = quote if side == "BUY" else base
+            sold_quantity = cost if side == "BUY" else qty
+            alt_pool = self._pools.get(
+                (sold_asset.upper(), "ALTVERSMÖGEN"),
+                TaxPool(sold_asset.upper(), "ALTVERSMÖGEN", D("0"), D("0")),
+            )
+            if alt_pool.quantity > 0:
+                received_asset = base if side == "BUY" else quote
+                return self.build_event(
+                    event_id=tx_id, timestamp=timestamp, venue="kraken", product_type="SPOT",
+                    asset=sold_asset, quote_asset=received_asset,
+                    event_type="ALT_CRYPTO_SWAP_REVIEW", quantity=sold_quantity,
+                    tax_class="CRYPTO_ALT_REVIEW", tax_neutral=False, complete=False,
+                    source="kraken_trades_history",
+                    asset_regime="ALTVERSMÖGEN",
+                    detail={
+                        "pair": pair, "sold_asset": sold_asset,
+                        "received_asset": received_asset,
+                        "manual_review": "Altvermögen crypto-to-crypto disposition needs separate Austrian tax treatment; no gain or carried basis was fabricated.",
+                    },
+                )
+            if datetime.fromtimestamp(timestamp, timezone.utc) < CRYPTO_TAX_EFFECTIVE_DATE:
+                return self.build_event(
+                    event_id=tx_id, timestamp=timestamp, venue="kraken", product_type="SPOT",
+                    asset=base, quote_asset=quote, event_type="CRYPTO_SWAP_REVIEW",
+                    quantity=qty, tax_class="CRYPTO_REVIEW", tax_neutral=False, complete=False,
+                    source="kraken_trades_history",
+                    asset_regime=self.classify_asset_regime(timestamp),
+                    detail={
+                        "pair": pair,
+                        "manual_review": "Crypto-to-crypto neutral rollover is only recognized by this ledger from 1 March 2022; historical tax regime requires review.",
+                    },
+                )
             if side == "BUY":
                 pool = self._pools.get((quote, self.classify_asset_regime(timestamp)))
                 if pool and pool.quantity >= cost:
@@ -248,8 +331,12 @@ class AustrianTaxLedger:
             return self.build_event(
                 event_id=tx_id, timestamp=timestamp, venue="kraken", product_type="SPOT",
                 asset=base, quote_asset=quote, event_type="CRYPTO_SWAP_REVIEW", quantity=qty,
-                tax_neutral=True, complete=False, source="kraken_trades_history",
-                detail={"pair": pair, "manual_review": "cost basis unavailable"},
+                tax_class="CRYPTO_REVIEW", tax_neutral=False, complete=False,
+                source="kraken_trades_history", asset_regime="REGIME_UNRESOLVED",
+                detail={
+                    "pair": pair,
+                    "manual_review": "cost basis or asset regime unavailable; tax-neutral treatment not asserted",
+                },
             )
 
         price_eur = unit_price_eur if unit_price_eur is not None else (price if quote in {"EUR", "ZEUR"} else D("0"))
@@ -258,23 +345,48 @@ class AustrianTaxLedger:
         proceeds = qty * price_eur if side == "SELL" and complete else D("0")
         gain = D("0")
         event_type = "OTHER"
+        tax_class = "CRYPTO_27_5"
+        event_regime: str | None = None
+        detail = {"pair": pair, "price": str(price), "cost_original": str(cost)}
         if side == "BUY" and complete:
             self.acquire(base, qty, acquisition, timestamp)
             event_type = "ACQUISITION"
         elif side == "SELL" and complete:
-            try:
-                gain, _ = self.dispose(base, qty, proceeds, timestamp)
-                event_type = "DISPOSAL"
-            except ValueError:
+            alt_pool = self._pools.get(
+                (base.upper(), "ALTVERSMÖGEN"),
+                TaxPool(base.upper(), "ALTVERSMÖGEN", D("0"), D("0")),
+            )
+            new_pool = self._pools.get(
+                (base.upper(), "NEUVERSMÖGEN"),
+                TaxPool(base.upper(), "NEUVERSMÖGEN", D("0"), D("0")),
+            )
+            if alt_pool.quantity > 0:
+                event_type = "DISPOSAL_REGIME_REVIEW" if new_pool.quantity > 0 else "ALT_DISPOSAL_REVIEW"
+                tax_class = "CRYPTO_ALT_REVIEW"
+                event_regime = "ALT_NEU_UNCLEAR" if new_pool.quantity > 0 else "ALTVERSMÖGEN"
                 complete = False
-                event_type = "DISPOSAL_BASIS_REVIEW"
+                detail.update({
+                    "alt_inventory_quantity": str(alt_pool.quantity),
+                    "new_inventory_quantity": str(new_pool.quantity),
+                    "manual_review": "Altvermögen is still tracked for this asset; the inventory regime/choice and legacy tax treatment must be reviewed before any gain is reported.",
+                })
+            else:
+                try:
+                    gain, _ = self.dispose(base, qty, proceeds, timestamp)
+                    event_type = "DISPOSAL"
+                except ValueError:
+                    complete = False
+                    event_type = "DISPOSAL_BASIS_REVIEW"
+                    tax_class = "CRYPTO_REVIEW"
+                    event_regime = "REGIME_UNRESOLVED"
+                    detail["manual_review"] = "No unique, sufficient Neuvermögen cost basis could be established."
         return self.build_event(
             event_id=tx_id, timestamp=timestamp, venue="kraken", product_type="SPOT",
             asset=base, quote_asset=quote, event_type=event_type, quantity=qty,
             proceeds_eur=proceeds, acquisition_cost_eur=acquisition, realized_gain_eur=gain,
             fee_eur=fee if quote in {"EUR", "ZEUR"} else D("0"), fee_asset=quote,
-            complete=complete, source="kraken_trades_history",
-            detail={"pair": pair, "price": str(price), "cost_original": str(cost)},
+            tax_class=tax_class, asset_regime=event_regime, complete=complete, source="kraken_trades_history",
+            detail=detail,
         )
 
     def events(self) -> list[TaxEvent]:
