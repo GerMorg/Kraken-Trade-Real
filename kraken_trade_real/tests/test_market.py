@@ -333,3 +333,52 @@ def test_held_position_stays_in_history_candidates_when_entry_filter_drops_it(in
     )
     assert repeated == [instrument]
     assert added_again == 0
+
+def test_scanner_uses_promoted_market_filter_thresholds_without_restart(instrument):
+    from time import time
+    from types import SimpleNamespace
+
+    from app.market.scanner import MarketScanner
+
+    config = SimpleNamespace(
+        market_min_liquidity_eur=50.0,
+        market_max_spread_bps=80.0,
+    )
+    scanner = MarketScanner(50.0, 80.0, 60, config=config)
+    snapshot = MarketSnapshot(
+        instrument.symbol,
+        Decimal("60005"),
+        Decimal("59900"),
+        Decimal("60100"),
+        Decimal("100"),
+        time(),
+        (),
+    )
+
+    selected, diagnostics = scanner.fast_filter_with_diagnostics(
+        [instrument], {instrument.symbol: snapshot}, require_history=False,
+    )
+    assert selected == [instrument]
+    assert diagnostics["active_thresholds"] == {
+        "market_min_liquidity_eur": "50.0",
+        "market_max_spread_bps": "80.0",
+    }
+
+    # A learned tighter spread policy takes effect on the next scan.
+    config.market_max_spread_bps = 20.0
+    selected, diagnostics = scanner.fast_filter_with_diagnostics(
+        [instrument], {instrument.symbol: snapshot}, require_history=False,
+    )
+    assert selected == []
+    assert diagnostics["excluded_by_reason"]["SPREAD_TOO_WIDE"] == 1
+    assert diagnostics["active_thresholds"]["market_max_spread_bps"] == "20.0"
+
+    # A stricter learned EUR-notional floor likewise takes effect immediately.
+    config.market_max_spread_bps = 80.0
+    config.market_min_liquidity_eur = 7_000_000.0
+    selected, diagnostics = scanner.fast_filter_with_diagnostics(
+        [instrument], {instrument.symbol: snapshot}, require_history=False,
+    )
+    assert selected == []
+    assert diagnostics["excluded_by_reason"]["LIQUIDITY_TOO_LOW"] == 1
+    assert diagnostics["active_thresholds"]["market_min_liquidity_eur"] == "7000000.0"
