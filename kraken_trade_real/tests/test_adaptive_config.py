@@ -664,7 +664,10 @@ def test_positive_tactical_optimizer_never_promotes_moves_below_cost_floor(db):
         for index in range(60)
     ]
     optimizer = AdaptiveParameterOptimizer(db, registry)
-    optimizer._load_live_tactical_episodes = lambda _now: (rows, 0)
+    def fake_load_live_episodes(_now):
+        return rows, 0
+
+    optimizer._load_live_tactical_episodes = fake_load_live_episodes
     result = optimizer.optimize_tactical(now)
 
     assert result["status"] == "PROMOTED", result
