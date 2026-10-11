@@ -195,6 +195,33 @@ def test_registry_rejects_exit_candidate_without_holdout_quality(db):
     assert registry.promote_adaptive_policy("exit-policy-bad") is False
 
 
+def test_registry_rejects_tactical_reversal_threshold_outside_hard_bounds(db):
+    registry = ModelRegistry(db)
+    params = dict(TACTICAL_DEFAULTS)
+    params["tactical_reversal_exit_bps"] = 500.01
+    registry.register_candidate(
+        "exit-policy-reversal-out-of-bounds",
+        "strategy_tactical",
+        registry.active("strategy_tactical"),
+        params,
+        {
+            "kind": "path_replay_exit_policy",
+            "samples": 60,
+            "training_samples": 42,
+            "validation_samples": 18,
+            "training_coverage": 0.90,
+            "validation_coverage": 0.90,
+            "training_improvement_bps": 12.0,
+            "validation_improvement_bps": 7.0,
+            "candidate_validation_mean_net_bps": 8.0,
+            "baseline_validation_max_drawdown": 0.05,
+            "candidate_validation_max_drawdown": 0.055,
+        },
+    )
+    assert registry.promote_adaptive_policy("exit-policy-reversal-out-of-bounds") is False
+    assert registry.active("strategy_tactical") != "exit-policy-reversal-out-of-bounds"
+
+
 def test_registry_promotes_exit_candidate_only_with_validated_holdout(db):
     registry = ModelRegistry(db)
     params = dict(TACTICAL_DEFAULTS)
