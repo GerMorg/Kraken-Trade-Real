@@ -142,3 +142,37 @@ def test_learning_promotes_validated_regime_specific_scales(db):
     assert parameters["confidence_scale_by_regime"]["LOW_QUALITY"] < 1.0
     assert parameters["confidence_scale_by_regime"]["HIGH_QUALITY"] > 1.0
 
+
+
+
+def test_core_exit_optimizer_result_is_returned_by_learning_feedback(db):
+    from app.learning import CalibrationEngine, LearningEngine, ModelRegistry, ResearchEngine
+
+    class FakeOptimizer:
+        def optimize_core_entry_policy(self, now=None):
+            return {"status": "CORE_ENTRY_TEST"}
+
+        def optimize_core_exits(self, now=None):
+            return {"status": "CORE_EXIT_TEST", "promoted": False}
+
+        def optimize_tactical(self, now=None):
+            return {"status": "TACTICAL_ENTRY_TEST"}
+
+        def optimize_tactical_exits(self, now=None):
+            return {"status": "TACTICAL_EXIT_TEST"}
+
+    engine = LearningEngine(
+        db,
+        CalibrationEngine(),
+        ModelRegistry(db),
+        ResearchEngine(db),
+        enabled=True,
+        optimizer=FakeOptimizer(),
+    )
+
+    result = engine.process_feedback(now=1_800_000_000.0)
+
+    assert result["adaptive_core_policy"]["status"] == "CORE_ENTRY_TEST"
+    assert result["adaptive_core_exit_policy"]["status"] == "CORE_EXIT_TEST"
+    assert result["adaptive_policy"]["status"] == "TACTICAL_ENTRY_TEST"
+    assert result["adaptive_exit_policy"]["status"] == "TACTICAL_EXIT_TEST"
