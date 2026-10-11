@@ -58,7 +58,7 @@ class FeatureEngine:
             "sma_slope": pct(sf, ss),
             "atr_proxy": sum((abs(x) for x in rs[-min(14, len(rs)):]), D(0)) / D(min(14, len(rs))),
             "trend": pct(ef, es),
-            "liquidity": s.volume_24h,
+            "liquidity": _liquidity_feature(s),
             "spread_bps": s.spread_bps,
             "book_imbalance": imbalance,
             "book_depth": bid_depth + ask_depth,
