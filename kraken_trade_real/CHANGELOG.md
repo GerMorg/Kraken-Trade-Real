@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.70
+
+- Allow Normal entry-policy promotion to use only explicitly verified quote-ledger net outcomes from non-margin Spot trades and eligible short-hold Spot-Margin episodes; estimates, unlinked fees and rollover-exposed episodes remain excluded.
+- Align centralized model-promotion validation with the same strict, versioned outcome contract.
+- Fix a positive-outcome comparison that referenced a non-existent statistic and add regression coverage.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.70.
+
 ## 0.1.69
 
 - Add Tactical context conflict tolerance to the same versioned policy registry as the other learned entry filters.

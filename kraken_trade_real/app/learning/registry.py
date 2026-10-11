@@ -368,11 +368,22 @@ class ModelRegistry:
                 ):
                     raise ValueError("CORE_POLICY_RELATIONSHIP_INVALID")
                 action = str(metrics.get("action") or "")
+                data_contract = (
+                    metrics.get("data_basis"),
+                    metrics.get("data_scope"),
+                )
+                allowed_data_contracts = {
+                    (
+                        "ledger_verified_non_margin_spot_net_return_bps",
+                        "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
+                    ),
+                    (
+                        "ledger_verified_spot_and_short_hold_margin_net_return_bps",
+                        "APP_MANAGED_QUOTE_LEDGER_VERIFIED_SPOT_AND_SHORT_HOLD_MARGIN_NET_ONLY",
+                    ),
+                }
                 common_quality = (
-                    metrics.get("data_basis")
-                    == "ledger_verified_non_margin_spot_net_return_bps"
-                    and metrics.get("data_scope")
-                    == "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY"
+                    data_contract in allowed_data_contracts
                     and metrics.get("exchange_fee_estimates_used") is False
                     and metrics.get("verified_net_pnl_used") is True
                     and int(metrics.get("previous_samples", 0)) >= 30

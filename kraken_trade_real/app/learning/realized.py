@@ -124,8 +124,32 @@ class CoreSpotRealizedOutcomeLedger:
                 fee_attribution = {}
             attribution_status = str(fee_attribution.get("status") or "")
             fee_currency = str(row.get("fee_currency") or "")
+            margin_ledger_raw = fee_attribution.get("margin_ledger")
+            margin_ledger = (
+                margin_ledger_raw if isinstance(margin_ledger_raw, dict) else {}
+            )
+            margin_ledger_verified = (
+                attribution_status == "MARGIN_LEDGER_VERIFIED"
+                and bool(margin_ledger)
+                and canonical_asset(str(margin_ledger.get("asset") or ""))
+                    == canonical_asset(quote_asset)
+            )
+            try:
+                margin_ledger_amount = (
+                    _decimal(margin_ledger.get("amount"))
+                    if margin_ledger_verified else ZERO
+                )
+                margin_ledger_fee = (
+                    _decimal(margin_ledger.get("fee"))
+                    if margin_ledger_verified else ZERO
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                margin_ledger_verified = False
+                margin_ledger_amount = ZERO
+                margin_ledger_fee = ZERO
             quote_fee_verified = bool(
-                (fee_est == ZERO and attribution_status == "ZERO_FEE_REPORTED")
+                margin_ledger_verified
+                or (fee_est == ZERO and attribution_status == "ZERO_FEE_REPORTED")
                 or (
                     fee_est > ZERO
                     and attribution_status == "LEDGER_VERIFIED"
@@ -133,9 +157,11 @@ class CoreSpotRealizedOutcomeLedger:
                     and canonical_asset(fee_currency) == canonical_asset(quote_asset)
                 )
             )
-            verified_fee_quote = fee_est if (
-                fee_est > ZERO and quote_fee_verified
-            ) else ZERO
+            verified_fee_quote = (
+                margin_ledger_fee if margin_ledger_verified
+                else fee_est if fee_est > ZERO and quote_fee_verified
+                else ZERO
+            )
             if not opening_decision_id:
                 anomaly(row, "MISSING_LOCAL_DECISION_ID", {})
                 continue
@@ -175,6 +201,9 @@ class CoreSpotRealizedOutcomeLedger:
                     "entry_fee_verified": quote_fee_verified,
                     "entry_fee_currency": fee_currency,
                     "entry_fee_attribution_status": attribution_status,
+                    "margin_ledger_verified": margin_ledger_verified,
+                    "margin_ledger_open_fee_quote": margin_ledger_fee,
+                    "margin_ledger_open_amount_quote": margin_ledger_amount,
                     "quote_asset": quote_asset,
                     "leverage": str(row.get("leverage") or "1"),
                     "margin": bool(int(row.get("margin") or 0)),
@@ -183,6 +212,14 @@ class CoreSpotRealizedOutcomeLedger:
 
             closing_direction = "LONG" if direction == "SHORT" else "SHORT"
             position_lots = lots_by_key[(symbol, closing_direction)]
+            # Snapshot identity before mutating lots for this fill. Otherwise an
+            # early FIFO leg could make a multi-decision position look unambiguous
+            # to the later leg of this very same exchange fill.
+            opening_decisions_at_fill = {
+                str(open_lot.get("opening_decision_id") or "")
+                for open_lot in position_lots
+                if _decimal(open_lot.get("remaining_quantity") or "0") > 0
+            }
             remaining_close_qty = quantity
             for lot in position_lots:
                 if remaining_close_qty <= 0:
@@ -221,17 +258,69 @@ class CoreSpotRealizedOutcomeLedger:
                     and entry_leverage == D("1")
                     and exit_leverage == D("1")
                 )
-                verified_net = (
-                    gross_pnl - allocated_verified_entry_fee - allocated_verified_exit_fee
-                    if lot["entry_fee_verified"] and quote_fee_verified
+                verified_net = None
+                verified_fees = None
+                verified_source = self.FEE_STATUS
+
+                if (
+                    lot["entry_fee_verified"]
+                    and quote_fee_verified
                     and no_margin_financing
                     and canonical_asset(lot["quote_asset"]) == canonical_asset(quote_asset)
-                    else None
+                ):
+                    verified_net = (
+                        gross_pnl - allocated_verified_entry_fee - allocated_verified_exit_fee
+                    )
+                    verified_fees = allocated_verified_entry_fee + allocated_verified_exit_fee
+                    verified_source = "LEDGER_VERIFIED_SPOT_NET"
+
+                # Kraken's Margin amount is the authoritative realised P/L before
+                # fees. A net margin label is only safe when we can match both
+                # entry and exit to one quote-currency Margin ledger record, every
+                # closing fill belongs to one opening decision, and the whole
+                # holding interval is shorter than the first four-hour rollover.
+                close_margin_ledger = margin_ledger
+                close_margin_valid = (
+                    margin_ledger_verified
+                    and bool(int(row.get("margin") or 0))
+                    and reduce_only
+                    and canonical_asset(lot["quote_asset"]) == canonical_asset(quote_asset)
                 )
-                verified_fees = (
-                    allocated_verified_entry_fee + allocated_verified_exit_fee
-                    if verified_net is not None else None
-                )
+                same_opening_decision = len(opening_decisions_at_fill) == 1
+                held_seconds = fill_time - float(lot.get("opened_at") or fill_time)
+                no_rollover_window = 0 <= held_seconds < 4 * 3600
+                if (
+                    bool(lot.get("margin"))
+                    and bool(int(row.get("margin") or 0))
+                    and bool(lot.get("margin_ledger_verified"))
+                    and close_margin_valid
+                    and same_opening_decision
+                    and no_rollover_window
+                    and canonical_asset(str(close_margin_ledger.get("asset") or ""))
+                        == canonical_asset(quote_asset)
+                ):
+                    try:
+                        actual_margin_pnl = _decimal(close_margin_ledger.get("amount"))
+                        actual_margin_fee = _decimal(close_margin_ledger.get("fee"))
+                        if actual_margin_fee < 0:
+                            raise InvalidOperation("negative margin ledger fee")
+                        allocated_margin_pnl = actual_margin_pnl * matched_qty / quantity
+                        allocated_margin_fee = actual_margin_fee * matched_qty / quantity
+                        # Use the real exchange P/L as the realised gross result;
+                        # no price-derived or estimated financing value is promoted.
+                        gross_pnl = allocated_margin_pnl
+                        estimated_net = gross_pnl - allocated_entry_fee - allocated_exit_fee
+                        verified_net = (
+                            allocated_margin_pnl
+                            - allocated_verified_entry_fee
+                            - allocated_margin_fee
+                        )
+                        verified_fees = allocated_verified_entry_fee + allocated_margin_fee
+                        verified_source = "LEDGER_VERIFIED_MARGIN_NET"
+                    except (InvalidOperation, TypeError, ValueError, ArithmeticError):
+                        verified_net = None
+                        verified_fees = None
+                        verified_source = self.FEE_STATUS
                 gross_bps = gross_pnl / entry_notional * BPS if entry_notional > 0 else ZERO
                 net_bps = estimated_net / entry_notional * BPS if entry_notional > 0 else ZERO
                 verified_net_bps = (
@@ -263,7 +352,7 @@ class CoreSpotRealizedOutcomeLedger:
                     "quote_asset": lot["quote_asset"],
                     "gross_return_bps": str(gross_bps),
                     "estimated_net_return_bps": str(net_bps),
-                    "fee_status": "LEDGER_VERIFIED_SPOT_NET" if verified_net is not None else self.FEE_STATUS,
+                    "fee_status": verified_source if verified_net is not None else self.FEE_STATUS,
                     "verified_fees_quote": str(verified_fees) if verified_fees is not None else None,
                     "verified_net_pnl_quote": str(verified_net) if verified_net is not None else None,
                     "verified_net_return_bps": str(verified_net_bps) if verified_net_bps is not None else None,
@@ -273,6 +362,12 @@ class CoreSpotRealizedOutcomeLedger:
                         "entry_fee_currency": lot.get("entry_fee_currency", "UNVERIFIED"),
                         "exit_fee_attribution_status": attribution_status,
                         "exit_fee_currency": fee_currency,
+                        "entry_margin_ledger_verified": bool(lot.get("margin_ledger_verified")),
+                        "exit_margin_ledger_verified": margin_ledger_verified,
+                        "margin_ledger_close_amount": str(margin_ledger_amount) if margin_ledger_verified else "",
+                        "margin_ledger_close_fee": str(margin_ledger_fee) if margin_ledger_verified else "",
+                        "held_seconds": round(held_seconds, 6),
+                        "rollover_free_window": no_rollover_window,
                         "net_verified": verified_net is not None,
                         "quote_asset_matches": canonical_asset(lot["quote_asset"]) == canonical_asset(quote_asset),
                         "entry_leverage": lot["leverage"],
@@ -321,6 +416,7 @@ class CoreSpotRealizedOutcomeLedger:
                 "net_verified": 1,
                 "verified_fees_quote": ZERO,
                 "verified_net_pnl_quote": ZERO,
+                "verified_statuses": set(),
                 "detail": [],
             })
             out["first_opened_at"] = min(out["first_opened_at"], float(leg["opened_at"]))
@@ -336,6 +432,7 @@ class CoreSpotRealizedOutcomeLedger:
             if int(leg.get("net_verified") or 0) == 1:
                 out["verified_fees_quote"] += _decimal(leg["verified_fees_quote"])
                 out["verified_net_pnl_quote"] += _decimal(leg["verified_net_pnl_quote"])
+                out["verified_statuses"].add(str(leg.get("fee_status") or ""))
             else:
                 # A decision-level outcome is verified only when every FIFO leg
                 # has quote-currency fee evidence and no unaccounted margin costs.
@@ -351,6 +448,16 @@ class CoreSpotRealizedOutcomeLedger:
                 out["verified_net_pnl_quote"] / notional * BPS
                 if out["net_verified"] and notional > 0 else None
             )
+            verified_statuses = out["verified_statuses"]
+            if not out["net_verified"]:
+                aggregate_fee_status = self.FEE_STATUS
+            elif verified_statuses == {"LEDGER_VERIFIED_MARGIN_NET"}:
+                aggregate_fee_status = "LEDGER_VERIFIED_MARGIN_NET"
+            elif verified_statuses == {"LEDGER_VERIFIED_SPOT_NET"}:
+                aggregate_fee_status = "LEDGER_VERIFIED_SPOT_NET"
+            else:
+                aggregate_fee_status = "LEDGER_VERIFIED_MIXED_NET"
+
             outcome_rows.append({
                 **out,
                 "gross_return_bps": str(gross_bps),
@@ -358,7 +465,7 @@ class CoreSpotRealizedOutcomeLedger:
                 "verified_net_return_bps": str(verified_net_bps) if verified_net_bps is not None else None,
                 "verified_fees_quote": str(out["verified_fees_quote"]) if out["net_verified"] else None,
                 "verified_net_pnl_quote": str(out["verified_net_pnl_quote"]) if out["net_verified"] else None,
-                "fee_status": "LEDGER_VERIFIED_SPOT_NET" if out["net_verified"] else self.FEE_STATUS,
+                "fee_status": aggregate_fee_status,
                 "closed_quantity": str(out["closed_quantity"]),
                 "closed_notional_quote": str(notional),
                 "gross_pnl_quote": str(out["gross_pnl_quote"]),
@@ -368,7 +475,11 @@ class CoreSpotRealizedOutcomeLedger:
                     "leg_ids": out["detail"],
                     "net_verified": bool(out["net_verified"]),
                     "attribution_basis": "app-local-orders-and-Spot-TradesHistory+QueryLedgers",
-                    "verified_scope": "non-margin Spot legs only; every entry/exit fee must be quote-denominated or explicitly zero",
+                    "verified_scope": (
+                        "quote-currency verified non-margin Spot; or a single-decision Spot-Margin "
+                        "position closed before the first four-hour rollover with linked exchange Margin P/L and fee"
+                    ),
+                    "verified_fee_statuses": sorted(verified_statuses),
                 }, sort_keys=True),
             })
 
@@ -393,7 +504,12 @@ class CoreSpotRealizedOutcomeLedger:
                         "leverage": lot["leverage"],
                         "margin": lot["margin"],
                         "client_order_id": lot["client_order_id"],
-                        "fee_status": self.FEE_STATUS,
+                        "fee_status": (
+                            "MARGIN_LEDGER_VERIFIED"
+                            if lot.get("margin_ledger_verified") else self.FEE_STATUS
+                        ),
+                        "margin_ledger_verified": bool(lot.get("margin_ledger_verified")),
+                        "margin_ledger_open_fee_quote": str(lot.get("margin_ledger_open_fee_quote") or ZERO),
                         "entry_fee_currency": lot.get("entry_fee_currency", "UNVERIFIED"),
                         "entry_fee_attribution_status": lot.get("entry_fee_attribution_status", ""),
                     }, sort_keys=True),

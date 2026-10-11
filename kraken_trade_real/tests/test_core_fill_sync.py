@@ -7,7 +7,10 @@ import time
 from app.persistence.db import Database
 
 
-def _insert_order(db, *, order_id: str, client_id: str, decision_id: str, symbol: str, at: float):
+def _insert_order(
+    db, *, order_id: str, client_id: str, decision_id: str,
+    symbol: str, at: float, margin: bool = False, leverage: str = "1",
+):
     db.execute(
         """INSERT INTO orders(
              intent_id,client_order_id,created_at,decision_id,symbol,direction,side,
@@ -16,7 +19,7 @@ def _insert_order(db, *, order_id: str, client_id: str, decision_id: str, symbol
            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             "intent-" + client_id, client_id, at, decision_id, symbol, "LONG", "buy",
-            "market", "0.1", None, "1", 0, 0, 0, "ACKNOWLEDGED", at,
+            "market", "0.1", None, str(leverage), int(margin), 0, 0, "ACKNOWLEDGED", at,
             order_id, "20", "30", 60,
         ),
     )
@@ -267,3 +270,58 @@ def test_existing_unverified_fill_is_enriched_once_when_ledger_data_becomes_avai
     assert fill["price"] == "100"
     assert json.loads(fill["raw_json"])["_ledger_attribution"]["status"] == "LEDGER_VERIFIED"
 
+
+
+def test_margin_fill_uses_linked_margin_ledger_even_if_trades_history_fee_is_zero(
+    db, fake_gateway, instrument, config
+):
+    from app.trading.authority import TradingAuthority
+
+    now = time.time()
+    _insert_order(
+        db, order_id="O-MARGIN-ATTR", client_id="C-MARGIN-ATTR",
+        decision_id="D-MARGIN-ATTR", symbol=instrument.symbol, at=now - 100,
+        margin=True, leverage="2",
+    )
+    trade = _trade("T-MARGIN-ATTR", "O-MARGIN-ATTR", now - 10, "100")
+    trade["fee"] = "0.00000"
+    trade["margin"] = "100.0"
+    trade["ledgers"] = ["L-MARGIN-ATTR"]
+
+    # Simulate an older fill where fee=0 from TradesHistory had already been
+    # persisted without actual margin fee attribution. The next sync must enrich
+    # it rather than skip it or keep treating the margin cost as zero.
+    db.save_attributed_fill(
+        order_id="O-MARGIN-ATTR", trade_id="T-MARGIN-ATTR", created_at=now - 10,
+        symbol=instrument.symbol, side="buy", quantity="0.01", price="100",
+        fee="0", fee_currency="ZERO_FEE", client_order_id="C-MARGIN-ATTR",
+        decision_id="D-MARGIN-ATTR", venue="spot", quote_asset=str(instrument.quote),
+        base_asset=str(instrument.base), raw_payload=trade,
+    )
+    fake_gateway.spot_trades_history = lambda params: {
+        "trades": {"T-MARGIN-ATTR": trade}, "cursor": {},
+    }
+    fake_gateway.spot_query_ledgers = lambda params: {
+        "L-MARGIN-ATTR": {
+            "type": "margin",
+            "asset": str(instrument.quote),
+            "amount": "0",
+            "fee": "0.25",
+            "time": now - 10,
+        }
+    }
+
+    result = TradingAuthority(config, fake_gateway, db, None, None, None).sync_spot_fills(
+        [instrument], max_pages=1,
+    )
+    fill = db.one(
+        "SELECT fee_currency,raw_json FROM fills WHERE trade_id='T-MARGIN-ATTR'"
+    )
+    attribution = json.loads(fill["raw_json"])["_ledger_attribution"]
+
+    assert result["status"] == "COMPLETE"
+    assert fill["fee_currency"] == str(instrument.quote)
+    assert attribution["status"] == "MARGIN_LEDGER_VERIFIED"
+    assert attribution["margin_ledger"]["amount"] == "0"
+    assert attribution["margin_ledger"]["fee"] == "0.25"
+    assert attribution["reason"] == "MARGIN_PNL_AND_FEES_MATCHED_TO_QUOTE_CURRENCY_LEDGER"
