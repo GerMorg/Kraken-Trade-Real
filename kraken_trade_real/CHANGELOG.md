@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.73
+
+- Move Normal market minimum-liquidity and maximum-spread thresholds into the versioned adaptive policy, removing both from the Home Assistant options/schema.
+- Adjust these market filters only after sufficient fully verified Normal realized net outcomes: tighten following persistently poor outcomes and restore cautiously toward baseline after strong improving outcomes.
+- Enforce 50–1,000 EUR minimum-liquidity and 20–80 bps maximum-spread bounds in runtime defaults, optimizer and central registry promotion.
+- Apply newly promoted thresholds at each market scan without restart and include the active values in cycle diagnostics.
+- Add regression coverage for stale HA-option isolation, central bound rejection, verified-outcome tightening/restoration and live scanner adoption.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.73.
+
 ## 0.1.72
 
 - Treat Kraken Spot Ticker 24h volume as base-asset quantity and calculate quote-currency turnover explicitly.
