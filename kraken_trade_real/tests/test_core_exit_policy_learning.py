@@ -101,7 +101,7 @@ def test_core_exit_optimizer_promotes_only_a_validated_path_policy(db):
         _add_core_exit_episode(db, index, now)
     registry = ModelRegistry(db)
     optimizer = CoreExitPolicyOptimizer(db, registry)
-    
+
     result = optimizer.optimize(now)
 
     assert result["status"] == "PROMOTED", result
