@@ -99,9 +99,10 @@ class RiskEngine:
                 max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
             )
 
+        # Strategy-specific position sizing must never widen the portfolio-wide
+        # net-exposure envelope. Tactical position limits may be looser than Core,
+        # but the immutable global net cap remains authoritative for every entry.
         net_limit_pct = D(str(self.config.risk_max_net_pct))
-        if risk_profile == "tactical":
-            net_limit_pct = max(net_limit_pct, position_limit_pct)
 
         risk_edge_threshold = D(str(self.config.strategy_min_edge_bps))
         economic_cost_ratio = D("1")
