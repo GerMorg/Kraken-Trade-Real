@@ -574,7 +574,7 @@ class PortfolioReconciler:
                             if not isinstance(detail, dict):
                                 detail = {}
                             leverage = dec(detail.get("leverage") or "1")
-                            margin = bool(detail.get("margin", False))
+                            is_margin_lot = bool(detail.get("margin", False))
                             quote_rate = self.quote_to_eur_rate(quote_asset)
                             if (
                                 direction != "LONG"
@@ -582,7 +582,7 @@ class PortfolioReconciler:
                                 or entry_price <= 0
                                 or not order_id
                                 or not decision_id
-                                or margin
+                                or is_margin_lot
                                 or leverage != D("1")
                                 or quote_rate is None
                                 or quote_rate <= 0
