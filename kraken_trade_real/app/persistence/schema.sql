@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS fills(
   decision_id TEXT NOT NULL DEFAULT '',
   venue TEXT NOT NULL DEFAULT 'spot',
   quote_asset TEXT NOT NULL DEFAULT '',
+  base_asset TEXT NOT NULL DEFAULT '',
   raw_json TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY(order_id,trade_id)
 );
@@ -178,6 +179,10 @@ CREATE TABLE IF NOT EXISTS core_realized_legs(
   gross_return_bps TEXT NOT NULL,
   estimated_net_return_bps TEXT NOT NULL,
   fee_status TEXT NOT NULL,
+  verified_fees_quote TEXT,
+  verified_net_pnl_quote TEXT,
+  verified_net_return_bps TEXT,
+  net_verified INTEGER NOT NULL DEFAULT 0,
   detail_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_core_realized_legs_opening
@@ -202,6 +207,9 @@ CREATE TABLE IF NOT EXISTS core_realized_outcomes(
   quote_asset TEXT NOT NULL,
   fee_status TEXT NOT NULL,
   net_verified INTEGER NOT NULL DEFAULT 0,
+  verified_fees_quote TEXT,
+  verified_net_pnl_quote TEXT,
+  verified_net_return_bps TEXT,
   detail_json TEXT NOT NULL,
   PRIMARY KEY(opening_decision_id,symbol,direction)
 );
@@ -219,6 +227,8 @@ CREATE TABLE IF NOT EXISTS core_inventory_lots(
   entry_price TEXT NOT NULL,
   remaining_quantity TEXT NOT NULL,
   remaining_entry_fee_est_quote TEXT NOT NULL,
+  remaining_entry_fee_verified_quote TEXT NOT NULL DEFAULT '0',
+  entry_fee_verified INTEGER NOT NULL DEFAULT 0,
   quote_asset TEXT NOT NULL,
   detail_json TEXT NOT NULL
 );
