@@ -658,9 +658,19 @@ class TradingAuthority:
         self.audit.emit("ORDER_REJECTED_EXCHANGE", "WARNING", **context)
         try:
             self.db.event("ORDER_SUBMISSION_REJECTED", "WARNING", context)
-        except Exception:
+        except Exception as exc:
             # Persistence of diagnostics is best effort; preserve the exchange result.
-            pass
+            context["diagnostic_persist_error_type"] = type(exc).__name__
+            try:
+                self.audit.emit(
+                    "ORDER_SUBMISSION_DIAGNOSTIC_PERSIST_FAILED",
+                    "WARNING",
+                    symbol=str(intent.instrument.symbol),
+                    error_type=type(exc).__name__,
+                )
+            except Exception as audit_exc:
+                # This is telemetry about a telemetry failure, not an order failure.
+                context["diagnostic_audit_error_type"] = type(audit_exc).__name__
         return {"error_class": error_class, "suggested_action": suggested_action, **context}
 
     def _submit_locked(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
