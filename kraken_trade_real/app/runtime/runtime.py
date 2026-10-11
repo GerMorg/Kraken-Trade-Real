@@ -633,6 +633,7 @@ class TradingRuntime:
                 ),
                 prefilter_excluded_by_reason=prefilter_diagnostics["excluded_by_reason"],
                 prefilter_families=prefilter_diagnostics["families"],
+                market_thresholds=prefilter_diagnostics.get("active_thresholds", {}),
             )
             self.audit.emit(
                 "UNIVERSE_BREAKDOWN",
