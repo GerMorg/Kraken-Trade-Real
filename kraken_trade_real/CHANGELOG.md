@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.53
+
+- Add a Normal/Core Spot Margin exit-policy replay optimizer over persistently recorded, eligible, app-managed single-order episodes.
+- Reconstruct historical paths only from observations captured before each real close; require the active baseline policy to match the observed exit reason, timing, and partial-profit state before using an episode for training.
+- Select bounded exit-policy neighbours on a chronological training split and promote only when coverage, net returns after the recorded decision-cost estimate, independent holdout improvement, and drawdown gates all pass.
+- Move Normal/Core stop-loss and profit-taking/trailing parameters into the versioned internal policy and remove them from the Home Assistant options schema; stale legacy options are ignored.
+- Preserve all hard portfolio, leverage, daily-loss and drawdown limits outside automatic policy learning.
+- Add regression tests for candidate promotion, minimum sample requirements, path quality filters, and internal configuration ownership.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.53.
+
 ## 0.1.52
 
 - Record restart-safe Normal/Core Spot Margin position episodes and per-cycle PnL paths, including the exact exit-policy snapshot, basis, quantity, pending partial-exit state and data-quality context.
