@@ -11,6 +11,7 @@ from app.config.adaptive import (
     CORE_ENTRY_POLICY_BOUNDS,
     CORE_EXIT_POLICY_BOUNDS,
     LEARNED_TACTICAL_KEYS,
+    TACTICAL_DEFAULTS,
     TACTICAL_POLICY_BOUNDS,
 )
 from app.config.settings import Config
