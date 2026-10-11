@@ -431,6 +431,7 @@ def test_adaptive_config_restores_safe_tactical_volatility_band_when_registry_is
     assert config.tactical_min_volatility_bps == 12.0
     assert config.tactical_max_volatility_bps == 55.0
 
+
 def test_adaptive_config_restores_defaults_for_malformed_or_nonfinite_policy_values():
     class CorruptRegistry:
         def active(self, family="decision"):
