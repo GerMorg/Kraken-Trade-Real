@@ -195,6 +195,8 @@ class MarketScanner:
         *,
         require_history: bool = True,
     ) -> tuple[list[Instrument], dict[str, Any]]:
+        instrument_list = list(instruments)
+        liquidity_diagnostics = self.normalize_liquidity_eur(instrument_list, snapshots)
         candidates: list[Instrument] = []
         total_by_family: dict[str, int] = {}
         excluded_by_reason: dict[str, int] = {}
@@ -203,7 +205,7 @@ class MarketScanner:
         def inc(container: dict[str, int], key: str) -> None:
             container[key] = container.get(key, 0) + 1
 
-        for instrument in instruments:
+        for instrument in instrument_list:
             family = self.product_family(instrument)
             inc(total_by_family, family)
             family_stats.setdefault(
@@ -221,8 +223,11 @@ class MarketScanner:
                 reason = "STALE_TICKER"
             elif snap.spread_bps > self.max_spread:
                 reason = "SPREAD_TOO_WIDE"
+            elif instrument.product_type.value != "DERIVATIVE" and snap.liquidity_eur_24h is None:
+                reason = "LIQUIDITY_EUR_UNAVAILABLE"
             elif (
-                snap.volume_24h < self.min_liquidity
+                snap.liquidity_eur_24h is not None
+                and snap.liquidity_eur_24h < self.min_liquidity
                 and instrument.product_type.value != "DERIVATIVE"
             ):
                 reason = "LIQUIDITY_TOO_LOW"
@@ -237,12 +242,18 @@ class MarketScanner:
             candidates.append(instrument)
             family_stats[family]["passed"] += 1
 
-        candidates.sort(key=lambda i: snapshots[i.symbol].volume_24h, reverse=True)
+        # Spot markets are ranked by quote turnover in EUR, never raw base units.
+        # Derivatives without a verified EUR notional stay for family exploration.
+        candidates.sort(
+            key=lambda i: snapshots[i.symbol].liquidity_eur_24h or D("0"),
+            reverse=True,
+        )
         return candidates, {
             "discovered": total_by_family,
             "excluded_by_reason": excluded_by_reason,
             "families": family_stats,
             "passed": len(candidates),
+            "eur_liquidity": liquidity_diagnostics,
         }
 
     def build_history_candidates(
