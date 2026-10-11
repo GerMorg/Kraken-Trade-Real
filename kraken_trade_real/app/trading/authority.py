@@ -325,8 +325,6 @@ class TradingAuthority:
                     # Ask Kraken for the exact linked ledger IDs in the same query.
                     "ledgers": True,
                 }
-                if cursor:
-                    request_params["cursor"] = cursor
                 response = self.gateway.spot_trades_history(request_params)
                 if not isinstance(response, dict):
                     raise KrakenError("SPOT_TRADES_HISTORY_INVALID_RESPONSE")
