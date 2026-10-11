@@ -50,6 +50,30 @@ def test_spot_private_encodes_boolean_form_values_as_lowercase_and_signs_same_bo
     )
 
 
+def test_spot_balance_extended_calls_kraken_balance_ex():
+    gateway = KrakenGateway("", "")
+    captured = {}
+
+    def fake_private(method, params=None):
+        captured["method"] = method
+        captured["params"] = dict(params or {})
+        return {
+            "ZEUR": {
+                "balance": "100",
+                "credit": "0",
+                "credit_used": "0",
+                "hold_trade": "65",
+            }
+        }
+
+    gateway.spot_private = fake_private
+    result = gateway.spot_balance_extended()
+
+    assert captured == {"method": "BalanceEx", "params": {}}
+    assert result["ZEUR"]["balance"] == "100"
+    assert result["ZEUR"]["hold_trade"] == "65"
+
+
 def test_spot_margin_short_payload_contains_leverage():
     gateway = KrakenGateway("", "")
     captured = {}

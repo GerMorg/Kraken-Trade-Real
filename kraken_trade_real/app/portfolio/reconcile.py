@@ -29,7 +29,12 @@ class PortfolioReconciler:
         self.margin_account: dict[str, Any] | None = None
         self.spot_margin_account: dict[str, Any] | None = None
         self.futures_margin_account: dict[str, Any] | None = None
+        # cash_balances stores total wallet inventory; available_cash_balances stores
+        # the amount actually spendable after Kraken's open-order holds.
         self.cash_balances: dict[str, D] = {}
+        self.available_cash_balances: dict[str, D] = {}
+        self.available_balance_read_supported = False
+        self.available_balance_read_ok = False
         # Exchange-reported Spot Margin/Futures leverage keyed by canonical symbol.
         self.position_leverages: dict[str, D] = {}
         self.instruments: list[Instrument] = []
@@ -146,6 +151,20 @@ class PortfolioReconciler:
         """Return the current spot cash balance in canonical asset units."""
         return self.cash_balances.get(canonical_asset(asset), D("0"))
 
+    def available_cash_balance(self, asset: str) -> D:
+        """Return funds not already held by Kraken orders.
+
+        If this live gateway supports BalanceEx but that read failed, fail closed
+        for new spending. Test/legacy adapters without BalanceEx keep the old
+        behavior so offline strategy tests remain backwards compatible.
+        """
+        key = canonical_asset(asset)
+        if self.available_balance_read_supported:
+            if not self.available_balance_read_ok:
+                return D("0")
+            return self.available_cash_balances.get(key, D("0"))
+        return self.cash_balances.get(key, D("0"))
+
     def min_cost_eur(self, instrument: Instrument) -> D | None:
         rate = self.quote_to_eur_rate(instrument.quote)
         return instrument.min_cost * rate if rate is not None else None
@@ -215,13 +234,63 @@ class PortfolioReconciler:
         spot_open_positions_read_ok = False
         self.position_leverages = {}
         self.cash_balances = {}
+        self.available_cash_balances = {}
+        self.available_balance_read_supported = callable(
+            getattr(self.gateway, "spot_balance_extended", None)
+        )
+        self.available_balance_read_ok = False
         self.spot_margin_account = None
         self.futures_margin_account = None
         self.margin_account = None
         if not self.gateway.api_key:
             return PortfolioState()
         try:
-            balances = self.gateway.spot_balance()
+            balances: dict[str, Any]
+            if self.available_balance_read_supported:
+                try:
+                    extended = self.gateway.spot_balance_extended()
+                    if not isinstance(extended, dict):
+                        raise TypeError("BALANCE_EX_INVALID_RESPONSE")
+                    totals: dict[str, str] = {}
+                    available: dict[str, D] = {}
+                    for asset, item in extended.items():
+                        if not isinstance(item, dict):
+                            raise TypeError("BALANCE_EX_INVALID_ASSET_ROW")
+                        quantity = dec(item.get("balance"))
+                        credit = dec(item.get("credit"))
+                        credit_used = dec(item.get("credit_used"))
+                        held = dec(item.get("hold_trade"))
+                        canonical = canonical_asset(asset)
+                        totals[str(asset)] = str(quantity)
+                        spendable = quantity + credit - credit_used - held
+                        available[canonical] = max(D("0"), spendable)
+                    balances = totals
+                    self.available_cash_balances = available
+                    self.available_balance_read_ok = True
+                except Exception as exc:
+                    # BalanceEx is required to know what is not reserved by open
+                    # Spot orders. Balance remains useful for valuation/closures,
+                    # but its total must not be mistaken for spendable funds.
+                    balances = self.gateway.spot_balance()
+                    self.available_balance_read_ok = False
+                    self.db.event(
+                        "PORTFOLIO_EXTENDED_BALANCE_FAILED",
+                        "WARNING",
+                        {
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:300],
+                            "cash_entries_fail_closed": True,
+                        },
+                    )
+            else:
+                # Compatibility for non-live test adapters that only expose Balance.
+                balances = self.gateway.spot_balance()
+                self.available_balance_read_ok = True
+                self.available_cash_balances = {
+                    canonical_asset(asset): dec(value)
+                    for asset, value in balances.items()
+                }
+
             for asset, raw_value in balances.items():
                 quantity = dec(raw_value)
                 if quantity == 0:
