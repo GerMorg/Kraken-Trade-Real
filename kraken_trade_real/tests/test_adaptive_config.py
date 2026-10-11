@@ -175,6 +175,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
         "tactical_adaptive_min_net_edge_bps": 999,
         "tactical_context_block_bps": 0.1,
         "tactical_reversal_exit_bps": 9999,
+        "tactical_cooldown_seconds": 9999,
     }), encoding="utf-8")
     config = Config.load(str(path))
     assert config.market_min_liquidity_eur == 50.0
@@ -191,6 +192,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_trailing_trigger_bps == 100.0
     assert config.tactical_trailing_stop_pct == 0.7
     assert config.tactical_max_hold_seconds == 1800
+    assert config.tactical_cooldown_seconds == 120
     assert config.tactical_min_volatility_bps == 12.0
     assert config.tactical_max_volatility_bps == 55.0
     assert config.tactical_min_imbalance == 0.10
@@ -223,6 +225,7 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
     assert result["promoted"] is True
     assert result["changed_parameters"]["tactical_min_expected_move_bps"] > 280
     assert result["changed_parameters"]["tactical_portfolio_pct"] < 25
+    assert result["changed_parameters"]["tactical_cooldown_seconds"] > 120
     assert result["changed_parameters"]["tactical_min_volatility_bps"] > 12
     assert result["changed_parameters"]["tactical_max_volatility_bps"] < 55
     assert result["changed_parameters"]["tactical_min_imbalance"] > 0.10
@@ -235,6 +238,7 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
     assert active["tactical_min_volatility_bps"] < active["tactical_max_volatility_bps"]
     assert active["tactical_context_block_bps"] >= 10
     assert active["tactical_context_block_bps"] <= 200
+    assert 30 <= active["tactical_cooldown_seconds"] <= 600
     repeated = optimizer.optimize_tactical(now + 1)
     assert repeated["status"] == "WAITING_FOR_NEW_TRADE_DATA"
     assert repeated["new_trades_since_last_evaluation"] == 0

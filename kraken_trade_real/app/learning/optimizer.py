@@ -255,6 +255,14 @@ class AdaptiveParameterOptimizer:
             candidate["tactical_portfolio_pct"] = max(
                 1.0, float(current["tactical_portfolio_pct"]) * 0.90
             )
+            # Loss-heavy live windows increase cooldown, reducing repeated
+            # re-entry churn without changing the immutable trades/hour/day caps.
+            candidate["tactical_cooldown_seconds"] = min(
+                600, max(
+                    float(current["tactical_cooldown_seconds"]) + 15.0,
+                    float(current["tactical_cooldown_seconds"]) * 1.15,
+                )
+            )
             reason = "NEGATIVE_REALIZED_EXPECTANCY_TIGHTEN_ENTRIES"
         elif (
             after["mean_net_pnl_eur"] > 0
@@ -296,6 +304,11 @@ class AdaptiveParameterOptimizer:
             )
             candidate["tactical_context_block_bps"] = min(
                 200.0, float(current["tactical_context_block_bps"]) * 1.02
+            )
+            # Improving verified live results may cautiously shorten cooldown,
+            # but never below 30 seconds or above the hard trade-rate limits.
+            candidate["tactical_cooldown_seconds"] = max(
+                30, float(current["tactical_cooldown_seconds"]) * 0.95
             )
             # Preserve a non-empty volatility band even at the numeric bounds.
             if candidate["tactical_min_volatility_bps"] >= candidate["tactical_max_volatility_bps"]:

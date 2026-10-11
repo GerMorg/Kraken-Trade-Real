@@ -1,5 +1,5 @@
 name: Kraken Trade Real
-version: 0.1.75
+version: 0.1.76
 slug: kraken_trade_real
 description: >-
   Autonomous, auditierbarer Kraken-Trader mit dynamischer Marktselektion,
@@ -91,7 +91,6 @@ options:
   tactical_margin_open_fee_bps: 5.0
   tactical_expected_slippage_bps: 25.0
   tactical_safety_buffer_bps: 30.0
-  tactical_cooldown_seconds: 120
   tactical_max_trades_per_hour: 2
   tactical_max_trades_per_day: 6
   tactical_max_daily_loss_pct: 1.5
@@ -173,7 +172,6 @@ schema:
   tactical_margin_open_fee_bps: float
   tactical_expected_slippage_bps: float
   tactical_safety_buffer_bps: float
-  tactical_cooldown_seconds: int
   tactical_max_trades_per_hour: int
   tactical_max_trades_per_day: int
   tactical_max_daily_loss_pct: float

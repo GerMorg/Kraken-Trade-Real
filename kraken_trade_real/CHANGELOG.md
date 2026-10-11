@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.76
+
+- Add Tactical cooldown to the internally managed, versioned policy; remove it from visible Home Assistant options and ignore stale values in existing options files.
+- Increase cooldown gradually after a negative realized live-trade window and reduce it cautiously only after a positive, improving live window.
+- Enforce a 30–600 second cooldown range and retain immutable maximum trades-per-hour/day and daily-loss limits.
+- Add regression coverage for stale-option isolation, policy promotion and cooldown bounds.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.76.
+
 ## 0.1.75
 
 - Add an early exchange-minimum gate for new/increased positions so quantities below Kraken's minimum quantity or Spot minimum quote cost are skipped before an order intent is created.

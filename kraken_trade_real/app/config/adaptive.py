@@ -56,6 +56,7 @@ LEARNED_TACTICAL_KEYS = {
     "tactical_trailing_trigger_bps",
     "tactical_trailing_stop_pct",
     "tactical_max_hold_seconds",
+    "tactical_cooldown_seconds",
     "tactical_reversal_exit_bps",
 }
 
@@ -75,6 +76,7 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_trailing_trigger_bps": 100.0,
     "tactical_trailing_stop_pct": 0.7,
     "tactical_max_hold_seconds": 1800,
+    "tactical_cooldown_seconds": 120,
     "tactical_reversal_exit_bps": 120.0,
     "tactical_adaptive_entry_enabled": True,
     "tactical_adaptive_min_expected_move_bps": 230.0,
@@ -112,6 +114,7 @@ TACTICAL_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
     "tactical_trailing_trigger_bps": (50.0, 500.0),
     "tactical_trailing_stop_pct": (0.2, 1.5),
     "tactical_max_hold_seconds": (300, 7200),
+    "tactical_cooldown_seconds": (30, 600),
     "tactical_reversal_exit_bps": (30.0, 500.0),
 }
 
