@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 import threading
 import time
 from typing import Any
@@ -53,6 +54,10 @@ class TacticalPosition:
     entry_client_order_id: str
     setup_score: D
     state: str = "OPEN"
+    # Immutable snapshots captured when the actual entry decision was created.
+    # Defaults keep older persisted rows and test fixtures backward compatible.
+    entry_policy: dict[str, Any] = field(default_factory=dict)
+    entry_context: dict[str, Any] = field(default_factory=dict)
 
 
 class TacticalTrader:
@@ -849,6 +854,10 @@ class TacticalTrader:
                 "tactical_setup_score": signal.score,
                 "tactical_exit_reason": "",
                 "tactical_direction": signal.direction.value,
+                # Persist these with the decision before order submission so a
+                # post-restart reconciliation can restore true entry-time context.
+                "tactical_entry_policy": self._entry_policy_snapshot(),
+                "tactical_entry_context": self._entry_context_snapshot(signal),
             },
             strategy_version=self.STRATEGY_VERSION,
             model_version="tactical-v1",
@@ -1384,6 +1393,13 @@ class TacticalTrader:
             if notional_eur is not None
             else abs(decision.target_notional_eur)
         )
+        rationale = decision.rationale if isinstance(decision.rationale, dict) else {}
+        entry_policy = rationale.get("tactical_entry_policy")
+        if not isinstance(entry_policy, dict) or not entry_policy:
+            entry_policy = self._entry_policy_snapshot()
+        entry_context = rationale.get("tactical_entry_context")
+        if not isinstance(entry_context, dict) or not entry_context:
+            entry_context = self._entry_context_snapshot(signal)
         position = TacticalPosition(
             decision.instrument.symbol,
             decision.instrument.venue,
@@ -1397,6 +1413,8 @@ class TacticalTrader:
             now,
             client_order_id,
             signal.score,
+            entry_policy=dict(entry_policy),
+            entry_context=dict(entry_context),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -1414,8 +1432,70 @@ class TacticalTrader:
             position.entry_client_order_id,
             position.setup_score,
             position.state,
+            entry_policy=position.entry_policy,
+            entry_context=position.entry_context,
         )
         self._record_entry_price_point(position)
+
+    def _entry_policy_snapshot(self) -> dict[str, Any]:
+        """Return only parameter values present at the actual entry decision."""
+        keys = (
+            "tactical_min_expected_move_bps",
+            "tactical_min_momentum_bps",
+            "tactical_min_volume_ratio",
+            "tactical_min_breakout_bps",
+            "tactical_max_spread_bps",
+            "tactical_portfolio_pct",
+            "tactical_min_volatility_bps",
+            "tactical_max_volatility_bps",
+            "tactical_min_imbalance",
+            "tactical_adaptive_min_expected_move_bps",
+            "tactical_adaptive_min_confidence",
+            "tactical_adaptive_min_net_edge_bps",
+            "tactical_adaptive_entry_enabled",
+            "tactical_stop_loss_pct",
+            "tactical_take_profit_pct",
+            "tactical_trailing_trigger_bps",
+            "tactical_trailing_stop_pct",
+            "tactical_max_hold_seconds",
+            "tactical_reversal_exit_bps",
+        )
+        snapshot: dict[str, Any] = {}
+        for key in keys:
+            value = getattr(self.config, key, None)
+            if value is not None:
+                snapshot[key] = value if isinstance(value, bool) else str(value)
+        return snapshot
+
+    @staticmethod
+    def _entry_context_snapshot(signal: TacticalSignal) -> dict[str, Any]:
+        """Capture the actual signal metrics used to authorize this entry."""
+        return {
+            "direction": signal.direction.value,
+            "score": str(signal.score),
+            "expected_move_bps": str(signal.expected_move_bps),
+            "expected_cost_bps": str(signal.expected_cost_bps),
+            "net_edge_bps": str(signal.net_edge_bps),
+            "spread_bps": str(signal.spread_bps),
+            "momentum_60_bps": str(signal.momentum_60_bps),
+            "momentum_180_bps": str(signal.momentum_180_bps),
+            "volatility_bps": str(signal.volatility_bps),
+            "volume_ratio": str(signal.volume_ratio),
+            "breakout_bps": str(signal.breakout_bps),
+            "imbalance": str(signal.imbalance),
+            "confidence": str(signal.confidence),
+            "reason": signal.reason,
+        }
+
+    @staticmethod
+    def _json_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        try:
+            parsed = json.loads(value or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _record_entry_price_point(self, position: TacticalPosition) -> None:
         """Seed the path with the known entry price, including after a restart."""
@@ -1463,13 +1543,16 @@ class TacticalTrader:
             "observed_peak_price": str(position.peak_price),
             "observed_trough_price": str(position.trough_price),
             "entry_policy_snapshot": {
-                "min_expected_move_bps": str(getattr(self.config, "tactical_min_expected_move_bps", 280)),
-                "min_momentum_bps": str(getattr(self.config, "tactical_min_momentum_bps", 40)),
-                "min_volume_ratio": str(getattr(self.config, "tactical_min_volume_ratio", 2)),
-                "min_breakout_bps": str(getattr(self.config, "tactical_min_breakout_bps", 25)),
-                "max_spread_bps": str(getattr(self.config, "tactical_max_spread_bps", 25)),
-                "portfolio_pct": str(getattr(self.config, "tactical_portfolio_pct", 25)),
+                # Empty means a legacy/recovered record lacked entry-time metadata;
+                # never relabel current close-time settings as the entry policy.
+                **dict(position.entry_policy),
             },
+            "entry_context_snapshot": dict(position.entry_context),
+            "entry_snapshot_source": (
+                "ENTRY_TIME_CAPTURED"
+                if position.entry_policy and position.entry_context
+                else "LEGACY_ENTRY_SNAPSHOT_MISSING"
+            ),
             "exit_policy_snapshot": {
                 "stop_loss_pct": str(getattr(self.config, "tactical_stop_loss_pct", 1)),
                 "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 2.2)),
@@ -1803,6 +1886,8 @@ class TacticalTrader:
                     str(row["entry_client_order_id"]),
                     D(str(row["setup_score"])),
                     str(row.get("state") or "OPEN"),
+                    self._json_dict(row.get("entry_policy_json")),
+                    self._json_dict(row.get("entry_context_json")),
                 )
                 self._positions[position.symbol] = position
                 self.db.save_tactical_position(
@@ -1926,6 +2011,8 @@ class TacticalTrader:
                                 opened_at=float(row.get("created_at") or time.time()),
                                 client_order_id=client_order_id,
                                 setup_score=D(str(rationale.get("tactical_setup_score") or "0")),
+                                entry_policy=self._json_dict(rationale.get("tactical_entry_policy")),
+                                entry_context=self._json_dict(rationale.get("tactical_entry_context")),
                             )
                         elif existing.entry_client_order_id == client_order_id:
                             existing.quantity = max(existing.quantity, cumulative_qty)
@@ -1969,13 +2056,17 @@ class TacticalTrader:
 
     def _restore_position(
         self, *, instrument: Instrument, direction: Direction, quantity: D, price: D,
-        notional_eur: D, leverage: D, opened_at: float, client_order_id: str, setup_score: D,
+        notional_eur: D, leverage: D, opened_at: float, client_order_id: str,
+        setup_score: D, entry_policy: dict[str, Any] | None = None,
+        entry_context: dict[str, Any] | None = None,
     ) -> None:
         if quantity <= 0 or price <= 0:
             return
         position = TacticalPosition(
             instrument.symbol, instrument.venue, direction, quantity, price, price, price,
             abs(notional_eur), leverage, opened_at, client_order_id, setup_score,
+            entry_policy=dict(entry_policy or {}),
+            entry_context=dict(entry_context or {}),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -1984,6 +2075,8 @@ class TacticalTrader:
             position.entry_price, position.peak_price, position.trough_price,
             position.notional_eur, position.leverage, position.opened_at,
             position.entry_client_order_id, position.setup_score, position.state,
+            entry_policy=position.entry_policy,
+            entry_context=position.entry_context,
         )
 
     def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:
