@@ -266,8 +266,11 @@ def test_high_conviction_tactical_exposure_respects_global_risk_gates():
         decision, portfolio, make_snapshot(),
         {"free_margin": "20", "margin_level_pct": "500"},
     )
-    assert result.allowed is True
+    # The tactical position limit (80%) is not permission to exceed the
+    # portfolio-wide net cap (50%). This entry would create 75% net exposure.
+    assert result.allowed is False
+    assert result.reason == "net_limit"
     assert result.checks["position_limit"] is True
     assert result.checks["gross_limit"] is True
-    assert result.checks["net_limit"] is True
+    assert result.checks["net_limit"] is False
     assert result.checks["margin_budget"] is True
