@@ -364,7 +364,6 @@ class CoreExitPolicyOptimizer:
             }
         watermark = max(float(item["closed_at"]) for item in episodes)
         current_version, current_params, current_policy = self._current_policy()
-        baseline_by_key: dict[str, dict[str, Any]] = {}
         aligned: list[dict[str, Any]] = []
         for episode in episodes:
             # Counterfactual comparisons must use the active policy that will be
@@ -373,7 +372,6 @@ class CoreExitPolicyOptimizer:
             if baseline is None or not self._baseline_matches(episode, baseline):
                 continue
             episode["baseline"] = baseline
-            baseline_by_key[str(episode["key"])] = baseline
             aligned.append(episode)
 
         if len(aligned) < self.MIN_EPISODES:
