@@ -291,6 +291,10 @@ class TradingAuthority:
                 "inserted": 0,
                 "matched": 0,
                 "unmatched": 0,
+                "fee_verified": 0,
+                "fee_unverified": 0,
+                "ledger_batches": 0,
+                "ledger_lookup_failures": 0,
                 "cursor_page_start": bool(cursor),
                 "window_start": start_at,
                 "window_end": end_at,
@@ -304,6 +308,9 @@ class TradingAuthority:
                     "with_cursor": True,
                     "limit": page_size,
                     "trades": True,
+                    # A trade record has a fee amount but omits its currency.
+                    # Ask Kraken for the exact linked ledger IDs in the same query.
+                    "ledgers": True,
                 }
                 if cursor:
                     request_params["cursor"] = cursor
@@ -320,6 +327,79 @@ class TradingAuthority:
                     else ""
                 )
                 stats["pages"] += 1
+
+                # Resolve ledger IDs only for app-managed orders. A missing API
+                # permission or an ambiguous ledger response downgrades attribution
+                # to UNVERIFIED, never a trading-cycle failure.
+                ledger_ids_by_trade: dict[str, list[str]] = {}
+                all_ledger_ids: list[str] = []
+                for trade_id, payload in trades.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    order = tracked_orders.get(str(payload.get("ordertxid") or ""))
+                    if order is None:
+                        continue
+                    raw_ids = payload.get("ledgers") or []
+                    if isinstance(raw_ids, dict):
+                        ids = [str(value) for value in raw_ids.values() if value]
+                    elif isinstance(raw_ids, (list, tuple, set)):
+                        ids = [str(value) for value in raw_ids if value]
+                    elif isinstance(raw_ids, str):
+                        ids = [part.strip() for part in raw_ids.split(",") if part.strip()]
+                    else:
+                        ids = []
+                    # Preserve order and avoid duplicate private API requests.
+                    ids = list(dict.fromkeys(ids))
+                    ledger_ids_by_trade[str(trade_id)] = ids
+                    all_ledger_ids.extend(ids)
+                unique_ledger_ids = list(dict.fromkeys(all_ledger_ids))
+                ledger_records: dict[str, dict[str, Any]] = {}
+                ledger_lookup_failed = False
+                query_ledgers = getattr(self.gateway, "spot_query_ledgers", None)
+                if unique_ledger_ids and callable(query_ledgers):
+                    for offset in range(0, len(unique_ledger_ids), 20):
+                        batch = unique_ledger_ids[offset:offset + 20]
+                        try:
+                            ledger_response = query_ledgers({"id": ",".join(batch)})
+                            if not isinstance(ledger_response, dict):
+                                raise KrakenError("SPOT_QUERY_LEDGERS_INVALID_RESPONSE")
+                            if ledger_response.get("error"):
+                                raise KrakenError(
+                                    "SPOT_QUERY_LEDGERS:"
+                                    + ";".join(str(x) for x in ledger_response["error"])[:300]
+                                )
+                            ledger_result = ledger_response.get("result")
+                            if isinstance(ledger_result, dict):
+                                ledger_response = ledger_result
+                            for ledger_id, record in ledger_response.items():
+                                if ledger_id == "error" or not isinstance(record, dict):
+                                    continue
+                                if ledger_id in batch:
+                                    ledger_records[str(ledger_id)] = record
+                            stats["ledger_batches"] += 1
+                        except Exception as exc:
+                            ledger_lookup_failed = True
+                            stats["ledger_lookup_failures"] += 1
+                            self.db.event(
+                                "SPOT_FILL_LEDGER_LOOKUP_FAILED",
+                                "WARNING",
+                                {"error_type": type(exc).__name__, "error": str(exc)[:300],
+                                 "requested_ids": len(batch)},
+                            )
+                            if self.audit is not None:
+                                self.audit.emit(
+                                    "SPOT_FILL_LEDGER_LOOKUP_FAILED",
+                                    "WARNING",
+                                    error_type=type(exc).__name__,
+                                    error=str(exc)[:300],
+                                    requested_ids=len(batch),
+                                )
+                            # Try later pages/cycles; keep every fill durable meanwhile.
+                            break
+                elif unique_ledger_ids:
+                    ledger_lookup_failed = True
+                    stats["ledger_lookup_failures"] += 1
+
                 for trade_id, payload in trades.items():
                     if not isinstance(payload, dict):
                         continue
@@ -333,14 +413,75 @@ class TradingAuthority:
                         trade_time = float(str(payload.get("time") or "0"))
                         price = D(str(payload.get("price")))
                         quantity = D(str(payload.get("vol")))
-                        fee = D(str(payload.get("fee") or "0"))
+                        if payload.get("fee") in (None, ""):
+                            raise ValueError("MISSING_TRADE_FEE")
+                        fee = D(str(payload["fee"]))
+                        if not all(value.is_finite() for value in (price, quantity, fee)):
+                            raise ValueError("NON_FINITE_TRADE_VALUES")
                     except Exception:
                         stats["unmatched"] += 1
                         continue
                     side = str(payload.get("type") or "").strip().lower()
-                    if side not in {"buy", "sell"} or trade_time <= 0 or price <= 0 or quantity <= 0:
+                    if side not in {"buy", "sell"} or trade_time <= 0 or price <= 0 or quantity <= 0 or fee < 0:
                         stats["unmatched"] += 1
                         continue
+
+                    related_ids = ledger_ids_by_trade.get(str(trade_id), [])
+                    attribution: dict[str, Any] = {
+                        "status": "UNVERIFIED",
+                        "fee_currency": "",
+                        "ledger_ids": related_ids,
+                        "reason": "LEDGER_LOOKUP_UNAVAILABLE" if ledger_lookup_failed else "NO_MATCHING_LEDGER_FEE",
+                    }
+                    resolved_currency = "UNVERIFIED"
+                    if fee == 0:
+                        resolved_currency = "ZERO_FEE"
+                        attribution.update({"status": "ZERO_FEE_REPORTED", "fee_currency": "ZERO_FEE",
+                                            "reason": "TRADE_HISTORY_REPORTED_ZERO_FEE"})
+                        stats["fee_verified"] += 1
+                    elif related_ids and all(item in ledger_records for item in related_ids):
+                        # Kraken ledger records carry the fee and asset together.
+                        # Verify the TradesHistory fee against per-asset ledger fees;
+                        # do not guess a currency when the match is absent/ambiguous.
+                        fees_by_asset: dict[str, D] = {}
+                        for ledger_id in related_ids:
+                            ledger = ledger_records[ledger_id]
+                            if str(ledger.get("type") or "").lower() != "trade":
+                                continue
+                            asset = str(ledger.get("asset") or "").strip()
+                            try:
+                                ledger_fee = D(str(ledger.get("fee") or "0"))
+                                if not ledger_fee.is_finite() or ledger_fee < 0:
+                                    continue
+                            except Exception:
+                                continue
+                            if asset:
+                                fees_by_asset[asset] = fees_by_asset.get(asset, D("0")) + ledger_fee
+                        tolerance = max(D("0.00000001"), fee.copy_abs() * D("0.000001"))
+                        matches = [
+                            asset for asset, total in fees_by_asset.items()
+                            if (total - fee).copy_abs() <= tolerance
+                        ]
+                        if len(matches) == 1:
+                            resolved_currency = matches[0]
+                            attribution.update({
+                                "status": "LEDGER_VERIFIED",
+                                "fee_currency": resolved_currency,
+                                "reason": "TRADE_HISTORY_FEE_MATCHED_TO_LEDGER_ASSET",
+                            })
+                            stats["fee_verified"] += 1
+                        else:
+                            attribution.update({
+                                "reason": "LEDGER_FEE_MATCH_NOT_UNIQUE",
+                                "ledger_fee_by_asset": {key: str(value) for key, value in fees_by_asset.items()},
+                                "trades_history_fee": str(fee),
+                            })
+                            stats["fee_unverified"] += 1
+                    else:
+                        stats["fee_unverified"] += 1
+
+                    enriched_payload = dict(payload)
+                    enriched_payload["_ledger_attribution"] = attribution
                     inserted = self.db.save_attributed_fill(
                         order_id=exchange_order_id,
                         trade_id=str(trade_id),
@@ -350,16 +491,22 @@ class TradingAuthority:
                         quantity=quantity,
                         price=price,
                         fee=fee,
-                        # Kraken TradesHistory exposes a fee amount but no fee
-                        # currency field. Do not invent a currency before PnL
-                        # conversion logic is verified.
-                        fee_currency="UNVERIFIED",
+                        fee_currency=resolved_currency,
                         client_order_id=str(order.get("client_order_id") or ""),
                         decision_id=str(order.get("decision_id") or ""),
                         venue="spot",
                         quote_asset=str(instrument.quote or ""),
-                        raw_payload=payload,
+                        base_asset=str(instrument.base or ""),
+                        raw_payload=enriched_payload,
                     )
+                    if not inserted and attribution["status"] in {"LEDGER_VERIFIED", "ZERO_FEE_REPORTED"}:
+                        self.db.enrich_attributed_fill_fee(
+                            order_id=exchange_order_id,
+                            trade_id=str(trade_id),
+                            fee_currency=resolved_currency,
+                            raw_payload=enriched_payload,
+                            base_asset=str(instrument.base or ""),
+                        )
                     stats["matched"] += 1
                     if inserted:
                         stats["inserted"] += 1
