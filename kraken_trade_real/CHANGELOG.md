@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.57
+
+- Normalize Python boolean parameters to lowercase REST form values before signing and sending authenticated Spot requests.
+- Prevent invalid-argument responses from Kraken TradesHistory when requesting cursor pagination, trade data and linked ledger IDs.
+- Add a wire-level regression test verifying exact serialized values and signature consistency.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.57.
+
 ## 0.1.56
 
 - Request linked ledger IDs in Kraken Spot trade history and resolve fee currency through QueryLedgers batches of at most 20 IDs; missing permission or ambiguous data leaves the fee explicitly unverified and never interrupts fill persistence.
