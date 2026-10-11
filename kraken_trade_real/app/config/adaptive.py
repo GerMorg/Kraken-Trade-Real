@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from threading import RLock
 from typing import Any
 
@@ -147,14 +148,23 @@ class AdaptiveConfig:
             **CORE_EXIT_POLICY_BOUNDS,
             **TACTICAL_POLICY_BOUNDS,
         }
+        validated_defaults = {**CORE_DEFAULTS, **TACTICAL_DEFAULTS}
         for name, bounds in policy_bounds.items():
             try:
                 value = float(merged[name])
-                merged[name] = max(bounds[0], min(bounds[1], value))
-                if isinstance(bounds[0], int):
-                    merged[name] = int(round(merged[name]))
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
+                # Registry contents can outlive the code and may be edited or
+                # corrupted. Invalid values must never leak into Decimal arithmetic
+                # in a live cycle; repair only the affected parameter.
+                merged[name] = validated_defaults[name]
                 continue
+            if not math.isfinite(value):
+                merged[name] = validated_defaults[name]
+                continue
+            value = max(bounds[0], min(bounds[1], value))
+            if isinstance(bounds[0], int):
+                value = int(round(value))
+            merged[name] = value
         # Core adaptive thresholds must remain economically nested. The
         # adaptive cost multiplier may never fall below the validated baseline.
         core_edge = float(merged.get("strategy_min_edge_bps", 25.0))
