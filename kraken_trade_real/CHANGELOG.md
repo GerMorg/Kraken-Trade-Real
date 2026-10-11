@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.78
+
+- Fix a Tactical risk-gate inconsistency: the strategy-specific position limit can no longer raise the immutable portfolio-wide net-exposure cap.
+- Keep the Tactical position limit as a per-position gate while applying the same configured global net-exposure limit to Core and Tactical entries.
+- Add regression coverage proving an 80% Tactical position allowance cannot admit a 75% net exposure when the global net cap is 50%.
+- Treat the first two v0.1.77 post-install cycles as an initial observation window; zero new fills in that short interval is not, by itself, evidence of a fill-sync defect.
+- Bump Home Assistant app, Python package, container build and Kraken User-Agent to 0.1.78.
+
 ## 0.1.77
 
 - Extend `CYCLE_RISK_DECISION` with the actual equity, cash, daily PnL and daily-loss limit/headroom, drawdown, projected gross/net exposure, position percentage, cash reserve and position-count values.
