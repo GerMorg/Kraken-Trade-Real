@@ -23,12 +23,73 @@ def test_new_asset_moving_average():
     assert pool.cost_basis_eur == Decimal("2000")
 
 
-def test_crypto_swap_carries_basis():
+def test_crypto_swap_carries_basis_for_new_assets_after_tax_rules_take_effect():
     ledger = AustrianTaxLedger()
     ledger.acquire("BTC", Decimal("1"), Decimal("1000"), ts(2024))
     pool = ledger.crypto_to_crypto_swap("BTC", Decimal("1"), "ETH", Decimal("10"), ts(2024))
     assert pool.asset == "ETH"
     assert pool.cost_basis_eur == Decimal("1000")
+
+
+def test_disposal_uses_tracked_acquisition_regime_not_sale_date():
+    ledger = AustrianTaxLedger()
+    ledger.acquire("BTC", Decimal("1"), Decimal("1000"), ts(2020))
+    event = ledger.ingest_kraken_spot_trade(
+        "sell-old", {
+            "time": ts(2024), "pair": "BTC/EUR", "type": "sell",
+            "vol": "1", "price": "2000", "cost": "2000", "fee": "0",
+        },
+    )
+    assert event.complete is False
+    assert event.event_type == "ALT_DISPOSAL_REVIEW"
+    assert event.asset_regime == "ALTVERSMÖGEN"
+    assert event.tax_class == "CRYPTO_ALT_REVIEW"
+    assert event.realized_gain_eur == Decimal("0")
+    assert ledger._pools[("BTC", "ALTVERSMÖGEN")].quantity == Decimal("1")
+
+
+def test_mixed_alt_and_new_inventory_requires_explicit_regime_review():
+    ledger = AustrianTaxLedger()
+    ledger.acquire("BTC", Decimal("1"), Decimal("1000"), ts(2020))
+    ledger.acquire("BTC", Decimal("1"), Decimal("1500"), ts(2024))
+    event = ledger.ingest_kraken_spot_trade(
+        "sell-mixed", {
+            "time": ts(2025), "pair": "BTC/EUR", "type": "sell",
+            "vol": "0.5", "price": "2500", "cost": "1250", "fee": "0",
+        },
+    )
+    assert event.complete is False
+    assert event.event_type == "DISPOSAL_REGIME_REVIEW"
+    assert event.asset_regime == "ALT_NEU_UNCLEAR"
+    assert event.realized_gain_eur == Decimal("0")
+    assert ledger._pools[("BTC", "ALTVERSMÖGEN")].quantity == Decimal("1")
+    assert ledger._pools[("BTC", "NEUVERSMÖGEN")].quantity == Decimal("1")
+
+
+def test_alt_crypto_to_crypto_swap_is_not_reported_as_tax_neutral():
+    ledger = AustrianTaxLedger()
+    ledger.acquire("BTC", Decimal("1"), Decimal("1000"), ts(2020))
+    event = ledger.ingest_kraken_spot_trade(
+        "swap-old", {
+            "time": ts(2024), "pair": "BTC/ETH", "type": "sell",
+            "vol": "1", "price": "10", "cost": "10", "fee": "0",
+        },
+    )
+    assert event.complete is False
+    assert event.event_type == "ALT_CRYPTO_SWAP_REVIEW"
+    assert event.tax_neutral is False
+    assert event.asset_regime == "ALTVERSMÖGEN"
+
+
+def test_historical_crypto_swap_before_neutral_rollover_date_requires_review():
+    ledger = AustrianTaxLedger()
+    ledger.acquire("BTC", Decimal("1"), Decimal("1000"), ts(2021))
+    try:
+        ledger.crypto_to_crypto_swap("BTC", Decimal("1"), "ETH", Decimal("10"), ts(2021))
+    except ValueError as exc:
+        assert "pre-2022" in str(exc)
+    else:
+        raise AssertionError("historical swap was incorrectly accepted as tax neutral")
 
 
 def test_2025_foreign_e1kv_mapping():
