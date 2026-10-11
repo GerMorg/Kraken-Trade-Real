@@ -63,7 +63,7 @@ def test_mixed_alt_and_new_inventory_requires_explicit_regime_review():
     assert event.asset_regime == "ALT_NEU_UNCLEAR"
     assert event.realized_gain_eur == Decimal("0")
     assert ledger._pools[("BTC", "ALTVERSMÖGEN")].quantity == Decimal("1")
-    assert ledger._pools[("BTC", "NEUVERSMÖGEN")].quantity == Decimal("1")
+    assert ledger._pools[("BTC", "NEUVERMÖGEN")].quantity == Decimal("1")
 
 
 def test_alt_crypto_to_crypto_swap_is_not_reported_as_tax_neutral():
