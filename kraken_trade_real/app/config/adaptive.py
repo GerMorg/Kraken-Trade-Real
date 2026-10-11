@@ -46,6 +46,7 @@ LEARNED_TACTICAL_KEYS = {
     "tactical_min_imbalance",
     "tactical_adaptive_min_confidence",
     "tactical_adaptive_min_net_edge_bps",
+    "tactical_context_block_bps",
     "tactical_stop_loss_pct",
     "tactical_take_profit_pct",
     "tactical_trailing_trigger_bps",
@@ -75,6 +76,7 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_adaptive_min_expected_move_bps": 230.0,
     "tactical_adaptive_min_confidence": 0.75,
     "tactical_adaptive_min_net_edge_bps": 15.0,
+    "tactical_context_block_bps": 80.0,
 }
 
 CORE_ENTRY_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
@@ -98,6 +100,7 @@ TACTICAL_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
     "tactical_min_imbalance": (0.02, 0.50),
     "tactical_adaptive_min_confidence": (0.60, 0.95),
     "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
+    "tactical_context_block_bps": (10.0, 200.0),
     "tactical_stop_loss_pct": (0.35, 2.0),
     "tactical_take_profit_pct": (1.0, 5.0),
     "tactical_trailing_trigger_bps": (50.0, 500.0),
