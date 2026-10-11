@@ -15,10 +15,11 @@ from app.portfolio.reconcile import (
     minimum_orderable_spot_quantity,
     resolve_spot_cash_reduction_quantity,
 )
-from app.domain.symbols import resolve_instrument_symbol
+from app.domain.symbols import canonical_asset, resolve_instrument_symbol
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
+from app.trading.cash_budget import spot_cash_required_quote
 from app.trading.fx import FXConversionManager
 from app.trading.profit_protection import PositionProfitProtection
 
@@ -985,7 +986,13 @@ class TradingRuntime:
             rebalance_decisions=0
             last_decision=None
             no_action_reasons: dict[str,int]={}
+            # Reserve free quote funds for every accepted cash-Spot buy during
+            # this decision pass. BalanceEx is refreshed only at defined points;
+            # without this ledger, every candidate could reuse the same snapshot.
+            cycle_quote_reserved: dict[str, D] = {}
             for instrument in selected:
+                cash_budget_quote: D | None = None
+                cash_budget_asset = ""
                 snap=snapshots[instrument.symbol]
                 f=feature_map[instrument.symbol]
                 regime=self.regimes.detect(f)
@@ -1328,10 +1335,20 @@ class TradingRuntime:
                     )
                     if provisional_qty is not None:
                         provisional_quote = provisional_qty * snap.price
-                        fx_needed = (
-                            self.portfolio.cash_balance(instrument.quote)
-                            + D("0.00000001") < provisional_quote
+                        spendable_reader = getattr(
+                            self.portfolio, "available_cash_balance", None
                         )
+                        spendable_quote = (
+                            D(str(spendable_reader(instrument.quote)))
+                            if callable(spendable_reader)
+                            else self.portfolio.cash_balance(instrument.quote)
+                        )
+                        spendable_quote = max(
+                            D("0"),
+                            spendable_quote
+                            - cycle_quote_reserved.get(canonical_asset(instrument.quote), D("0")),
+                        )
+                        fx_needed = spendable_quote + D("0.00000001") < provisional_quote
                 if fx_needed:
                     fx_cost_bps = D(str(getattr(
                         self.config, "execution_fx_cost_bps", "40"
@@ -1548,18 +1565,58 @@ class TradingRuntime:
                             retry_when_orderable=True,
                         )
                         continue
-                if (
+                cash_budget_order = (
                     instrument.venue == "spot"
+                    and not decision.reduce_only
+                    and not bool(getattr(decision, "margin", False))
                     and execution_direction.value == "LONG"
                     and decision.target_position_eur > decision.current_position_eur
                     and lev <= D("1")
-                ):
-                    required_quote = quantity * snap.price
-                    available_quote = self.portfolio.cash_balance(instrument.quote)
-                    if available_quote + D("0.00000001") < required_quote:
+                    and quantity is not None
+                    and quantity > 0
+                )
+                if cash_budget_order:
+                    cash_budget_asset = canonical_asset(instrument.quote)
+                    cash_budget_price = snap.ask if snap.ask > 0 else snap.price
+                    cash_budget_quote = spot_cash_required_quote(
+                        quantity, cash_budget_price, self.config
+                    )
+                    spendable_reader = getattr(
+                        self.portfolio, "available_cash_balance", None
+                    )
+                    available_quote = (
+                        D(str(spendable_reader(instrument.quote)))
+                        if callable(spendable_reader)
+                        else self.portfolio.cash_balance(instrument.quote)
+                    )
+                    reserved_quote = cycle_quote_reserved.get(cash_budget_asset, D("0"))
+                    available_quote = max(D("0"), available_quote - reserved_quote)
+                    if available_quote + D("0.00000001") < cash_budget_quote:
+                        # Never convert the same source funds again after another
+                        # cash order has reserved funds earlier in this cycle.
+                        if any(value > 0 for value in cycle_quote_reserved.values()):
+                            reason = "CYCLE_CASH_FUNDS_ALREADY_RESERVED"
+                            blockers.append(f"{instrument.symbol}:{reason}")
+                            no_action_reasons[reason] = no_action_reasons.get(reason, 0) + 1
+                            self.audit.emit(
+                                "CYCLE_ORDER_BLOCKED",
+                                "WARNING",
+                                cycle_id=cycle_id,
+                                symbol=instrument.symbol,
+                                reason=reason,
+                                detail={
+                                    "quote_asset": cash_budget_asset,
+                                    "required_quote_with_buffer": str(cash_budget_quote),
+                                    "available_quote_after_reservations": str(available_quote),
+                                    "cycle_quote_reserved": {
+                                        key: str(value) for key, value in cycle_quote_reserved.items()
+                                    },
+                                },
+                            )
+                            continue
                         fx_result = self.fx.ensure_quote_funds(
                             quote=instrument.quote,
-                            required_quote=required_quote,
+                            required_quote=cash_budget_quote,
                             cycle_id=cycle_id,
                             source_preference="EUR",
                             dependent_edge_bps=decision.signal.net_edge_bps,
@@ -1576,15 +1633,20 @@ class TradingRuntime:
                             cycle_id=cycle_id,
                             symbol=instrument.symbol,
                             quote_asset=str(instrument.quote),
-                            required_quote=str(required_quote),
+                            required_quote=str(cash_budget_quote),
                             conversion=fx_result,
                             dependent_net_edge_bps=str(decision.signal.net_edge_bps),
                         )
-                        # Refresh the portfolio after the confirmed FX fill.
-                        self.portfolio.set_market_context(self.instruments,spot_payload)
-                        self.portfolio.reconcile()
-                        available_quote = self.portfolio.cash_balance(instrument.quote)
-                        if available_quote + D("0.00000001") < required_quote:
+                        # Refresh the portfolio after the confirmed FX fill. This
+                        # also refreshes BalanceEx holds before any new cash order.
+                        self.portfolio.set_market_context(self.instruments,latest_spot_payload)
+                        portfolio = self.portfolio.reconcile()
+                        available_quote = (
+                            D(str(spendable_reader(instrument.quote)))
+                            if callable(spendable_reader)
+                            else self.portfolio.cash_balance(instrument.quote)
+                        )
+                        if available_quote + D("0.00000001") < cash_budget_quote:
                             reason="FX_FUNDING_INSUFFICIENT_AFTER_FILL"
                             blockers.append(f"{instrument.symbol}:{reason}")
                             no_action_reasons[reason]=no_action_reasons.get(reason,0)+1
@@ -1595,7 +1657,7 @@ class TradingRuntime:
                                 symbol=instrument.symbol,
                                 reason=reason,
                                 detail={
-                                    "required_quote":str(required_quote),
+                                    "required_quote_with_buffer":str(cash_budget_quote),
                                     "available_quote":str(available_quote),
                                     "fx":fx_result,
                                 },
@@ -1649,6 +1711,20 @@ class TradingRuntime:
                     "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
                 }:
                     placed+=1
+                    if cash_budget_quote is not None and cash_budget_asset:
+                        cycle_quote_reserved[cash_budget_asset] = (
+                            cycle_quote_reserved.get(cash_budget_asset, D("0"))
+                            + cash_budget_quote
+                        )
+                        self.audit.emit(
+                            "CYCLE_SPOT_CASH_BUDGET_RESERVED",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            quote_asset=cash_budget_asset,
+                            reserved_quote=str(cash_budget_quote),
+                            total_cycle_reserved_quote=str(cycle_quote_reserved[cash_budget_asset]),
+                        )
                     if decision.rationale.get("position_management_action") == "PARTIAL_TAKE_PROFIT":
                         self.profit_protection.record_pending(
                             instrument.symbol,
