@@ -381,6 +381,8 @@ CREATE TABLE IF NOT EXISTS tactical_price_path(
   peak_price TEXT NOT NULL,
   trough_price TEXT NOT NULL,
   state TEXT NOT NULL,
+  signal_direction TEXT NOT NULL DEFAULT '',
+  signal_net_edge_bps TEXT NOT NULL DEFAULT '0',
   UNIQUE(symbol, opened_at, observed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_tactical_price_path_position

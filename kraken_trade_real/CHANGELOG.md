@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.61
+
+- Capture the same actionable Tactical signal direction and net edge with each observed price-path point, enabling faithful replay of reversal exits.
+- Add idempotent migration for existing price-path databases; legacy samples retain empty signal metadata and cannot fabricate reversal labels.
+- Include the bounded Tactical reversal threshold in path replay, chronological candidate selection, and the existing holdout promotion gates.
+- Remove the learned reversal threshold from Home Assistant options/schema and ignore old options.json overrides.
+- Validate the threshold again during model promotion and preserve its fixed bounds of 30–500 bps.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.61.
+
 ## 0.1.60
 
 - Require Tactical signal-reversal exits to confirm that the actionable signal direction is opposite to the held position; a strong same-direction setup can no longer trigger a false reversal close.

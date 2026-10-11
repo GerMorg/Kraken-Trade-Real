@@ -36,6 +36,7 @@ LEARNED_OPTION_KEYS = {
     "tactical_trailing_trigger_bps",
     "tactical_trailing_stop_pct",
     "tactical_max_hold_seconds",
+    "tactical_reversal_exit_bps",
 }
 
 

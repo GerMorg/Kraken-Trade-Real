@@ -160,7 +160,7 @@ def test_legacy_fill_table_migrates_before_attribution_indexes_are_created(tmp_p
     ) == {"decision_id": "", "raw_json": "{}"}
     assert migrated.one(
         "SELECT value FROM metadata WHERE key='schema_version'"
-    )["value"] == "12"
+    )["value"] == "13"
 
 def test_spot_history_fill_fee_currency_is_resolved_from_linked_ledgers(db, fake_gateway, instrument, config):
     from app.trading.authority import TradingAuthority

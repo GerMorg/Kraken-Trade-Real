@@ -337,6 +337,18 @@ class ModelRegistry:
                 {"reason": "EXIT_STOP_MUST_BE_BELOW_TARGET"},
             )
             return False
+        if row["family"] == "strategy_tactical" and "tactical_reversal_exit_bps" in params:
+            try:
+                reversal_threshold = float(params["tactical_reversal_exit_bps"])
+                if not 30.0 <= reversal_threshold <= 500.0:
+                    raise ValueError("TACTICAL_REVERSAL_THRESHOLD_OUT_OF_BOUNDS")
+            except (TypeError, ValueError):
+                self.db.learning_event(
+                    "ADAPTIVE_POLICY_NOT_PROMOTED", version,
+                    {"reason": "TACTICAL_REVERSAL_THRESHOLD_OUT_OF_BOUNDS"},
+                )
+                return False
+
         with self.db.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             current = con.execute(
