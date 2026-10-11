@@ -108,7 +108,14 @@ class Database:
                 for name, definition in definitions.items():
                     if name not in existing:
                         con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','12')")
+            path_cols = {row[1] for row in con.execute("PRAGMA table_info(tactical_price_path)")}
+            for name, definition in {
+                "signal_direction": "TEXT NOT NULL DEFAULT ''",
+                "signal_net_edge_bps": "TEXT NOT NULL DEFAULT '0'",
+            }.items():
+                if name not in path_cols:
+                    con.execute(f"ALTER TABLE tactical_price_path ADD COLUMN {name} {definition}")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','13')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -706,6 +713,8 @@ class Database:
         peak_price: Any,
         trough_price: Any,
         state: str,
+        signal_direction: str = "",
+        signal_net_edge_bps: Any = "0",
     ) -> None:
         """Persist a deduplicated market observation for later exit-policy replay."""
         try:
@@ -720,11 +729,12 @@ class Database:
             con.execute(
                 """INSERT OR IGNORE INTO tactical_price_path(
                     symbol,opened_at,observed_at,direction,price,pnl_bps,
-                    peak_price,trough_price,state
-                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    peak_price,trough_price,state,signal_direction,signal_net_edge_bps
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     symbol, opened, timestamp, direction, str(numeric_price),
                     str(pnl_bps), str(peak_price), str(trough_price), state,
+                    str(signal_direction or ""), str(signal_net_edge_bps),
                 ),
             )
             # Bound per-position history without truncating normal Tactical trades.
@@ -754,7 +764,8 @@ class Database:
         """Return a position's observed path, optionally truncated at a close time."""
         sql = (
             "SELECT symbol,opened_at,observed_at,direction,price,pnl_bps,"
-            "peak_price,trough_price,state FROM tactical_price_path "
+            "peak_price,trough_price,state,signal_direction,signal_net_edge_bps "
+            "FROM tactical_price_path "
             "WHERE symbol=? AND opened_at=?"
         )
         params: tuple[Any, ...] = (symbol, float(opened_at))
