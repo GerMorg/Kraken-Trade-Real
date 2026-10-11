@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.72
+
+- Treat Kraken Spot Ticker 24h volume as base-asset quantity and calculate quote-currency turnover explicitly.
+- Convert Spot quote turnover into EUR using fresh, tradable Spot FX/fiat-stablecoin pairs; exclude Spot candidates if EUR conversion cannot be established.
+- Rank Spot markets by EUR-notional turnover before history selection and use the same normalized value in market features.
+- Keep futures/derivative volume out of the Spot EUR-turnover comparison when a comparable contract notional is unavailable.
+- Add diagnostics and regression tests for USD-to-EUR conversion, low-notional high-unit-volume assets, and missing FX conversion.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.72.
+
 ## 0.1.71
 
 - Keep learned Tactical expected-move thresholds strictly above configured round-trip fee, spread, slippage and safety-buffer assumptions.
