@@ -336,6 +336,46 @@ def test_deterministic_kraken_error_does_not_create_unknown_gate(config, db, ins
     assert row is not None
     assert row["state"] == OrderState.REJECTED.value
     assert "Insufficient funds" in row["last_error"]
+    assert result["error_class"] == "INSUFFICIENT_FUNDS"
+    assert result["suggested_action"] == (
+        "REFRESH_BALANCE_MARGIN_AND_OPEN_ORDER_HOLDS_BEFORE_RETRY"
+    )
+    diagnostic = db.one(
+        """SELECT payload_json FROM events
+           WHERE code='ORDER_SUBMISSION_REJECTED'
+           ORDER BY id DESC LIMIT 1"""
+    )
+    assert diagnostic is not None
+    import json
+    payload = json.loads(diagnostic["payload_json"])
+    assert payload["symbol"] == instrument.symbol
+    assert payload["instrument_id"] == instrument.instrument_id
+    assert payload["side"] == "buy"
+    assert payload["direction"] == "LONG"
+    assert payload["quantity"] == "0.001"
+    assert payload["estimated_notional_quote"] == "60.000"
+    assert payload["leverage"] == "1"
+    assert payload["margin"] is True
+    assert payload["reduce_only"] is False
+    assert payload["error_class"] == "INSUFFICIENT_FUNDS"
+    assert "api_key" not in payload and "api_secret" not in payload
+
+
+def test_submission_error_classification_is_stable_and_non_retrying():
+    from app.trading.authority import TradingAuthority
+
+    assert TradingAuthority._submission_error_class(
+        "KRAKEN_PRIVATE:EGeneral:Invalid arguments"
+    ) == (
+        "INVALID_ARGUMENTS",
+        "REVIEW_EXCHANGE_API_ARGUMENTS;DO_NOT_BLINDLY_RETRY",
+    )
+    assert TradingAuthority._submission_error_class(
+        "KRAKEN_PRIVATE:EOrder:Insufficient funds"
+    )[0] == "INSUFFICIENT_FUNDS"
+    assert TradingAuthority._submission_error_class(
+        "EAPI:Rate limit exceeded"
+    )[0] == "RATE_LIMITED"
 
 
 def test_new_client_order_id_matches_kraken_supported_format():
