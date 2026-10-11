@@ -76,6 +76,36 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_adaptive_min_net_edge_bps": 15.0,
 }
 
+CORE_ENTRY_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
+    "strategy_min_edge_bps": (25.0, 80.0),
+    "strategy_min_confidence": (0.58, 0.85),
+    "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
+    "strategy_adaptive_min_confidence": (0.75, 0.95),
+    "strategy_adaptive_cost_ratio": (1.10, 1.50),
+}
+
+TACTICAL_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
+    "tactical_portfolio_pct": (1.0, 25.0),
+    "tactical_min_volume_ratio": (1.0, 8.0),
+    "tactical_min_momentum_bps": (10.0, 300.0),
+    "tactical_min_breakout_bps": (5.0, 250.0),
+    "tactical_max_spread_bps": (3.0, 60.0),
+    "tactical_min_expected_move_bps": (80.0, 1200.0),
+    "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
+    "tactical_min_volatility_bps": (5.0, 50.0),
+    "tactical_max_volatility_bps": (25.0, 120.0),
+    "tactical_min_imbalance": (0.02, 0.50),
+    "tactical_adaptive_min_confidence": (0.60, 0.95),
+    "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
+    "tactical_stop_loss_pct": (0.35, 2.0),
+    "tactical_take_profit_pct": (1.0, 5.0),
+    "tactical_trailing_trigger_bps": (50.0, 500.0),
+    "tactical_trailing_stop_pct": (0.2, 1.5),
+    "tactical_max_hold_seconds": (300, 7200),
+    "tactical_reversal_exit_bps": (30.0, 500.0),
+}
+
+
 
 class AdaptiveConfig:
     """Atomic, runtime-refreshable view of base config plus promoted policy parameters."""
@@ -112,32 +142,12 @@ class AdaptiveConfig:
                 object.__setattr__(self, "_registry_error", type(exc).__name__)
                 merged.update({name: defaults[name] for name in managed if name in defaults})
         # Keep type/range constraints independent of any model record.
-        for name, bounds in {
-            "strategy_min_edge_bps": (25.0, 80.0),
-            "strategy_min_confidence": (0.58, 0.85),
-            "strategy_adaptive_edge_floor_bps": (15.0, 25.0),
-            "strategy_adaptive_min_confidence": (0.75, 0.95),
-            "strategy_adaptive_cost_ratio": (1.10, 1.50),
+        policy_bounds = {
+            **CORE_ENTRY_POLICY_BOUNDS,
             **CORE_EXIT_POLICY_BOUNDS,
-            "tactical_portfolio_pct": (1.0, 25.0),
-            "tactical_min_volume_ratio": (1.0, 8.0),
-            "tactical_min_momentum_bps": (10.0, 300.0),
-            "tactical_min_breakout_bps": (5.0, 250.0),
-            "tactical_max_spread_bps": (3.0, 60.0),
-            "tactical_min_expected_move_bps": (80.0, 1200.0),
-            "tactical_adaptive_min_expected_move_bps": (80.0, 800.0),
-            "tactical_min_volatility_bps": (5.0, 50.0),
-            "tactical_max_volatility_bps": (25.0, 120.0),
-            "tactical_min_imbalance": (0.02, 0.50),
-            "tactical_adaptive_min_confidence": (0.60, 0.95),
-            "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
-            "tactical_stop_loss_pct": (0.35, 2.0),
-            "tactical_take_profit_pct": (1.0, 5.0),
-            "tactical_trailing_trigger_bps": (50.0, 500.0),
-            "tactical_trailing_stop_pct": (0.2, 1.5),
-            "tactical_max_hold_seconds": (300, 7200),
-            "tactical_reversal_exit_bps": (30.0, 500.0),
-        }.items():
+            **TACTICAL_POLICY_BOUNDS,
+        }
+        for name, bounds in policy_bounds.items():
             try:
                 value = float(merged[name])
                 merged[name] = max(bounds[0], min(bounds[1], value))

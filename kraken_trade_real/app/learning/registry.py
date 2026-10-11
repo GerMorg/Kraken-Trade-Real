@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
+
+from app.config.adaptive import (
+    CORE_DEFAULTS,
+    CORE_ENTRY_POLICY_BOUNDS,
+    CORE_EXIT_POLICY_BOUNDS,
+    LEARNED_TACTICAL_KEYS,
+    TACTICAL_DEFAULTS,
+    TACTICAL_POLICY_BOUNDS,
+)
 
 
 class ModelRegistry:
@@ -165,6 +175,106 @@ class ModelRegistry:
         self.db.learning_event("MODEL_PROMOTED",version,metrics)
         return True
 
+    @staticmethod
+    def _same_policy_value(left: Any, right: Any) -> bool:
+        if isinstance(left, bool) or isinstance(right, bool):
+            return isinstance(left, bool) and isinstance(right, bool) and left is right
+        try:
+            left_number = float(left)
+            right_number = float(right)
+        except (TypeError, ValueError, OverflowError):
+            return left == right
+        return (
+            math.isfinite(left_number)
+            and math.isfinite(right_number)
+            and abs(left_number - right_number) <= 1e-9
+        )
+
+    def _adaptive_policy_parameter_error(
+        self,
+        family: str,
+        params: dict[str, Any],
+        parent_version: str,
+    ) -> str | None:
+        """Validate learned policy bounds/relationships before changing ACTIVE status."""
+        if family == "strategy_core":
+            defaults = CORE_DEFAULTS
+            bounds = {**CORE_ENTRY_POLICY_BOUNDS, **CORE_EXIT_POLICY_BOUNDS}
+        elif family == "strategy_tactical":
+            defaults = TACTICAL_DEFAULTS
+            bounds = TACTICAL_POLICY_BOUNDS
+        else:
+            return "UNSUPPORTED_POLICY_FAMILY"
+
+        parent_params: dict[str, Any] = {}
+        if parent_version:
+            parent = self.db.one(
+                "SELECT parameters_json FROM model_versions WHERE version=? AND family=?",
+                (parent_version, family),
+            )
+            if parent:
+                try:
+                    decoded = json.loads(parent.get("parameters_json") or "{}")
+                    if isinstance(decoded, dict):
+                        parent_params = decoded
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return "INVALID_PARENT_PARAMETERS"
+
+        # Start from validated defaults, then the same-family parent, then the
+        # candidate. Missing legacy keys use defaults; they are never treated as 0.
+        effective = dict(defaults)
+        effective.update({key: value for key, value in parent_params.items() if key in defaults})
+        effective.update({key: value for key, value in params.items() if key in defaults})
+
+        for key, (low, high) in bounds.items():
+            try:
+                value = float(effective[key])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return f"INVALID_PARAMETER:{key}"
+            if not math.isfinite(value) or not low <= value <= high:
+                return f"PARAMETER_OUT_OF_BOUNDS:{key}"
+            if key == "tactical_max_hold_seconds" and not value.is_integer():
+                return f"PARAMETER_MUST_BE_INTEGER:{key}"
+
+        if family == "strategy_core":
+            edge = float(effective["strategy_min_edge_bps"])
+            confidence = float(effective["strategy_min_confidence"])
+            adaptive_floor = float(effective["strategy_adaptive_edge_floor_bps"])
+            adaptive_confidence = float(effective["strategy_adaptive_min_confidence"])
+            if adaptive_floor > edge:
+                return "CORE_ADAPTIVE_EDGE_FLOOR_EXCEEDS_BASE_EDGE"
+            if adaptive_confidence < confidence:
+                return "CORE_ADAPTIVE_CONFIDENCE_BELOW_BASE_CONFIDENCE"
+            if float(effective["strategy_adaptive_cost_ratio"]) < 1.10:
+                return "CORE_COST_RATIO_BELOW_SAFETY_FLOOR"
+            stop = float(effective["strategy_stop_loss_pct"])
+            partial = float(effective["strategy_partial_profit_trigger_pct"])
+            lock = float(effective["strategy_profit_lock_trigger_pct"])
+            floor = float(effective["strategy_profit_lock_floor_pct"])
+            if not (stop < partial <= lock and floor < lock):
+                return "CORE_EXIT_POLICY_RELATIONSHIP_INVALID"
+
+        if family == "strategy_tactical":
+            minimum_volatility = float(effective["tactical_min_volatility_bps"])
+            maximum_volatility = float(effective["tactical_max_volatility_bps"])
+            if minimum_volatility >= maximum_volatility:
+                return "TACTICAL_VOLATILITY_BAND_INVALID"
+            if float(effective["tactical_stop_loss_pct"]) >= float(
+                effective["tactical_take_profit_pct"]
+            ):
+                return "TACTICAL_STOP_MUST_BE_BELOW_TARGET"
+
+            # These are safety/operation controls, not learnable policy parameters.
+            # A candidate can tune entry/exit behaviour, but cannot silently raise
+            # the position ceiling or toggle adaptive gating through its model JSON.
+            for key in set(defaults) - LEARNED_TACTICAL_KEYS:
+                expected = parent_params.get(key, defaults[key])
+                proposed = params.get(key, expected)
+                if not self._same_policy_value(proposed, expected):
+                    return f"IMMUTABLE_TACTICAL_PARAMETER_CHANGED:{key}"
+
+        return None
+
     def promote_adaptive_policy(self, version: str, minimum_samples: int = 60) -> bool:
         """Promote a bounded policy-controller result without mislabeling it as a backtest."""
         row = self.db.one(
@@ -196,6 +306,24 @@ class ModelRegistry:
                 {"reason": "POLICY_QUALITY_GATE_FAILED", "minimum_samples": minimum_samples},
             )
             return False
+        parameter_error = self._adaptive_policy_parameter_error(
+            str(row["family"]),
+            params,
+            str(row.get("parent_version") or ""),
+        )
+        if parameter_error:
+            self.db.learning_event(
+                "ADAPTIVE_POLICY_NOT_PROMOTED",
+                version,
+                {
+                    "reason": "POLICY_PARAMETER_CONTRACT_FAILED",
+                    "detail": parameter_error,
+                    "family": str(row["family"]),
+                    "kind": str(kind),
+                },
+            )
+            return False
+
         # Path-based exit candidates need their own holdout quality gate. Entry-policy
         # candidates keep their existing bounded-controller contract.
         if kind in {"path_replay_exit_policy", "path_replay_core_exit_policy"}:

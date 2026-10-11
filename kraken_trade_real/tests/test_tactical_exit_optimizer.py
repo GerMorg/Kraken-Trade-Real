@@ -222,6 +222,38 @@ def test_registry_rejects_tactical_reversal_threshold_outside_hard_bounds(db):
     assert registry.active("strategy_tactical") != "exit-policy-reversal-out-of-bounds"
 
 
+def test_registry_rejects_invalid_tactical_volatility_band(db):
+    registry = ModelRegistry(db)
+    params = dict(TACTICAL_DEFAULTS)
+    # Both values are individually within their bounds, but the band is inverted.
+    params["tactical_min_volatility_bps"] = 50.0
+    params["tactical_max_volatility_bps"] = 25.0
+    registry.register_candidate(
+        "exit-policy-invalid-volatility-band",
+        "strategy_tactical",
+        registry.active("strategy_tactical"),
+        params,
+        {"kind": "bounded_online_controller", "samples": 60},
+    )
+    assert registry.promote_adaptive_policy("exit-policy-invalid-volatility-band") is False
+    assert registry.active("strategy_tactical") != "exit-policy-invalid-volatility-band"
+
+
+def test_registry_rejects_tactical_candidate_changing_immutable_position_cap(db):
+    registry = ModelRegistry(db)
+    params = dict(TACTICAL_DEFAULTS)
+    params["tactical_position_limit_pct"] = 81.0
+    registry.register_candidate(
+        "policy-changed-position-cap",
+        "strategy_tactical",
+        registry.active("strategy_tactical"),
+        params,
+        {"kind": "bounded_online_controller", "samples": 60},
+    )
+    assert registry.promote_adaptive_policy("policy-changed-position-cap") is False
+    assert registry.active("strategy_tactical") != "policy-changed-position-cap"
+
+
 def test_registry_promotes_exit_candidate_only_with_validated_holdout(db):
     registry = ModelRegistry(db)
     params = dict(TACTICAL_DEFAULTS)

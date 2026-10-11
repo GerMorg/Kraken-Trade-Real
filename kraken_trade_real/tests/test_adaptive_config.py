@@ -4,7 +4,14 @@ import json
 from types import SimpleNamespace
 from decimal import Decimal
 
-from app.config.adaptive import AdaptiveConfig, CORE_DEFAULTS
+from app.config.adaptive import (
+    AdaptiveConfig,
+    CORE_DEFAULTS,
+    CORE_ENTRY_POLICY_BOUNDS,
+    CORE_EXIT_POLICY_BOUNDS,
+    LEARNED_TACTICAL_KEYS,
+    TACTICAL_POLICY_BOUNDS,
+)
 from app.config.settings import Config
 from app.learning.optimizer import AdaptiveParameterOptimizer
 from app.learning.registry import ModelRegistry
@@ -85,6 +92,42 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
     assert config.strategy_profit_lock_floor_pct == 4.0
     assert config.as_dict()["strategy_min_edge_bps"] == 33.0
 
+
+
+def test_runtime_bounds_cover_every_learned_policy_parameter():
+    assert set(CORE_ENTRY_POLICY_BOUNDS) | set(CORE_EXIT_POLICY_BOUNDS) == set(CORE_DEFAULTS)
+    assert set(TACTICAL_POLICY_BOUNDS) == LEARNED_TACTICAL_KEYS
+
+
+def test_registry_rejects_core_policy_value_outside_central_bounds(db):
+    registry = ModelRegistry(db)
+    active_before = registry.active("strategy_core")
+    params = dict(CORE_DEFAULTS)
+    params["strategy_min_edge_bps"] = 80.01
+    registry.register_candidate(
+        "core-policy-out-of-bounds",
+        "strategy_core",
+        active_before,
+        params,
+        {
+            "kind": "bounded_core_outcome_controller",
+            "samples": 60,
+            "previous_samples": 30,
+            "recent_samples": 30,
+            "action": "TIGHTEN",
+            "previous_mean_verified_net_return_bps": -30.0,
+            "recent_mean_verified_net_return_bps": -70.0,
+            "recent_mean_after_expected_cost_bps": -70.0,
+            "previous_mean_after_expected_cost_bps": -30.0,
+            "recent_positive_verified_net_rate": 0.0,
+            "data_basis": "ledger_verified_non_margin_spot_net_return_bps",
+            "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
+            "exchange_fee_estimates_used": False,
+            "verified_net_pnl_used": True,
+        },
+    )
+    assert registry.promote_adaptive_policy("core-policy-out-of-bounds") is False
+    assert registry.active("strategy_core") == active_before
 
 
 def test_decision_engine_uses_regime_specific_confidence_scale():
