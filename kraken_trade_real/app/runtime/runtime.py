@@ -15,6 +15,7 @@ from app.portfolio.reconcile import (
     minimum_orderable_spot_quantity,
     resolve_spot_cash_reduction_quantity,
 )
+from app.portfolio.sizing import exchange_order_minimum_violation
 from app.domain.symbols import canonical_asset, resolve_instrument_symbol
 from app.domain.states import RuntimeStage
 from app.monitoring.audit import AuditLogger
@@ -1586,6 +1587,35 @@ class TradingRuntime:
                             position_retained=True,
                             marked_closed=False,
                             retry_when_orderable=True,
+                        )
+                        continue
+                if not decision.reduce_only and not full_margin_settlement:
+                    reference_price = (
+                        snap.ask if execution_direction.value == "LONG" else snap.bid
+                    )
+                    if reference_price is None or reference_price <= 0:
+                        reference_price = snap.price
+                    minimum_violation = exchange_order_minimum_violation(
+                        instrument, quantity, reference_price
+                    )
+                    if minimum_violation is not None:
+                        reason = str(minimum_violation.get("reason") or "ORDER_BELOW_MINIMUM")
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason] = no_action_reasons.get(reason, 0) + 1
+                        self.audit.emit(
+                            "CYCLE_ORDER_BELOW_MINIMUM",
+                            "INFO",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            reason=reason,
+                            **{
+                                key: value for key, value in minimum_violation.items()
+                                if key != "reason"
+                            },
+                            instrument_id=str(instrument.instrument_id),
+                            current_position_eur=str(decision.current_position_eur),
+                            target_position_eur=str(decision.target_position_eur),
+                            action="SKIP_WITHOUT_ROUNDING_UP_OR_EXCEEDING_RISK_BUDGET",
                         )
                         continue
                 cash_budget_order = (
