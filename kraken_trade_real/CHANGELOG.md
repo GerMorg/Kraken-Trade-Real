@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.67
+
+- Allow strictly valid reduce-only exits to proceed when portfolio equity is zero or negative, so an extreme loss or degraded valuation cannot trap an existing position behind the equity-positive gate.
+- Keep new entries and invalid reduce-only requests blocked; the exception requires an existing nonzero position, a smaller target absolute exposure and no sign flip.
+- Add regression tests for long/short risk reductions under depleted equity and for invalid flips/new risk.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.67.
+
 ## 0.1.66
 
 - Derive Normal cash-Spot mark-to-market PnL from app-owned FIFO inventory only when the complete wallet quantity exactly matches unleveraged, single-quote-pair inventory.
