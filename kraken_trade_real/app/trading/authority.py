@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 import time
 import threading
 from typing import Any, Iterable
@@ -536,6 +537,142 @@ class TradingAuthority:
         with self._submission_lock:
             return self._submit_locked(intent, market)
 
+    @staticmethod
+    def _submission_error_class(error_text: str) -> tuple[str, str]:
+        """Classify deterministic exchange rejections without changing retry behaviour."""
+        error = str(error_text or "").lower()
+        if "insufficient funds" in error:
+            return (
+                "INSUFFICIENT_FUNDS",
+                "REFRESH_BALANCE_MARGIN_AND_OPEN_ORDER_HOLDS_BEFORE_RETRY",
+            )
+        if "invalid arguments" in error:
+            return "INVALID_ARGUMENTS", "REVIEW_EXCHANGE_API_ARGUMENTS;DO_NOT_BLINDLY_RETRY"
+        if "min order" in error or "volume minimum" in error:
+            return "ORDER_BELOW_EXCHANGE_MINIMUM", "REFRESH_INSTRUMENT_MINIMUMS_AND_REQUANTIZE"
+        if "rate limit" in error or "throttled" in error:
+            return "RATE_LIMITED", "RETRY_ONLY_AFTER_RATE_LIMIT_WINDOW"
+        return "KRAKEN_DETERMINISTIC_REJECTION", "REVIEW_EXCHANGE_ERROR_AND_ORDER_CONTEXT"
+
+    def _intent_audit_context(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
+        """Safe structured facts for diagnosing order rejections; never includes credentials."""
+        quantity = D(str(intent.quantity))
+        reference_price = intent.limit_price
+        if reference_price is None or D(str(reference_price or "0")) <= 0:
+            reference_price = (
+                getattr(market, "ask", None)
+                if str(intent.side).lower() == "buy"
+                else getattr(market, "bid", None)
+            ) or getattr(market, "price", None)
+        notional_quote: str | None = None
+        try:
+            price_value = D(str(reference_price or "0"))
+            if quantity > 0 and price_value > 0:
+                notional_quote = str(quantity * price_value)
+        except (ArithmeticError, TypeError, ValueError):
+            notional_quote = None
+
+        context: dict[str, Any] = {
+            "intent_id": str(intent.intent_id),
+            "client_order_id": str(intent.client_order_id),
+            "decision_id": str(intent.decision_id),
+            "symbol": str(intent.instrument.symbol),
+            "instrument_id": str(intent.instrument.instrument_id),
+            "base_asset": str(intent.instrument.base),
+            "quote_asset": str(intent.instrument.quote),
+            "venue": str(intent.instrument.venue),
+            "product_type": str(getattr(intent.instrument.product_type, "value", "")),
+            "instrument_tradeable": bool(intent.instrument.tradeable),
+            "instrument_margin_available": bool(intent.instrument.margin_available),
+            "instrument_max_leverage": str(intent.instrument.max_leverage),
+            "instrument_min_order_qty": str(intent.instrument.min_order_qty),
+            "instrument_min_cost": str(intent.instrument.min_cost),
+            "side": str(intent.side).lower(),
+            "direction": str(getattr(intent.direction, "value", intent.direction)),
+            "order_type": str(intent.order_type),
+            "quantity": str(quantity),
+            "limit_price": str(intent.limit_price) if intent.limit_price is not None else None,
+            "reference_price": str(reference_price) if reference_price is not None else None,
+            "estimated_notional_quote": notional_quote,
+            "leverage": str(intent.leverage),
+            "margin": bool(intent.margin),
+            "reduce_only": bool(intent.reduce_only),
+            "post_only": bool(intent.post_only),
+            "expected_edge_bps": str(intent.expected_edge_bps),
+        }
+        try:
+            decision = self.db.one(
+                """SELECT target_notional_eur,leverage,rationale_json
+                   FROM decisions WHERE decision_id=?""",
+                (intent.decision_id,),
+            )
+            if decision:
+                context["decision_target_notional_eur"] = str(
+                    decision.get("target_notional_eur") or "0"
+                )
+                context["decision_leverage"] = str(decision.get("leverage") or "1")
+                try:
+                    rationale = json.loads(decision.get("rationale_json") or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    rationale = {}
+                if isinstance(rationale, dict):
+                    for source, target in (
+                        ("current_position_eur", "current_position_eur"),
+                        ("target_position_eur", "target_position_eur"),
+                        ("trade_notional_eur", "decision_trade_notional_eur"),
+                        ("target_position_usd", "target_position_usd"),
+                    ):
+                        if rationale.get(source) is not None:
+                            context[target] = str(rationale[source])
+                    context["risk_profile"] = str(rationale.get("risk_profile") or "core")
+                    for key in ("position_management_action", "rebalance_reason", "edge_tier"):
+                        if rationale.get(key) is not None:
+                            context[key] = str(rationale[key])
+        except Exception:
+            # Diagnostics must never be able to block risk checks or live order submission.
+            context["decision_context_available"] = False
+        return context
+
+    def _record_submission_rejection(
+        self,
+        intent: OrderIntent,
+        market: Any,
+        error_text: str,
+        *,
+        error_type: str,
+        venue: str | None = None,
+        extra_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        error_class, suggested_action = self._submission_error_class(error_text)
+        context = self._intent_audit_context(intent, market)
+        context.update({
+            "error_type": str(error_type),
+            "error": str(error_text)[:700],
+            "error_class": error_class,
+            "suggested_action": suggested_action,
+        })
+        if venue:
+            context["venue"] = venue
+        if extra_context:
+            context.update(extra_context)
+        self.audit.emit("ORDER_REJECTED_EXCHANGE", "WARNING", **context)
+        try:
+            self.db.event("ORDER_SUBMISSION_REJECTED", "WARNING", context)
+        except Exception as exc:
+            # Persistence of diagnostics is best effort; preserve the exchange result.
+            context["diagnostic_persist_error_type"] = type(exc).__name__
+            try:
+                self.audit.emit(
+                    "ORDER_SUBMISSION_DIAGNOSTIC_PERSIST_FAILED",
+                    "WARNING",
+                    symbol=str(intent.instrument.symbol),
+                    error_type=type(exc).__name__,
+                )
+            except Exception as audit_exc:
+                # This is telemetry about a telemetry failure, not an order failure.
+                context["diagnostic_audit_error_type"] = type(audit_exc).__name__
+        return {"error_class": error_class, "suggested_action": suggested_action, **context}
+
     def _submit_locked(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
         self.db.save_order_intent(intent)
         if not is_valid_kraken_client_order_id(intent.client_order_id):
@@ -619,19 +756,20 @@ class TradingAuthority:
                         kraken_order_id=order_id,
                         last_error=error_text,
                     )
-                    self.audit.emit(
-                        "ORDER_REJECTED_EXCHANGE",
-                        "WARNING",
-                        intent_id=intent.intent_id,
+                    rejection = self._record_submission_rejection(
+                        intent,
+                        market,
+                        error_text,
+                        error_type="KrakenFuturesSendStatusRejected",
                         venue="futures",
-                        exchange_status=exchange_status,
-                        error=error_text,
+                        extra_context={"exchange_status": exchange_status},
                     )
                     return {
                         "state": OrderState.REJECTED.value,
                         "reason": "KRAKEN_ORDER_REJECTED",
                         "exchange_status": exchange_status,
                         "exchange_error": error_text,
+                        "error_class": rejection["error_class"],
                         "reconciled": True,
                     }
                 if exchange_status in {"cancelled", "canceled"}:
@@ -775,17 +913,18 @@ class TradingAuthority:
                 OrderState.REJECTED.value,
                 last_error=error_text,
             )
-            self.audit.emit(
-                "ORDER_REJECTED_EXCHANGE",
-                "WARNING",
-                intent_id=intent.intent_id,
+            rejection = self._record_submission_rejection(
+                intent,
+                market,
+                error_text,
                 error_type=type(exc).__name__,
-                error=error_text,
             )
             return {
                 "state": OrderState.REJECTED.value,
                 "reason": "KRAKEN_ORDER_REJECTED",
                 "exchange_error": error_text,
+                "error_class": rejection["error_class"],
+                "suggested_action": rejection["suggested_action"],
                 "reconciled": True,
             }
 
