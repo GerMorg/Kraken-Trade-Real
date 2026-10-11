@@ -609,7 +609,9 @@ class TradingAuthority:
                         base_asset=str(instrument.base or ""),
                         raw_payload=enriched_payload,
                     )
-                    if not inserted and attribution["status"] in {"LEDGER_VERIFIED", "ZERO_FEE_REPORTED"}:
+                    if not inserted and attribution["status"] in {
+                        "LEDGER_VERIFIED", "ZERO_FEE_REPORTED", "MARGIN_LEDGER_VERIFIED"
+                    }:
                         self.db.enrich_attributed_fill_fee(
                             order_id=exchange_order_id,
                             trade_id=str(trade_id),
