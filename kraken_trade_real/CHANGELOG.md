@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.75
+
+- Add an early exchange-minimum gate for new/increased positions so quantities below Kraken's minimum quantity or Spot minimum quote cost are skipped before an order intent is created.
+- Emit `CYCLE_ORDER_BELOW_MINIMUM` with the exact quantity/cost shortfall and keep risk budgets unchanged; never round an order upward to force acceptance.
+- Keep existing reduce-only dust/exit handling and the Futures contract-quantity semantics separate.
+- Add regression tests for quantity, Spot minimum cost, Futures and invalid quantity cases.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.75.
+
 ## 0.1.74
 
 - Fix repeated Spot fill-history sync failures: Kraken TradesHistory uses `ofs` pagination and does not support the previously sent `with_cursor`, `cursor` or `limit` parameters.
