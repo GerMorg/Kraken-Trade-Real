@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.71
+
+- Keep learned Tactical expected-move thresholds strictly above configured round-trip fee, spread, slippage and safety-buffer assumptions.
+- Enforce the same invariant in the runtime adaptive overlay, the online Tactical optimizer and central model promotion so legacy/corrupt policies cannot undercut cost floors.
+- Add regression tests for configured fee changes, unsafe model candidates and positive-performance policy relaxation at the cost boundary.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent to 0.1.71.
+
 ## 0.1.70
 
 - Allow Normal entry-policy promotion to use only explicitly verified quote-ledger net outcomes from non-margin Spot trades and eligible short-hold Spot-Margin episodes; estimates, unlinked fees and rollover-exposed episodes remain excluded.
