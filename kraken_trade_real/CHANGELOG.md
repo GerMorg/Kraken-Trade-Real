@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.79
+
+- Make Austrian Altvermögen/Neuvermögen attribution inventory-based instead of inferring the tax regime from disposal date.
+- Mark disposals with legacy or mixed Alt-/Neuvermögen inventory as incomplete for manual review, without fabricating a 27.5% gain, consuming ambiguous lots or asserting crypto-to-crypto tax neutrality.
+- Restrict automatic tax-neutral crypto-to-crypto cost-basis rollover to tracked Neuvermögen from 1 March 2022 onward; pre-effective-date and Altvermögen swaps remain explicitly review-required.
+- Add regression tests for old holdings sold after 2021, mixed-regime inventory, and historical/legacy crypto-to-crypto swaps.
+- Bump Home Assistant app, package, container and Kraken User-Agent versions to 0.1.79.
+
+
 ## 0.1.78
 
 - Fix a Tactical risk-gate inconsistency: the strategy-specific position limit can no longer raise the immutable portfolio-wide net-exposure cap.
