@@ -710,3 +710,30 @@ def test_adaptive_config_bounds_registry_market_filter_values():
 
     assert config.market_min_liquidity_eur == 1000.0
     assert config.market_max_spread_bps == 20.0
+
+def test_registry_rejects_core_market_filter_values_outside_hard_bounds(db):
+    registry = ModelRegistry(db)
+    parent = registry.active("strategy_core")
+    metrics = {
+        "kind": "bounded_core_outcome_controller",
+        "samples": 60,
+        "previous_samples": 30,
+        "recent_samples": 30,
+        "action": "TIGHTEN",
+        "previous_mean_verified_net_return_bps": -30.0,
+        "recent_mean_verified_net_return_bps": -70.0,
+        "recent_positive_verified_net_rate": 0.0,
+        "data_basis": "ledger_verified_non_margin_spot_net_return_bps",
+        "data_scope": "APP_MANAGED_NON_MARGIN_SPOT_VERIFIED_NET_ONLY",
+        "exchange_fee_estimates_used": False,
+        "verified_net_pnl_used": True,
+    }
+    for version, key, value in (
+        ("core-market-liquidity-too-low", "market_min_liquidity_eur", 49.99),
+        ("core-market-spread-too-wide", "market_max_spread_bps", 80.01),
+    ):
+        params = dict(CORE_DEFAULTS)
+        params[key] = value
+        registry.register_candidate(version, "strategy_core", parent, params, metrics)
+        assert registry.promote_adaptive_policy(version) is False
+        assert registry.active("strategy_core") == parent
