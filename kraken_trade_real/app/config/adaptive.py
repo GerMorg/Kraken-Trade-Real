@@ -79,7 +79,7 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_cooldown_seconds": 120,
     "tactical_reversal_exit_bps": 120.0,
     "tactical_adaptive_entry_enabled": True,
-    "tactical_adaptive_min_expected_move_bps": 230.0,
+    "tactical_adaptive_min_expected_move_bps": 321.0,
     "tactical_adaptive_min_confidence": 0.75,
     "tactical_adaptive_min_net_edge_bps": 15.0,
     "tactical_context_block_bps": 80.0,
@@ -266,7 +266,7 @@ class AdaptiveConfig:
             ),
         )
         merged["tactical_adaptive_min_expected_move_bps"] = max(
-            float(merged.get("tactical_adaptive_min_expected_move_bps", 230.0)),
+            float(merged.get("tactical_adaptive_min_expected_move_bps", 321.0)),
             adaptive_move_floor,
         )
         merged["tactical_min_expected_move_bps"] = max(
