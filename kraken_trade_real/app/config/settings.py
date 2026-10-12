@@ -334,7 +334,7 @@ class Config:
             tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 1000.0),
             tactical_context_block_bps=f("tactical_context_block_bps", 80.0, 0.0, 5000.0),
             tactical_stop_loss_pct=f("tactical_stop_loss_pct", 1.0, 0.1, 20.0),
-            tactical_take_profit_pct=f("tactical_take_profit_pct", 2.2, 0.2, 30.0),
+            tactical_take_profit_pct=f("tactical_take_profit_pct", 4.1, 0.2, 30.0),
             tactical_trailing_trigger_bps=f("tactical_trailing_trigger_bps", 100.0, 1.0, 5000.0),
             tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 20.0),
             tactical_max_hold_seconds=i("tactical_max_hold_seconds", 1800, 30),
