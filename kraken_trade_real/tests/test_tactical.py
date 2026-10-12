@@ -1073,3 +1073,30 @@ def test_tactical_price_sampling_sorts_out_of_order_input_and_rejects_nonfinite_
     assert sampled
     assert all(timestamp <= 1000.0 and price.is_finite() and price > 0 for timestamp, price in sampled)
     assert sampled == sorted(sampled, key=lambda point: point[0])
+
+
+
+def test_tactical_corrupt_stored_position_is_not_silently_deleted_or_reentered():
+    class CorruptDB(DummyDB):
+        def __init__(self):
+            self.deleted = []
+            self.saved = []
+        def tactical_positions(self):
+            return [{
+                "symbol": "BTC/USD", "venue": "spot", "direction": "SHORT",
+                "quantity": "0.1", "entry_price": "0", "peak_price": "100",
+                "trough_price": "90", "notional_eur": "10", "leverage": "2",
+                "opened_at": "1000", "entry_client_order_id": "bad-entry",
+                "setup_score": "200", "state": "OPEN",
+            }]
+        def delete_tactical_position(self, symbol):
+            self.deleted.append(symbol)
+        def save_tactical_position(self, *args, **kwargs):
+            self.saved.append(args)
+
+    db, audit = CorruptDB(), DummyAudit()
+    trader = TacticalTrader(cfg(), db, audit, None, DummyWS(), None, None, None, None)
+    assert "BTC/USD" not in trader._positions
+    assert "BTC/USD" in trader._invalid_position_symbols
+    assert db.deleted == []
+    assert any(event[0] == "TACTICAL_POSITION_RESTORE_FAILED" for event in audit.events)
