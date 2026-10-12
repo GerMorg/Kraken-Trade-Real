@@ -347,7 +347,7 @@ class Config:
             tactical_short_leverage=f("tactical_short_leverage", 2.0, 1.0, 5.0),
             tactical_order_confirm_seconds=i("tactical_order_confirm_seconds", 5, 1),
             tactical_adaptive_entry_enabled=b("tactical_adaptive_entry_enabled", True),
-            tactical_adaptive_min_expected_move_bps=f("tactical_adaptive_min_expected_move_bps", 230.0, 1.0, 10000.0),
+            tactical_adaptive_min_expected_move_bps=f("tactical_adaptive_min_expected_move_bps", 321.0, 1.0, 10000.0),
             tactical_adaptive_min_confidence=f("tactical_adaptive_min_confidence", 0.75, 0.5, 1.0),
             tactical_adaptive_min_net_edge_bps=f("tactical_adaptive_min_net_edge_bps", 15.0, 1.0, 1000.0),
             tactical_seed_history=b("tactical_seed_history", True),
