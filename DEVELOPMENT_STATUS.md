@@ -2,16 +2,16 @@
 
 Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.81 (PR pending)**  
+Main version: **0.1.81**  
 Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.81 (PR #92 pending)
+## Latest release — v0.1.81
 
 - Adds `PORTFOLIO_DRAWDOWN_BASIS` diagnostics for raw high-water-mark equity, peak timestamp, snapshot count, drawdown, and explicit `cash_flow_adjusted: false`. It does not change the 15% drawdown gate; cash-flow normalization is not yet implemented.
 - Realized attribution rebuild now reports reason counts for fill anomalies and estimate-only net outcomes, making missing fee evidence, quote mismatches and margin/rollover verification gaps diagnosable from logs.
-- Full PR CI must pass before merge; no live-trading risk limits were loosened.
+- PR #92 merged as `ed0bcf2dce2cc191087a682f25cd2c81bdf6bcd8`; all five PR checks and all five post-merge main checks passed. No live-trading risk limits were loosened.
 
 ## Previous release — v0.1.80
 
