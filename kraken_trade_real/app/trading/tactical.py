@@ -1046,6 +1046,11 @@ class TacticalTrader:
             "INFO",
             symbol=signal.symbol,
             direction=signal.direction.value,
+            order_side=intent.side,
+            requested_quantity=str(intent.quantity),
+            limit_price=str(intent.limit_price or ""),
+            estimated_net_edge_bps=str(signal.net_edge_bps),
+            estimated_round_trip_cost_bps=str(signal.expected_cost_bps),
             state=str(result.get("state", "")),
             reason=str(result.get("reason", "")),
             client_order_id=intent.client_order_id,
@@ -1065,6 +1070,22 @@ class TacticalTrader:
         self._open_position(
             decision, signal, fill_qty, fill_price, intent.client_order_id, now,
             requested_quantity=intent.quantity, notional_eur=actual_notional,
+        )
+        self.audit.emit(
+            "TACTICAL_LIVE_ENTRY_FILL_CONFIRMED",
+            "INFO",
+            symbol=signal.symbol,
+            order_side=intent.side,
+            position_direction=signal.direction.value,
+            quantity=str(fill_qty),
+            fill_price=str(fill_price),
+            notional_eur=str(actual_notional),
+            quote_notional=str(fill_qty * fill_price),
+            estimated_move_bps=str(signal.expected_move_bps),
+            estimated_cost_bps=str(signal.expected_cost_bps),
+            estimated_net_edge_bps=str(signal.net_edge_bps),
+            client_order_id=intent.client_order_id,
+            fill_state=fill_state,
         )
         self.db.save_tactical_order_progress(
             intent.client_order_id, fill_qty, fill_price,
@@ -1198,9 +1219,17 @@ class TacticalTrader:
                 )
 
             # Profit target arms trend-following instead of forcing a full close.
-            target_gain_bps = (
+            configured_target_gain_bps = (
                 D(str(getattr(self.config, "tactical_take_profit_pct", 2.2)))
                 * D("100")
+            )
+            # Do not arm the trailing regime below the estimated round-trip
+            # cost floor plus its configured trailing distance. Otherwise a
+            # nominal target can disable the time stop before the position has
+            # reached a cost-covering gain.
+            target_gain_bps = max(
+                configured_target_gain_bps,
+                profit_floor_bps + trailing_stop_pct * D("100"),
             )
             if peak_gain >= target_gain_bps and position.state != "TRAILING":
                 position.state = "TRAILING"
@@ -1362,6 +1391,12 @@ class TacticalTrader:
             "TACTICAL_EXIT_ORDER_RESULT",
             "INFO",
             symbol=position.symbol,
+            position_direction=position.direction.value,
+            order_side=intent.side,
+            quantity=str(intent.quantity),
+            entry_price=str(position.entry_price),
+            observed_price=str(price),
+            limit_price=str(intent.limit_price or ""),
             exit_reason=reason,
             state=str(result.get("state", "")),
             reason_result=str(result.get("reason", "")),
@@ -1770,10 +1805,17 @@ class TacticalTrader:
             "INFO",
             symbol=position.symbol,
             direction=position.direction.value,
+            order_side=("sell" if position.direction == Direction.LONG else "buy"),
+            quantity=str(fill_qty),
+            entry_price=str(position.entry_price),
+            exit_price=str(fill_price),
+            notional_eur=str(closed_notional),
             exit_reason=reason,
             gross_pnl_eur=str(gross),
-            fees_eur=str(fees),
-            net_pnl_eur=str(net),
+            estimated_fees_eur=str(fees),
+            estimated_net_pnl_eur=str(net),
+            estimated_net_pnl_bps=str((net / closed_notional * D("10000")) if closed_notional > 0 else D("0")),
+            client_order_id=client_order_id,
             hold_seconds=round(now - position.opened_at, 2),
         )
 
