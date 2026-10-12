@@ -2,17 +2,31 @@
 
 Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.83**  
-Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
+Main version: **0.1.85**  
+Latest runtime release commit (v0.1.85): `c1d629f6d14273d71fcb7f968dda3576b10bf826`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.83
+## Latest release — v0.1.85
 
-- Tactical live entries now emit a dedicated fill-confirmed event showing BUY/SELL, position direction, filled quantity/price, notional, signal edge/cost and client order ID. Exit events now include order side, entry/exit prices, quantity, exit reason and estimated net result.
-- `CYCLE_COMPLETED.orders` is explicitly marked `CORE_STRATEGY_ONLY`; Tactical runs independently and must be followed through its own events.
-- The trailing regime only arms once the estimated cost floor plus trailing distance is reached, avoiding a lower nominal target disabling the time stop before the trade is cost-covering.
-- PR #96 merged as `35a2edf7ae9198049a164a31f84e3f74e0ccb87c`; all five PR checks passed. Post-merge main CI is being verified. No risk limits were relaxed.
+- Completed a further Core/Tactical decision-tree audit with emphasis on short-return arithmetic, cost/risk economics, market-data boundaries and learner/runtime consistency.
+- Tactical SHORT returns and peak gains are measured against entry notional (`1 - exit / entry`), both in live management and replay. Live exits are valued at the executable side (bid for LONG, ask for SHORT).
+- Tactical entry gates reject crossed books, non-finite/invalid quotes, negative reported spreads, stale/future quote timestamps, invalid volume ratios, and malformed/non-finite history points. Calculated quote spread is used if it is wider than the supplied spread field. Order-book imbalance ignores invalid levels; out-of-order price samples are sorted.
+- Tactical restored position rows are checked for valid numeric state. Corrupt rows are preserved and reported rather than silently deleted; new entries on that symbol/base asset are blocked until reconciliation.
+- Tactical's modeled expected net reward must cover the planned stop distance plus another cost reserve. Default gross expected-move floor is 600 bps; target/trailing activation defaults to 6.5%, while cost-based floors rise with fees, spread, slippage, financing and stop-risk assumptions. This is deliberately conservative and can lead to fewer entries; it is not a profitability guarantee.
+- Core now reuses the calibrated confidence at the final risk gate and safely uses neutral calibration when learned values are malformed/non-finite.
+- PR #99 merged as `c1d629f6d14273d71fcb7f968dda3576b10bf826` after all five PR CI checks passed: Quality/tests, Security, Compile, Home Assistant structure and Container build. Post-merge main CI is being verified separately. No immutable account-risk limits were relaxed.
+
+## Previous release — v0.1.84
+
+- Corrected Tactical SHORT PnL, favourable excursion and realized gross-PnL math; exit decisions use executable bid/ask prices. Kept the maximum holding-time exit active after trailing mode and aligned replay with live trailing activation.
+- Reused Core calibrated confidence at the final risk gate; malformed/non-finite learned confidence falls back to neutral.
+- PR #98 merged as `90de8ce7e0cca43877d508521b3ec7b02faf7875`; all five PR CI jobs and post-merge main CI passed. No global risk gates were relaxed.
+
+## Previous release — v0.1.83
+
+- Tactical live entries and exits gained explicit fill/side/price/quantity/reason/economics telemetry. `CYCLE_COMPLETED.orders` is explicitly `CORE_STRATEGY_ONLY`; Tactical orders are reported via their own events.
+- PR #96 merged as `35a2edf7ae9198049a164a31f84e3f74e0ccb87c`; all five CI checks passed.
 
 ## Previous release — v0.1.82
 
