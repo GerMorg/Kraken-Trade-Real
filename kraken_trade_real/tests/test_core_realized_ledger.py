@@ -305,7 +305,7 @@ def test_base_asset_fee_is_not_mislabeled_as_verified_quote_net(db):
         fee_currency="ZEUR", fee_attribution_status="LEDGER_VERIFIED",
     )
 
-    CoreSpotRealizedOutcomeLedger(db).rebuild()
+    result = CoreSpotRealizedOutcomeLedger(db).rebuild()
     outcome = db.one(
         "SELECT * FROM core_realized_outcomes WHERE opening_decision_id='D-B-ENTRY'"
     )
@@ -316,6 +316,7 @@ def test_base_asset_fee_is_not_mislabeled_as_verified_quote_net(db):
     # Estimated quote PnL is still available, with its estimate-only label.
     assert outcome["estimated_net_pnl_quote"] is not None
     assert outcome["fee_status"] == "QUOTE_ESTIMATE_ONLY"
+    assert result["unverified_net_reason_counts"]["ENTRY_FEE_NOT_QUOTE_DENOMINATED"] == 1
 
 
 

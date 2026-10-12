@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.82
+- Report when a ledger-verified fill fee is denominated in the base asset rather than the instrument quote asset, so estimate-only realized outcomes have an explicit cause.
+- Add regression coverage for non-quote-denominated fees in attribution diagnostics.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent versions to 0.1.82.
+
+
 ## 0.1.81
 - Add a drawdown-basis audit event with raw equity peak, peak timestamp, snapshot count and explicit disclosure that external cash flows are not normalized; preserve the immutable drawdown gate.
 - Emit attribution anomaly reason counts and per-leg reasons why realized net outcomes remain estimate-only.
