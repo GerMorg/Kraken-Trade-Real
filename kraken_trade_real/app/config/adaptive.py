@@ -270,7 +270,7 @@ class AdaptiveConfig:
             adaptive_move_floor,
         )
         merged["tactical_min_expected_move_bps"] = max(
-            float(merged.get("tactical_min_expected_move_bps", 280.0)),
+            float(merged.get("tactical_min_expected_move_bps", 350.0)),
             normal_move_floor,
         )
         with self._lock:
