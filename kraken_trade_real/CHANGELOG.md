@@ -3,7 +3,8 @@
 ## 0.1.84
 - Correct Tactical SHORT profit/loss, peak-gain and realized gross-PnL calculations to use returns against entry notional; evaluate exits at executable bid (LONG) / ask (SHORT) prices.
 - Keep Tactical maximum holding time effective even after trailing activation; align counterfactual exit replay with live trailing activation and maximum-hold rules.
-- Require the forecast net edge to cover at least the configured stop-loss distance after estimated round-trip costs; set conservative default gross-move floor to 350 bps and enforce this floor in config validation, adaptive policy bounds, and promotion.
+- Require the forecast net edge to cover at least the configured stop-loss distance after estimated round-trip costs; set the default gross-move floor to 350 bps.
+- Align the default trailing-entry target to 4.1%, so the nominal take-profit parameter matches the configured worst-case cost floor, stop-risk buffer and 0.7% trailing distance. Enforce cost/risk floors in config validation, adaptive policy refresh, optimizer candidates and promotion.
 - Reuse Core's calibrated confidence at the final risk gate; malformed/non-finite confidence calibration safely falls back to neutral.
 - Add regression cases for exact short stop-loss boundaries, executable bid/ask losses, linear short PnL, post-trailing time stop, live/replay alignment and calibrated confidence.
 - Align add-on, package, application, Docker and Kraken User-Agent version metadata at 0.1.84.
