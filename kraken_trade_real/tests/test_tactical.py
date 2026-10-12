@@ -1024,3 +1024,20 @@ def test_tactical_entry_rejects_nonfinite_quotes_and_ignores_bad_history_points(
     signal = trader._build_signal(instrument(), valid, 1000.0)
     assert signal is not None
     assert signal.direction == Direction.LONG
+
+
+
+def test_tactical_entry_requires_net_edge_to_cover_stop_risk_and_costs():
+    trader = TacticalTrader(
+        cfg(
+            tactical_stop_loss_pct=3.5,
+            tactical_min_expected_move_bps=600,
+            tactical_take_profit_pct=6.5,
+        ),
+        DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    # This breakout forecasts about 6.3% gross movement and clears costs alone,
+    # but at these costs its net edge is less than the 3.5% stop + cost budget.
+    signal = trader._build_signal(instrument(), market_state(direction="LONG"), 1000.0)
+    assert signal is None
+    assert trader._last_signal_reason == "EXPECTED_MOVE_OR_EDGE_TOO_SMALL"
