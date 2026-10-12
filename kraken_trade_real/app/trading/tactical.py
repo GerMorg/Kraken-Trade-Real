@@ -1179,7 +1179,12 @@ class TacticalTrader:
                 + max(D("0"), D(str(getattr(self.config, "tactical_safety_buffer_bps", 30))))
                 + financing_bps
             )
-            profit_floor_bps = estimated_round_trip_cost_bps + D("25")
+            stop_loss_pct = D(str(getattr(self.config, "tactical_stop_loss_pct", 1.0)))
+            # Only arm/hold a trailing winner when its protected exit still targets
+            # a net gain at least as large as the configured stop distance.
+            profit_floor_bps = estimated_round_trip_cost_bps + max(
+                D("25"), stop_loss_pct * D("100")
+            )
             trailing_activation_bps = max(
                 D(str(getattr(self.config, "tactical_trailing_trigger_bps", 100))),
                 profit_floor_bps + trailing_stop_pct * D("100"),
@@ -1283,7 +1288,7 @@ class TacticalTrader:
                 )
 
             reason = ""
-            if pnl_bps <= -D(str(getattr(self.config, "tactical_stop_loss_pct", 1.0))) * D("100"):
+            if pnl_bps <= -stop_loss_pct * D("100"):
                 reason = "STOP_LOSS"
             elif trailing_triggered:
                 reason = "TRAILING_STOP"
