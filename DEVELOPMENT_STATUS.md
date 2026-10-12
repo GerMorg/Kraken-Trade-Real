@@ -2,12 +2,17 @@
 
 Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.81**  
+Main version: **0.1.82 (PR pending)**  
 Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.81
+## Latest release — v0.1.82 (PR pending)
+
+- Adds explicit `ENTRY_FEE_NOT_QUOTE_DENOMINATED` / `EXIT_FEE_NOT_QUOTE_DENOMINATED` counts when an exchange-ledger fee is verified but paid in a non-quote currency. This closes a diagnostic blind spot for estimate-only realized outcomes.
+- Full CI must pass before merge; no risk gate or order behavior changes.
+
+## Previous release — v0.1.81
 
 - Adds `PORTFOLIO_DRAWDOWN_BASIS` diagnostics for raw high-water-mark equity, peak timestamp, snapshot count, drawdown, and explicit `cash_flow_adjusted: false`. It does not change the 15% drawdown gate; cash-flow normalization is not yet implemented.
 - Realized attribution rebuild now reports reason counts for fill anomalies and estimate-only net outcomes, making missing fee evidence, quote mismatches and margin/rollover verification gaps diagnosable from logs.
