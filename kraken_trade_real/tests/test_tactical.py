@@ -677,7 +677,7 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     )
     position = TacticalPosition(
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
-        quantity=D("0.1"), entry_price=D("100"), peak_price=D("104"),
+        quantity=D("0.1"), entry_price=D("100"), peak_price=D("104.2"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
         opened_at=0.0, entry_client_order_id="test-order", setup_score=D("250"),
         state="OPEN",
