@@ -100,6 +100,9 @@ class TacticalTrader:
         self._gemini_bps = D("0")
         self._portfolio: PortfolioState | None = None
         self._positions: dict[str, TacticalPosition] = {}
+        # Corrupt persisted positions are not managed as if their entry price were
+        # trustworthy; preserve the row and block new entries on the same asset.
+        self._invalid_position_symbols: set[str] = set()
         self._cooldown_until: float = 0.0
         self._last_run = 0.0
         self._last_signal: TacticalSignal | None = None
@@ -570,7 +573,9 @@ class TacticalTrader:
         with self._lock:
             candidates = list(self._candidates.values())
             portfolio = self._portfolio
-            active_position_symbols = tuple(self._positions)
+            active_position_symbols = tuple(self._positions) + tuple(
+                self._invalid_position_symbols
+            )
         if portfolio is None or portfolio.equity_eur <= 0:
             return
         if self._daily_loss_blocked(portfolio):
@@ -1154,6 +1159,26 @@ class TacticalTrader:
             if pending is not None:
                 # Do not issue a competing exit while a Tactical entry/exit can
                 # still fill; pending quantities are reconciled before management.
+                continue
+            numeric_values = (
+                position.quantity, position.entry_price, position.peak_price,
+                position.trough_price, position.notional_eur, position.leverage,
+            )
+            if (
+                not all(value.is_finite() for value in numeric_values)
+                or any(value <= 0 for value in numeric_values)
+                or position.leverage < D("1")
+                or not math.isfinite(position.opened_at)
+                or position.opened_at <= 0
+            ):
+                self._invalid_position_symbols.add(position.symbol)
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID",
+                    "ERROR",
+                    symbol=position.symbol,
+                    reason="INVALID_LOCAL_POSITION_STATE",
+                    action="SKIP_EXIT_MATH_AND_BLOCK_NEW_ENTRIES",
+                )
                 continue
             state = self._fresh_position_state(position, now)
             if state is None:
@@ -2142,7 +2167,32 @@ class TacticalTrader:
                     self._json_dict(row.get("entry_policy_json")),
                     self._json_dict(row.get("entry_context_json")),
                 )
+                numeric_values = (
+                    position.quantity, position.entry_price, position.peak_price,
+                    position.trough_price, position.notional_eur, position.leverage,
+                    position.setup_score,
+                )
+                if (
+                    not all(value.is_finite() for value in numeric_values)
+                    or any(value <= 0 for value in (
+                        position.quantity, position.entry_price, position.peak_price,
+                        position.trough_price, position.notional_eur, position.leverage,
+                    ))
+                    or position.leverage < D("1")
+                    or not math.isfinite(position.opened_at)
+                    or position.opened_at <= 0
+                ):
+                    raise ValueError("INVALID_STORED_POSITION_NUMERICS")
+                if position.state not in {"OPEN", "TRAILING"}:
+                    position.state = "OPEN"
+                    self.audit.emit(
+                        "TACTICAL_POSITION_STATE_NORMALIZED",
+                        "WARNING",
+                        symbol=position.symbol,
+                        reason="UNKNOWN_STORED_STATE",
+                    )
                 self._positions[position.symbol] = position
+                self._invalid_position_symbols.discard(position.symbol)
                 self.db.save_tactical_position(
                     position.symbol, position.venue, position.direction.value,
                     position.quantity, position.entry_price, position.peak_price,
@@ -2150,8 +2200,21 @@ class TacticalTrader:
                     position.opened_at, position.entry_client_order_id,
                     position.setup_score, position.state,
                 )
-            except Exception:
-                self.db.delete_tactical_position(str(row.get("symbol", "")))
+            except Exception as exc:
+                symbol = str(row.get("symbol", "") or "")
+                if symbol:
+                    self._invalid_position_symbols.add(symbol)
+                self.audit.emit(
+                    "TACTICAL_POSITION_RESTORE_FAILED",
+                    "ERROR",
+                    symbol=symbol,
+                    reason="POSITION_ROW_INVALID_OR_UNREADABLE",
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:240],
+                    action="BLOCK_NEW_ENTRIES_FOR_ASSET_AND_PRESERVE_ROW",
+                )
+                # Do not silently delete the only local record of a potentially
+                # live exchange position. Require reconciliation/repair instead.
 
     def _reconcile_pending(self) -> None:
         rows = self.db.query(
