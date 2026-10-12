@@ -1258,7 +1258,7 @@ class TacticalTrader:
 
             # Profit target arms trend-following instead of forcing a full close.
             configured_target_gain_bps = (
-                D(str(getattr(self.config, "tactical_take_profit_pct", 2.2)))
+                D(str(getattr(self.config, "tactical_take_profit_pct", 4.1)))
                 * D("100")
             )
             # Do not arm the trailing regime below the estimated round-trip
@@ -1763,7 +1763,7 @@ class TacticalTrader:
             ),
             "exit_policy_snapshot": {
                 "stop_loss_pct": str(getattr(self.config, "tactical_stop_loss_pct", 1)),
-                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 2.2)),
+                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 4.1)),
                 "trailing_trigger_bps": str(getattr(self.config, "tactical_trailing_trigger_bps", 100)),
                 "trailing_stop_pct": str(getattr(self.config, "tactical_trailing_stop_pct", 0.7)),
                 "max_hold_seconds": str(getattr(self.config, "tactical_max_hold_seconds", 1800)),
