@@ -352,7 +352,7 @@ def test_tactical_short_pnl_and_fees_use_positive_exposure():
     gross = TacticalTrader._trade_gross_pnl(
         Direction.SHORT, D("10"), D("100"), D("95")
     )
-    assert gross == D("10") * (D("100") / D("95") - D("1"))
+    assert gross == D("10") * (D("1") - D("95") / D("100"))
     trader = TacticalTrader(
         cfg(),
         DummyDB(),
