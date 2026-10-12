@@ -326,7 +326,7 @@ class Config:
             tactical_min_breakout_bps=f("tactical_min_breakout_bps", 25.0, 1.0, 5000.0),
             tactical_min_imbalance=f("tactical_min_imbalance", 0.10, 0.0, 1.0),
             tactical_max_spread_bps=f("tactical_max_spread_bps", 25.0, 0.1, 1000.0),
-            tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 280.0, 1.0, 10000.0),
+            tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 350.0, 1.0, 10000.0),
             tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 1000.0),
             tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 1000.0),
             tactical_margin_open_fee_bps=f("tactical_margin_open_fee_bps", 5.0, 0.0, 1000.0),
@@ -390,15 +390,19 @@ class Config:
             raise ValueError("tactical_short_leverage exceeds the global leverage ceiling")
         if cfg.tactical_stop_loss_pct >= cfg.tactical_take_profit_pct:
             raise ValueError("tactical stop-loss must be below take-profit")
-        minimum_cost = (
+        minimum_move_for_risk = (
             cfg.tactical_entry_fee_bps
             + cfg.tactical_exit_fee_bps
             + cfg.tactical_max_spread_bps
             + cfg.tactical_expected_slippage_bps
             + cfg.tactical_safety_buffer_bps
+            + cfg.tactical_margin_open_fee_bps
+            + cfg.tactical_stop_loss_pct * 100.0
         )
-        if cfg.tactical_min_expected_move_bps <= minimum_cost:
-            raise ValueError("tactical minimum expected move must clear configured costs")
+        if cfg.tactical_min_expected_move_bps <= minimum_move_for_risk:
+            raise ValueError(
+                "tactical minimum expected move must clear round-trip costs plus stop-loss risk"
+            )
         # Tactical may be configured in live-intent mode while global order
         # submission remains disabled. TradingAuthority is the final gate and
         # requires live_enabled=True and kill_switch=False for actual orders.
