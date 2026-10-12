@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 import signal
@@ -1095,6 +1096,37 @@ class TradingRuntime:
             # this decision pass. BalanceEx is refreshed only at defined points;
             # without this ledger, every candidate could reuse the same snapshot.
             cycle_quote_reserved: dict[str, D] = {}
+            # Treat accepted and ambiguous orders as provisional exposure for all
+            # remaining decisions in this cycle. Exchange balances/positions may
+            # not reflect an order yet, so a stale snapshot must not be reused.
+            cycle_target_reservations: dict[str, D] = {}
+            cycle_reserved_cash_eur = D("0")
+            cycle_reserved_margin_eur = D("0")
+
+            def cycle_risk_portfolio(base):
+                projected_positions = dict(base.positions)
+                for symbol, target in cycle_target_reservations.items():
+                    if target == 0:
+                        projected_positions.pop(symbol, None)
+                    else:
+                        projected_positions[symbol] = target
+                normalized_positions = {
+                    symbol: D(str(value)) for symbol, value in projected_positions.items()
+                    if D(str(value)) != 0
+                }
+                projected_gross = sum(
+                    (abs(value) for value in normalized_positions.values()), D("0")
+                )
+                projected_net = sum(normalized_positions.values(), D("0"))
+                return replace(
+                    base,
+                    positions=normalized_positions,
+                    gross_eur=projected_gross,
+                    net_eur=projected_net,
+                    cash_eur=D(str(base.cash_eur)) - cycle_reserved_cash_eur,
+                    margin_used_eur=D(str(base.margin_used_eur)) + cycle_reserved_margin_eur,
+                )
+
             def available_spot_balance(asset: str) -> D:
                 reader = getattr(self.portfolio, "available_cash_balance", None)
                 if callable(reader):
@@ -1480,9 +1512,10 @@ class TradingRuntime:
                         fx_cost_bps=str(fx_cost_bps),
                     )
 
+                risk_portfolio = cycle_risk_portfolio(portfolio)
                 risk=self.risk.evaluate(
                     decision,
-                    portfolio,
+                    risk_portfolio,
                     snap,
                     margin_account,
                 )
@@ -1528,7 +1561,7 @@ class TradingRuntime:
                         if decision.execution_direction else ""
                     ),
                     reduce_only=decision.reduce_only,
-                    **_risk_diagnostic_context(decision, portfolio, risk, self.config),
+                    **_risk_diagnostic_context(decision, risk_portfolio, risk, self.config),
                 )
                 if not risk.allowed:
                     risk_rejected+=1
@@ -1830,9 +1863,34 @@ class TradingRuntime:
                 self._watchdog_heartbeat(cycle_id, stage)
                 self.learning.record_order_outcome(intent.client_order_id,result)
                 if result.get("state") in {
-                    "ACKNOWLEDGED","LIVE","PARTIALLY_FILLED","FILLED"
+                    "ACKNOWLEDGED", "LIVE", "PARTIALLY_FILLED", "FILLED",
+                    "UNKNOWN_RECONCILING",
                 }:
-                    placed+=1
+                    placed += 1
+                    target = D(str(decision.target_position_eur))
+                    current = D(str(decision.current_position_eur))
+                    same_side = current == 0 or target == 0 or current * target > 0
+                    incremental_notional = (
+                        max(D("0"), abs(target) - abs(current))
+                        if same_side else abs(target)
+                    )
+                    cycle_target_reservations[instrument.symbol] = target
+                    if incremental_notional > 0:
+                        capital_required = (
+                            incremental_notional / lev if lev > 1 else incremental_notional
+                        )
+                        cycle_reserved_cash_eur += capital_required
+                        if lev > 1:
+                            cycle_reserved_margin_eur += incremental_notional / lev
+                    self.audit.emit(
+                        "CYCLE_RISK_EXPOSURE_RESERVED", "INFO",
+                        cycle_id=cycle_id, symbol=instrument.symbol,
+                        target_position_eur=str(target),
+                        incremental_notional_eur=str(incremental_notional),
+                        reserved_cash_eur=str(cycle_reserved_cash_eur),
+                        reserved_margin_eur=str(cycle_reserved_margin_eur),
+                        order_state=str(result.get("state")),
+                    )
                     if cash_budget_quote is not None and cash_budget_asset:
                         cycle_quote_reserved[cash_budget_asset] = (
                             cycle_quote_reserved.get(cash_budget_asset, D("0"))
