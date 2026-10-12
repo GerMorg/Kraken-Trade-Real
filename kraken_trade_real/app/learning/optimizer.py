@@ -326,6 +326,11 @@ class AdaptiveParameterOptimizer:
             exit_fee_bps=getattr(self.config, "tactical_exit_fee_bps", 80.0),
             expected_slippage_bps=getattr(self.config, "tactical_expected_slippage_bps", 25.0),
             safety_buffer_bps=getattr(self.config, "tactical_safety_buffer_bps", 30.0),
+            margin_open_fee_bps=getattr(self.config, "tactical_margin_open_fee_bps", 5.0),
+            stop_loss_pct=candidate.get(
+                "tactical_stop_loss_pct",
+                getattr(self.config, "tactical_stop_loss_pct", 1.0),
+            ),
         )
         candidate["tactical_adaptive_min_expected_move_bps"] = max(
             float(candidate.get("tactical_adaptive_min_expected_move_bps", 230.0)),
@@ -915,8 +920,10 @@ class AdaptiveParameterOptimizer:
                 peak_gain_bps = (peak / entry - 1.0) * 10000.0
                 trail_crossed = price <= peak * (1.0 - trailing_stop_pct / 100.0)
             else:
-                pnl_bps = (entry / price - 1.0) * 10000.0
-                peak_gain_bps = (entry / trough - 1.0) * 10000.0
+                # Use return on entry notional, matching the live linear Spot
+                # margin short PnL (do not divide the entry price by exit price).
+                pnl_bps = (1.0 - price / entry) * 10000.0
+                peak_gain_bps = (1.0 - trough / entry) * 10000.0
                 trail_crossed = price >= trough * (1.0 + trailing_stop_pct / 100.0)
 
             elapsed = max(0.0, timestamp - opened_at)
@@ -942,14 +949,20 @@ class AdaptiveParameterOptimizer:
 
             # Match the production engine's order: arm trend following before its
             # non-trailing time stop, and evaluate stop-loss before trailing exit.
-            if peak_gain_bps >= take_profit_pct * 100.0 and state != "TRAILING":
+            target_gain_bps = max(
+                take_profit_pct * 100.0,
+                profit_floor_bps + trailing_stop_pct * 100.0,
+            )
+            if peak_gain_bps >= target_gain_bps and state != "TRAILING":
                 state = "TRAILING"
             reason = ""
             if pnl_bps <= -stop_loss_pct * 100.0:
                 reason = "STOP_LOSS"
             elif trailing_triggered:
                 reason = "TRAILING_STOP"
-            elif state != "TRAILING" and elapsed >= max_hold_seconds:
+            elif elapsed >= max_hold_seconds:
+                # Match live behaviour: a tactical position has a finite maximum
+                # lifetime even after its trailing regime has armed.
                 reason = "TIME_STOP"
             # Production only treats a valid opposite-direction setup as a reversal.
             # Rows created before signal fields existed remain unqualified and cannot
