@@ -199,7 +199,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_adaptive_min_expected_move_bps == 230.0
     assert config.tactical_portfolio_pct == 25.0
     assert config.tactical_stop_loss_pct == 1.0
-    assert config.tactical_take_profit_pct == 2.2
+    assert config.tactical_take_profit_pct == 4.1
     assert config.tactical_trailing_trigger_bps == 100.0
     assert config.tactical_trailing_stop_pct == 0.7
     assert config.tactical_max_hold_seconds == 1800
