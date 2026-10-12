@@ -129,11 +129,12 @@ def tactical_minimum_move_floors(
     margin_open_fee_bps: Any = 5.0,
     stop_loss_pct: Any = 1.0,
 ) -> tuple[float, float]:
-    """Return strict gross-move floors covering costs plus the planned stop risk.
+    """Return gross-move floors for roughly 1:1 estimated net reward/risk.
 
-    These are policy guardrails, not expected-profit forecasts. The expected move
-    must cover round-trip costs and at least one configured stop-loss distance.
-    One-basis-point headroom prevents equality/rounding from admitting an exact tie.
+    Net reward is gross forecast minus one round-trip cost budget. A stopped-out
+    trade loses the stop distance plus that same cost budget, so a 1:1 hurdle is
+    stop risk plus twice modeled costs. One-basis-point headroom avoids admitting
+    exact equality after rounding.
     """
     def nonnegative(value: Any, default: float) -> float:
         try:
