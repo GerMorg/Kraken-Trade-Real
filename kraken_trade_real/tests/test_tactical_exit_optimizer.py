@@ -323,7 +323,7 @@ def test_exit_replay_uses_live_cost_aware_trailing_trigger_and_max_hold():
         ),
     )
     # The peak is +2.5%, below the cost-floor-plus-stop-risk-plus-trailing trigger
-    # of +4.10%; it must not arm trailing and suppress the 300-second time stop.
+    # of +6.50%; it must not arm trailing and suppress the 300-second time stop.
     assert result is not None
     assert result["reason"] == "TIME_STOP"
     assert result["exit_at"] == 1_301
