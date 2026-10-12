@@ -88,7 +88,7 @@ def cfg(**overrides):
         tactical_min_momentum_bps=40,
         tactical_min_breakout_bps=25,
         tactical_min_imbalance=0.10,
-        tactical_min_expected_move_bps=280,
+        tactical_min_expected_move_bps=600,
         tactical_entry_fee_bps=80,
         tactical_exit_fee_bps=80,
         tactical_expected_slippage_bps=25,
@@ -104,7 +104,7 @@ def cfg(**overrides):
         tactical_short_leverage=2,
         tactical_order_confirm_seconds=5,
         tactical_stop_loss_pct=1,
-        tactical_take_profit_pct=4.1,
+        tactical_take_profit_pct=6.5,
         tactical_trailing_trigger_bps=100,
         tactical_trailing_stop_pct=0.7,
         tactical_max_hold_seconds=1800,
@@ -677,13 +677,13 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     )
     position = TacticalPosition(
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
-        quantity=D("0.1"), entry_price=D("100"), peak_price=D("104.2"),
+        quantity=D("0.1"), entry_price=D("100"), peak_price=D("106.6"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
         opened_at=0.0, entry_client_order_id="test-order", setup_score=D("250"),
         state="OPEN",
     )
     trader._positions[position.symbol] = position
-    trader._fresh_position_state = lambda position, now: {"price": D("103.2")}
+    trader._fresh_position_state = lambda position, now: {"price": D("105.8")}
     trader._opposite_signal = lambda position: None
     exits = []
     trader._exit = lambda *args: exits.append(args)
@@ -693,8 +693,8 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     armed = [event for event in audit.events if event[0] == "TACTICAL_TREND_FOLLOWING_ARMED"]
     assert armed
     assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
-    assert D(armed[0][2]["profit_floor_bps"]) == D("340")
-    assert D(armed[0][2]["take_profit_trigger_bps"]) == D("410")
+    assert D(armed[0][2]["profit_floor_bps"]) == D("580")
+    assert D(armed[0][2]["take_profit_trigger_bps"]) == D("650")
 
 def _reversal_test_trader(position_direction, signal_direction, signal_edge):
     audit = DummyAudit()
@@ -982,3 +982,45 @@ def test_tactical_max_hold_still_closes_a_trailing_position():
 
     assert len(exits) == 1
     assert exits[0][2] == "TIME_STOP"
+
+
+
+def test_tactical_entry_rejects_crossed_or_inconsistent_quote_spreads():
+    trader = TacticalTrader(
+        cfg(), DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    crossed = {
+        "price": D("100"), "bid": D("101"), "ask": D("100.99"),
+        "spread_bps": D("1"), "timestamp": 1000.0,
+    }
+    assert trader._build_signal(instrument(), crossed, 1000.0) is None
+    assert trader._last_signal_reason == "CROSSED_BID_ASK"
+
+    inconsistent = {
+        "price": D("100"), "bid": D("99.8"), "ask": D("100.2"),
+        # Quote math is 40 bps wide; a stale spread field cannot understate it.
+        "spread_bps": D("1"), "timestamp": 1000.0,
+    }
+    assert trader._build_signal(instrument(), inconsistent, 1000.0) is None
+    assert trader._last_signal_reason == "STALE_OR_WIDE_MARKET"
+
+
+def test_tactical_entry_rejects_nonfinite_quotes_and_ignores_bad_history_points():
+    trader = TacticalTrader(
+        cfg(), DummyDB(), DummyAudit(), None, DummyWS(), None, None, None, None,
+    )
+    invalid = {
+        "price": D("100"), "bid": D("NaN"), "ask": D("100.01"),
+        "spread_bps": D("1"), "timestamp": 1000.0,
+    }
+    assert trader._build_signal(instrument(), invalid, 1000.0) is None
+    assert trader._last_signal_reason == "INVALID_MARKET_DATA"
+
+    valid = market_state(direction="LONG")
+    valid["price_points"] = tuple(valid["price_points"]) + (
+        ("bad-timestamp", D("100")),
+        (1000.0, D("NaN")),
+    )
+    signal = trader._build_signal(instrument(), valid, 1000.0)
+    assert signal is not None
+    assert signal.direction == Direction.LONG
