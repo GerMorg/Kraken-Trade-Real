@@ -806,9 +806,17 @@ class TacticalTrader:
             policy_snapshot.get("tactical_min_expected_move_bps", 280)
         ))
         min_move = min(configured_min_move, adaptive_min_move) if adaptive_ok else configured_min_move
-        if expected_move < min_move or expected_move - cost < (
-            adaptive_min_edge if adaptive_ok else D("0")
-        ):
+        # Require the expected net edge to cover at least the configured stop-loss
+        # distance. The adaptive confidence path must not admit a trade whose
+        # expected profit is negligible beside its planned loss and round-trip costs.
+        stop_risk_bps = D(str(
+            policy_snapshot.get("tactical_stop_loss_pct", 1.0)
+        )) * D("100")
+        required_net_edge_bps = max(
+            stop_risk_bps,
+            adaptive_min_edge if adaptive_ok else D("0"),
+        )
+        if expected_move < min_move or expected_move - cost < required_net_edge_bps:
             self._signal_rejections["EXPECTED_MOVE_OR_EDGE_TOO_SMALL"] += 1
             return self._signal_reject(
                 instrument.symbol, "EXPECTED_MOVE_OR_EDGE_TOO_SMALL"
@@ -1122,7 +1130,28 @@ class TacticalTrader:
                     direction=position.direction.value,
                 )
                 continue
-            price = D(str(state.get("price", "0")))
+            last_price = D(str(state.get("price", "0")))
+            bid = D(str(state.get("bid", "0") or "0"))
+            ask = D(str(state.get("ask", "0") or "0"))
+            if last_price <= 0:
+                continue
+            if bid > 0 and ask > 0 and bid > ask:
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID",
+                    "WARNING",
+                    symbol=position.symbol,
+                    reason="CROSSED_BID_ASK",
+                    bid=str(bid),
+                    ask=str(ask),
+                )
+                continue
+            # Mark PnL at the executable side for a full exit: sell LONG at bid,
+            # buy back SHORT at ask. Fall back to last only for older/test streams.
+            price = (
+                (bid if bid > 0 else last_price)
+                if position.direction == Direction.LONG
+                else (ask if ask > 0 else last_price)
+            )
             if price <= 0:
                 continue
             trailing_stop_pct = D(str(
@@ -1175,8 +1204,12 @@ class TacticalTrader:
             else:
                 position.trough_price = min(position.trough_price, price)
                 position.peak_price = max(position.peak_price, price)
-                pnl_bps = (position.entry_price / price - D("1")) * D("10000")
-                peak_gain = (position.entry_price / position.trough_price - D("1")) * D("10000")
+                # Linear short PnL is measured against entry notional, not exit
+                # notional: a 10% price fall yields +10%, not +11.1%.
+                pnl_bps = (D("1") - price / position.entry_price) * D("10000")
+                peak_gain = (
+                    D("1") - position.trough_price / position.entry_price
+                ) * D("10000")
                 trailing_triggered = (
                     peak_gain >= profit_floor_bps
                     and (
@@ -1254,9 +1287,11 @@ class TacticalTrader:
                 reason = "STOP_LOSS"
             elif trailing_triggered:
                 reason = "TRAILING_STOP"
-            elif position.state != "TRAILING" and now - position.opened_at >= float(
+            elif now - position.opened_at >= float(
                 getattr(self.config, "tactical_max_hold_seconds", 1800)
             ):
+                # max_hold_seconds is a true maximum lifetime, including after
+                # trailing activation; a flat trailing position must not persist forever.
                 reason = "TIME_STOP"
 
             reversal_edge = D(str(getattr(self.config, "tactical_reversal_exit_bps", 120)))
@@ -1755,7 +1790,7 @@ class TacticalTrader:
         return (
             (exit_price / entry_price - D("1"))
             if direction == Direction.LONG
-            else (entry_price / exit_price - D("1"))
+            else (D("1") - exit_price / entry_price)
         ) * exposure
 
     def _trade_fees(self, notional_eur: D) -> D:
