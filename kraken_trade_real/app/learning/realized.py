@@ -575,6 +575,48 @@ class CoreSpotRealizedOutcomeLedger:
                 con.execute("ROLLBACK")
                 raise
 
+        anomaly_reason_counts: dict[str, int] = defaultdict(int)
+        for item in anomalies:
+            anomaly_reason_counts[str(item["reason"])] += 1
+
+        # Explain why net outcomes remain estimate-only. These are per-leg
+        # blocker counts (not mutually exclusive) so operators can distinguish
+        # missing fee evidence from margin/rollover limitations without querying
+        # the SQLite database manually.
+        unverified_net_reason_counts: dict[str, int] = defaultdict(int)
+        for leg in legs:
+            if int(leg.get("net_verified") or 0) == 1:
+                continue
+            try:
+                detail = json.loads(leg.get("detail_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            if str(detail.get("entry_fee_attribution_status") or "") not in {
+                "LEDGER_VERIFIED", "ZERO_FEE_REPORTED"
+            }:
+                unverified_net_reason_counts["ENTRY_FEE_NOT_VERIFIED"] += 1
+            if str(detail.get("exit_fee_attribution_status") or "") not in {
+                "LEDGER_VERIFIED", "ZERO_FEE_REPORTED"
+            }:
+                unverified_net_reason_counts["EXIT_FEE_NOT_VERIFIED"] += 1
+            if not bool(detail.get("quote_asset_matches", False)):
+                unverified_net_reason_counts["ENTRY_EXIT_QUOTE_ASSET_MISMATCH"] += 1
+            leveraged = (
+                bool(detail.get("entry_margin"))
+                or bool(detail.get("exit_margin"))
+                or str(detail.get("entry_leverage") or "1") != "1"
+                or str(detail.get("exit_leverage") or "1") != "1"
+            )
+            if leveraged and not (
+                bool(detail.get("entry_margin_ledger_verified"))
+                and bool(detail.get("exit_margin_ledger_verified"))
+            ):
+                unverified_net_reason_counts["MARGIN_LEDGER_NOT_VERIFIED"] += 1
+            if leveraged and not bool(detail.get("rollover_free_window", False)):
+                unverified_net_reason_counts["MARGIN_ROLLOVER_COST_NOT_VERIFIED"] += 1
+
         return {
             "status": "REBUILT",
             "processed_fills": processed,
@@ -582,6 +624,8 @@ class CoreSpotRealizedOutcomeLedger:
             "realized_decisions": len(outcome_rows),
             "open_inventory_lots": len(open_lots),
             "attribution_anomalies": len(anomalies),
+            "attribution_anomaly_reason_counts": dict(sorted(anomaly_reason_counts.items())),
+            "unverified_net_reason_counts": dict(sorted(unverified_net_reason_counts.items())),
             "fee_status": self.FEE_STATUS,
             "verified_net_outcomes": sum(1 for item in outcome_rows if int(item["net_verified"]) == 1),
             "estimated_only_outcomes": sum(1 for item in outcome_rows if int(item["net_verified"]) != 1),

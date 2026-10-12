@@ -2,12 +2,18 @@
 
 Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.80**  
+Main version: **0.1.81 (PR pending)**  
 Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.80
+## Latest release — v0.1.81 (PR #92 pending)
+
+- Adds `PORTFOLIO_DRAWDOWN_BASIS` diagnostics for raw high-water-mark equity, peak timestamp, snapshot count, drawdown, and explicit `cash_flow_adjusted: false`. It does not change the 15% drawdown gate; cash-flow normalization is not yet implemented.
+- Realized attribution rebuild now reports reason counts for fill anomalies and estimate-only net outcomes, making missing fee evidence, quote mismatches and margin/rollover verification gaps diagnosable from logs.
+- Full PR CI must pass before merge; no live-trading risk limits were loosened.
+
+## Previous release — v0.1.80
 
 - Scope: wire Tactical live Spot-long entries to the same audited FX quote-funding manager used by Core, so EUR cash can fund a risk-approved USD-quoted entry where the guarded conversion rules allow it.
 - Tactical funding now occurs only after the initial risk decision allows the entry. If a conversion occurs, portfolio balances are reconciled and risk is checked again before order submission. Spendable quote balance and shared fee/slippage/safety reserves are used; funding or reconciliation uncertainty fails closed.

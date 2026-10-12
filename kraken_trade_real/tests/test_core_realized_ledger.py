@@ -124,6 +124,9 @@ def test_fifo_attribution_handles_partial_long_closes_and_aggregates_by_entry_de
     assert result["realized_decisions"] == 1
     assert result["open_inventory_lots"] == 0
     assert result["attribution_anomalies"] == 0
+    assert result["attribution_anomaly_reason_counts"] == {}
+    assert result["unverified_net_reason_counts"]["ENTRY_FEE_NOT_VERIFIED"] == 2
+    assert result["unverified_net_reason_counts"]["EXIT_FEE_NOT_VERIFIED"] == 2
     assert result["verified_net_outcomes"] == 0
 
     outcome = db.one(
@@ -231,6 +234,10 @@ def test_fifo_ledger_quarantines_unmatched_close_and_opposite_entry(db):
     reasons = {row["reason"] for row in db.query("SELECT reason FROM core_fill_anomalies")}
 
     assert result["attribution_anomalies"] == 2
+    assert result["attribution_anomaly_reason_counts"] == {
+        "OPPOSITE_POSITION_OPEN_DURING_ENTRY": 1,
+        "REDUCE_ONLY_EXCEEDS_LOCAL_INVENTORY": 1,
+    }
     assert "OPPOSITE_POSITION_OPEN_DURING_ENTRY" in reasons
     assert "REDUCE_ONLY_EXCEEDS_LOCAL_INVENTORY" in reasons
     assert result["realized_legs"] == 1

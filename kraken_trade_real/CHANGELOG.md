@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.81
+- Add a drawdown-basis audit event with raw equity peak, peak timestamp, snapshot count and explicit disclosure that external cash flows are not normalized; preserve the immutable drawdown gate.
+- Emit attribution anomaly reason counts and per-leg reasons why realized net outcomes remain estimate-only.
+- Add regression tests for attribution diagnostics.
+- Bump Home Assistant app, Python package, container build and Kraken API User-Agent versions to 0.1.81.
+
+
 ## 0.1.80
 
 - Route live Tactical Spot-long quote funding through the same guarded FX funding manager used by Core when the exact quote currency is not already funded.

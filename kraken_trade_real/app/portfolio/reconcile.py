@@ -709,13 +709,33 @@ class PortfolioReconciler:
         baseline_equity = dec(baseline.get("equity_eur")) if baseline else D(0)
         daily_pnl = equity - baseline_equity if baseline_equity > 0 else D(0)
         peak_row = self.db.one(
-            "SELECT MAX(CAST(equity_eur AS REAL)) AS peak FROM portfolio_snapshots"
+            "SELECT equity_eur,captured_at FROM portfolio_snapshots "
+            "ORDER BY CAST(equity_eur AS REAL) DESC, captured_at DESC LIMIT 1"
         )
-        peak = dec(peak_row.get("peak") if peak_row else equity)
+        snapshot_count_row = self.db.one(
+            "SELECT COUNT(*) AS n FROM portfolio_snapshots"
+        )
+        peak = dec(peak_row.get("equity_eur") if peak_row else equity)
         drawdown = (
             (D(1) - equity / peak) * 100
             if peak > 0 and equity < peak
             else D(0)
+        )
+        # The current high-water mark is based on raw account-equity snapshots.
+        # Until deposits/withdrawals are explicitly reconciled as external cash
+        # flows, expose that limitation rather than implying a flow-adjusted PnL.
+        self.db.event(
+            "PORTFOLIO_DRAWDOWN_BASIS",
+            "INFO",
+            {
+                "equity_eur": str(equity),
+                "peak_equity_eur": str(peak),
+                "peak_captured_at": peak_row.get("captured_at") if peak_row else None,
+                "snapshot_count": int(snapshot_count_row.get("n") or 0) if snapshot_count_row else 0,
+                "drawdown_pct": str(drawdown),
+                "cash_flow_adjusted": False,
+                "method": "RAW_EQUITY_SNAPSHOT_HIGH_WATER_MARK",
+            },
         )
         return PortfolioState(
             equity,
