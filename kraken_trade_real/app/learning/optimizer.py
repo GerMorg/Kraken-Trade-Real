@@ -333,11 +333,11 @@ class AdaptiveParameterOptimizer:
             ),
         )
         candidate["tactical_adaptive_min_expected_move_bps"] = max(
-            float(candidate.get("tactical_adaptive_min_expected_move_bps", 230.0)),
+            float(candidate.get("tactical_adaptive_min_expected_move_bps", 541.0)),
             adaptive_move_floor,
         )
         candidate["tactical_min_expected_move_bps"] = max(
-            float(candidate.get("tactical_min_expected_move_bps", 350.0)),
+            float(candidate.get("tactical_min_expected_move_bps", 600.0)),
             normal_move_floor,
         )
 
@@ -937,8 +937,9 @@ class AdaptiveParameterOptimizer:
                 entry_fee_bps + exit_fee_bps + spread_bps + slippage_bps + financing_bps
             )
             # Safety buffer is a trigger margin, not an actual cash cost.
-            profit_floor_bps = (
-                estimated_net_cost_bps + safety_bps + max(25.0, stop_loss_pct * 100.0)
+            total_cost_bps = estimated_net_cost_bps + safety_bps
+            profit_floor_bps = total_cost_bps + max(
+                25.0, stop_loss_pct * 100.0 + total_cost_bps
             )
             trailing_activation_bps = max(
                 trailing_trigger_bps,

@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+import math
 import threading
 import time
 from typing import Any
@@ -99,6 +100,9 @@ class TacticalTrader:
         self._gemini_bps = D("0")
         self._portfolio: PortfolioState | None = None
         self._positions: dict[str, TacticalPosition] = {}
+        # Corrupt persisted positions are not managed as if their entry price were
+        # trustworthy; preserve the row and block new entries on the same asset.
+        self._invalid_position_symbols: set[str] = set()
         self._cooldown_until: float = 0.0
         self._last_run = 0.0
         self._last_signal: TacticalSignal | None = None
@@ -569,7 +573,9 @@ class TacticalTrader:
         with self._lock:
             candidates = list(self._candidates.values())
             portfolio = self._portfolio
-            active_position_symbols = tuple(self._positions)
+            active_position_symbols = tuple(self._positions) + tuple(
+                self._invalid_position_symbols
+            )
         if portfolio is None or portfolio.equity_eur <= 0:
             return
         if self._daily_loss_blocked(portfolio):
@@ -652,23 +658,51 @@ class TacticalTrader:
         # All learnable entry filters are captured together before evaluating this
         # signal, then the same values are attached to the resulting trade signal.
         policy_snapshot = self._entry_policy_snapshot()
-        bid = D(str(state.get("bid", "0")))
-        ask = D(str(state.get("ask", "0")))
-        price = D(str(state.get("price", "0")))
-        spread = D(str(state.get("spread_bps", "999999")))
-        timestamp = float(state.get("timestamp", 0) or 0)
-        if min(bid, ask, price) <= 0:
+        try:
+            bid = D(str(state.get("bid", "0")))
+            ask = D(str(state.get("ask", "0")))
+            price = D(str(state.get("price", "0")))
+            reported_spread = D(str(state.get("spread_bps", "999999")))
+            timestamp = float(state.get("timestamp", 0) or 0)
+        except (ArithmeticError, TypeError, ValueError, OverflowError):
             return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        if not all(value.is_finite() for value in (bid, ask, price, reported_spread)):
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        if not math.isfinite(timestamp) or min(bid, ask, price) <= 0:
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        if bid > ask:
+            return self._signal_reject(instrument.symbol, "CROSSED_BID_ASK")
+        if reported_spread < 0:
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_SPREAD")
+        mid = (bid + ask) / D("2")
+        if mid <= 0:
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        quote_spread = (ask - bid) / mid * D("10000")
+        # Never trust a stale/inconsistent spread field to understate actual
+        # executable spread; use the more conservative of reported and quote math.
+        spread = max(reported_spread, quote_spread)
         max_spread = D(str(policy_snapshot.get("tactical_max_spread_bps", 25)))
         max_age = D(str(getattr(self.config, "tactical_market_max_age_seconds", 5)))
-        if spread > max_spread or now - timestamp > float(max_age):
+        if (
+            spread > max_spread
+            or timestamp <= 0
+            or now - timestamp > float(max_age)
+            or timestamp > now + float(max_age)
+        ):
             return self._signal_reject(instrument.symbol, "STALE_OR_WIDE_MARKET")
 
-        points = tuple(
-            (float(item[0]), D(str(item[1])))
-            for item in state.get("price_points", ())
-            if isinstance(item, (list, tuple)) and len(item) >= 2 and D(str(item[1])) > 0
-        )
+        parsed_points: list[tuple[float, D]] = []
+        for item in state.get("price_points", ()):
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                point_time = float(item[0])
+                point_price = D(str(item[1]))
+            except (ArithmeticError, TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(point_time) and point_price.is_finite() and point_price > 0:
+                parsed_points.append((point_time, point_price))
+        points = tuple(parsed_points)
         sampled = self._sample_prices(points, now, 180.0, 10.0)
         if len(sampled) < 8:
             return self._signal_reject(instrument.symbol, "INSUFFICIENT_PRICE_HISTORY")
@@ -692,7 +726,12 @@ class TacticalTrader:
             instrument.symbol,
             float(getattr(self.config, "tactical_trade_lookback_seconds", 900)),
         )
-        volume_ratio = D(str(metrics.get("volume_ratio", "0")))
+        try:
+            volume_ratio = D(str(metrics.get("volume_ratio", "0")))
+        except (ArithmeticError, TypeError, ValueError, OverflowError):
+            return self._signal_reject(instrument.symbol, "INVALID_TRADE_METRICS")
+        if not volume_ratio.is_finite() or volume_ratio < 0:
+            return self._signal_reject(instrument.symbol, "INVALID_TRADE_METRICS")
         if volume_ratio < D(str(policy_snapshot.get("tactical_min_volume_ratio", 2))):
             return self._signal_reject(instrument.symbol, "LOW_VOLUME_EXPANSION")
         imbalance = self._book_imbalance(state.get("depths_bid", ()), state.get("depths_ask", ()))
@@ -785,7 +824,7 @@ class TacticalTrader:
             policy_snapshot.get("tactical_adaptive_entry_enabled", True)
         )
         adaptive_min_move = D(str(
-            policy_snapshot.get("tactical_adaptive_min_expected_move_bps", 230.0)
+            policy_snapshot.get("tactical_adaptive_min_expected_move_bps", 541.0)
         ))
         adaptive_min_confidence = D(str(
             policy_snapshot.get("tactical_adaptive_min_confidence", 0.75)
@@ -803,17 +842,17 @@ class TacticalTrader:
             adaptive_min_edge,
         )
         configured_min_move = D(str(
-            policy_snapshot.get("tactical_min_expected_move_bps", 350)
+            policy_snapshot.get("tactical_min_expected_move_bps", 600)
         ))
         min_move = min(configured_min_move, adaptive_min_move) if adaptive_ok else configured_min_move
-        # Require the expected net edge to cover at least the configured stop-loss
-        # distance. The adaptive confidence path must not admit a trade whose
-        # expected profit is negligible beside its planned loss and round-trip costs.
+        # Approximate net reward must cover the planned stop loss plus the same
+        # round-trip cost reserve. Since expected_move is gross, net_edge=move-cost;
+        # requiring net_edge >= stop_risk + cost gives gross move >= stop_risk+2*cost.
         stop_risk_bps = D(str(
             policy_snapshot.get("tactical_stop_loss_pct", 1.0)
         )) * D("100")
         required_net_edge_bps = max(
-            stop_risk_bps,
+            stop_risk_bps + cost,
             adaptive_min_edge if adaptive_ok else D("0"),
         )
         if expected_move < min_move or expected_move - cost < required_net_edge_bps:
@@ -1121,6 +1160,26 @@ class TacticalTrader:
                 # Do not issue a competing exit while a Tactical entry/exit can
                 # still fill; pending quantities are reconciled before management.
                 continue
+            numeric_values = (
+                position.quantity, position.entry_price, position.peak_price,
+                position.trough_price, position.notional_eur, position.leverage,
+            )
+            if (
+                not all(value.is_finite() for value in numeric_values)
+                or any(value <= 0 for value in numeric_values)
+                or position.leverage < D("1")
+                or not math.isfinite(position.opened_at)
+                or position.opened_at <= 0
+            ):
+                self._invalid_position_symbols.add(position.symbol)
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID",
+                    "ERROR",
+                    symbol=position.symbol,
+                    reason="INVALID_LOCAL_POSITION_STATE",
+                    action="SKIP_EXIT_MATH_AND_BLOCK_NEW_ENTRIES",
+                )
+                continue
             state = self._fresh_position_state(position, now)
             if state is None:
                 self.audit.emit(
@@ -1182,8 +1241,11 @@ class TacticalTrader:
             stop_loss_pct = D(str(getattr(self.config, "tactical_stop_loss_pct", 1.0)))
             # Only arm/hold a trailing winner when its protected exit still targets
             # a net gain at least as large as the configured stop distance.
+            # Once the peak reaches this floor, a pullback exits with enough
+            # estimated net return to match the stop-loss-plus-cost loss budget.
             profit_floor_bps = estimated_round_trip_cost_bps + max(
-                D("25"), stop_loss_pct * D("100")
+                D("25"),
+                stop_loss_pct * D("100") + estimated_round_trip_cost_bps,
             )
             trailing_activation_bps = max(
                 D(str(getattr(self.config, "tactical_trailing_trigger_bps", 100))),
@@ -1258,7 +1320,7 @@ class TacticalTrader:
 
             # Profit target arms trend-following instead of forcing a full close.
             configured_target_gain_bps = (
-                D(str(getattr(self.config, "tactical_take_profit_pct", 4.1)))
+                D(str(getattr(self.config, "tactical_take_profit_pct", 6.5)))
                 * D("100")
             )
             # Do not arm the trailing regime below the estimated round-trip
@@ -1763,7 +1825,7 @@ class TacticalTrader:
             ),
             "exit_policy_snapshot": {
                 "stop_loss_pct": str(getattr(self.config, "tactical_stop_loss_pct", 1)),
-                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 4.1)),
+                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 6.5)),
                 "trailing_trigger_bps": str(getattr(self.config, "tactical_trailing_trigger_bps", 100)),
                 "trailing_stop_pct": str(getattr(self.config, "tactical_trailing_stop_pct", 0.7)),
                 "max_hold_seconds": str(getattr(self.config, "tactical_max_hold_seconds", 1800)),
@@ -2085,6 +2147,10 @@ class TacticalTrader:
         return bool(getattr(self.config, "tactical_shadow_mode", True))
 
     def _load_positions(self) -> None:
+        # Also supports recovery callers that reconstruct this component without
+        # invoking __init__ (e.g. after controlled runtime hand-off).
+        if not hasattr(self, "_invalid_position_symbols"):
+            self._invalid_position_symbols = set()
         rows = self.db.tactical_positions()
         for row in rows:
             try:
@@ -2105,7 +2171,32 @@ class TacticalTrader:
                     self._json_dict(row.get("entry_policy_json")),
                     self._json_dict(row.get("entry_context_json")),
                 )
+                numeric_values = (
+                    position.quantity, position.entry_price, position.peak_price,
+                    position.trough_price, position.notional_eur, position.leverage,
+                    position.setup_score,
+                )
+                if (
+                    not all(value.is_finite() for value in numeric_values)
+                    or any(value <= 0 for value in (
+                        position.quantity, position.entry_price, position.peak_price,
+                        position.trough_price, position.notional_eur, position.leverage,
+                    ))
+                    or position.leverage < D("1")
+                    or not math.isfinite(position.opened_at)
+                    or position.opened_at <= 0
+                ):
+                    raise ValueError("INVALID_STORED_POSITION_NUMERICS")
+                if position.state not in {"OPEN", "TRAILING"}:
+                    position.state = "OPEN"
+                    self.audit.emit(
+                        "TACTICAL_POSITION_STATE_NORMALIZED",
+                        "WARNING",
+                        symbol=position.symbol,
+                        reason="UNKNOWN_STORED_STATE",
+                    )
                 self._positions[position.symbol] = position
+                self._invalid_position_symbols.discard(position.symbol)
                 self.db.save_tactical_position(
                     position.symbol, position.venue, position.direction.value,
                     position.quantity, position.entry_price, position.peak_price,
@@ -2113,8 +2204,21 @@ class TacticalTrader:
                     position.opened_at, position.entry_client_order_id,
                     position.setup_score, position.state,
                 )
-            except Exception:
-                self.db.delete_tactical_position(str(row.get("symbol", "")))
+            except Exception as exc:
+                symbol = str(row.get("symbol", "") or "")
+                if symbol:
+                    self._invalid_position_symbols.add(symbol)
+                self.audit.emit(
+                    "TACTICAL_POSITION_RESTORE_FAILED",
+                    "ERROR",
+                    symbol=symbol,
+                    reason="POSITION_ROW_INVALID_OR_UNREADABLE",
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:240],
+                    action="BLOCK_NEW_ENTRIES_FOR_ASSET_AND_PRESERVE_ROW",
+                )
+                # Do not silently delete the only local record of a potentially
+                # live exchange position. Require reconciliation/repair instead.
 
     def _reconcile_pending(self) -> None:
         rows = self.db.query(
@@ -2327,7 +2431,13 @@ class TacticalTrader:
         if not points:
             return []
         cutoff = now - horizon_seconds
-        usable = [(ts, price) for ts, price in points if cutoff <= ts <= now and price > 0]
+        usable = sorted(
+            (
+                (ts, price) for ts, price in points
+                if math.isfinite(ts) and cutoff <= ts <= now and price.is_finite() and price > 0
+            ),
+            key=lambda point: point[0],
+        )
         if not usable:
             return []
         sampled: list[tuple[float, D]] = []
@@ -2370,10 +2480,31 @@ class TacticalTrader:
         bids: tuple[tuple[D, D], ...],
         asks: tuple[tuple[D, D], ...],
     ) -> D:
-        bid_value = sum((price * qty for price, qty in bids), D("0"))
-        ask_value = sum((price * qty for price, qty in asks), D("0"))
+        def level_value(levels: Any) -> D:
+            value = D("0")
+            for level in levels or ():
+                if not isinstance(level, (tuple, list)) or len(level) < 2:
+                    continue
+                try:
+                    price = D(str(level[0]))
+                    quantity = D(str(level[1]))
+                    if (
+                        not price.is_finite() or not quantity.is_finite()
+                        or price <= 0 or quantity <= 0
+                    ):
+                        continue
+                    value += price * quantity
+                except (ArithmeticError, TypeError, ValueError, OverflowError):
+                    continue
+            return value if value.is_finite() and value > 0 else D("0")
+
+        bid_value = level_value(bids)
+        ask_value = level_value(asks)
         total = bid_value + ask_value
-        return (bid_value - ask_value) / total if total > 0 else D("0")
+        if not total.is_finite() or total <= 0:
+            return D("0")
+        imbalance = (bid_value - ask_value) / total
+        return imbalance if imbalance.is_finite() else D("0")
 
     @staticmethod
     def _score(
