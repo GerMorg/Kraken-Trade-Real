@@ -803,7 +803,7 @@ class TacticalTrader:
             adaptive_min_edge,
         )
         configured_min_move = D(str(
-            policy_snapshot.get("tactical_min_expected_move_bps", 280)
+            policy_snapshot.get("tactical_min_expected_move_bps", 350)
         ))
         min_move = min(configured_min_move, adaptive_min_move) if adaptive_ok else configured_min_move
         # Require the expected net edge to cover at least the configured stop-loss
