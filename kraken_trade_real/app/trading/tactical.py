@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+import math
 import threading
 import time
 from typing import Any
@@ -652,23 +653,51 @@ class TacticalTrader:
         # All learnable entry filters are captured together before evaluating this
         # signal, then the same values are attached to the resulting trade signal.
         policy_snapshot = self._entry_policy_snapshot()
-        bid = D(str(state.get("bid", "0")))
-        ask = D(str(state.get("ask", "0")))
-        price = D(str(state.get("price", "0")))
-        spread = D(str(state.get("spread_bps", "999999")))
-        timestamp = float(state.get("timestamp", 0) or 0)
-        if min(bid, ask, price) <= 0:
+        try:
+            bid = D(str(state.get("bid", "0")))
+            ask = D(str(state.get("ask", "0")))
+            price = D(str(state.get("price", "0")))
+            reported_spread = D(str(state.get("spread_bps", "999999")))
+            timestamp = float(state.get("timestamp", 0) or 0)
+        except (ArithmeticError, TypeError, ValueError, OverflowError):
             return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        if not all(value.is_finite() for value in (bid, ask, price, reported_spread)):
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        if not math.isfinite(timestamp) or min(bid, ask, price) <= 0:
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        if bid > ask:
+            return self._signal_reject(instrument.symbol, "CROSSED_BID_ASK")
+        if reported_spread < 0:
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_SPREAD")
+        mid = (bid + ask) / D("2")
+        if mid <= 0:
+            return self._signal_reject(instrument.symbol, "INVALID_MARKET_DATA")
+        quote_spread = (ask - bid) / mid * D("10000")
+        # Never trust a stale/inconsistent spread field to understate actual
+        # executable spread; use the more conservative of reported and quote math.
+        spread = max(reported_spread, quote_spread)
         max_spread = D(str(policy_snapshot.get("tactical_max_spread_bps", 25)))
         max_age = D(str(getattr(self.config, "tactical_market_max_age_seconds", 5)))
-        if spread > max_spread or now - timestamp > float(max_age):
+        if (
+            spread > max_spread
+            or timestamp <= 0
+            or now - timestamp > float(max_age)
+            or timestamp > now + float(max_age)
+        ):
             return self._signal_reject(instrument.symbol, "STALE_OR_WIDE_MARKET")
 
-        points = tuple(
-            (float(item[0]), D(str(item[1])))
-            for item in state.get("price_points", ())
-            if isinstance(item, (list, tuple)) and len(item) >= 2 and D(str(item[1])) > 0
-        )
+        parsed_points: list[tuple[float, D]] = []
+        for item in state.get("price_points", ()):
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                point_time = float(item[0])
+                point_price = D(str(item[1]))
+            except (ArithmeticError, TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(point_time) and point_price.is_finite() and point_price > 0:
+                parsed_points.append((point_time, point_price))
+        points = tuple(parsed_points)
         sampled = self._sample_prices(points, now, 180.0, 10.0)
         if len(sampled) < 8:
             return self._signal_reject(instrument.symbol, "INSUFFICIENT_PRICE_HISTORY")
@@ -692,7 +721,12 @@ class TacticalTrader:
             instrument.symbol,
             float(getattr(self.config, "tactical_trade_lookback_seconds", 900)),
         )
-        volume_ratio = D(str(metrics.get("volume_ratio", "0")))
+        try:
+            volume_ratio = D(str(metrics.get("volume_ratio", "0")))
+        except (ArithmeticError, TypeError, ValueError, OverflowError):
+            return self._signal_reject(instrument.symbol, "INVALID_TRADE_METRICS")
+        if not volume_ratio.is_finite() or volume_ratio < 0:
+            return self._signal_reject(instrument.symbol, "INVALID_TRADE_METRICS")
         if volume_ratio < D(str(policy_snapshot.get("tactical_min_volume_ratio", 2))):
             return self._signal_reject(instrument.symbol, "LOW_VOLUME_EXPANSION")
         imbalance = self._book_imbalance(state.get("depths_bid", ()), state.get("depths_ask", ()))
@@ -785,7 +819,7 @@ class TacticalTrader:
             policy_snapshot.get("tactical_adaptive_entry_enabled", True)
         )
         adaptive_min_move = D(str(
-            policy_snapshot.get("tactical_adaptive_min_expected_move_bps", 230.0)
+            policy_snapshot.get("tactical_adaptive_min_expected_move_bps", 541.0)
         ))
         adaptive_min_confidence = D(str(
             policy_snapshot.get("tactical_adaptive_min_confidence", 0.75)
@@ -803,17 +837,17 @@ class TacticalTrader:
             adaptive_min_edge,
         )
         configured_min_move = D(str(
-            policy_snapshot.get("tactical_min_expected_move_bps", 350)
+            policy_snapshot.get("tactical_min_expected_move_bps", 600)
         ))
         min_move = min(configured_min_move, adaptive_min_move) if adaptive_ok else configured_min_move
-        # Require the expected net edge to cover at least the configured stop-loss
-        # distance. The adaptive confidence path must not admit a trade whose
-        # expected profit is negligible beside its planned loss and round-trip costs.
+        # Approximate net reward must cover the planned stop loss plus the same
+        # round-trip cost reserve. Since expected_move is gross, net_edge=move-cost;
+        # requiring net_edge >= stop_risk + cost gives gross move >= stop_risk+2*cost.
         stop_risk_bps = D(str(
             policy_snapshot.get("tactical_stop_loss_pct", 1.0)
         )) * D("100")
         required_net_edge_bps = max(
-            stop_risk_bps,
+            stop_risk_bps + cost,
             adaptive_min_edge if adaptive_ok else D("0"),
         )
         if expected_move < min_move or expected_move - cost < required_net_edge_bps:
@@ -1182,8 +1216,11 @@ class TacticalTrader:
             stop_loss_pct = D(str(getattr(self.config, "tactical_stop_loss_pct", 1.0)))
             # Only arm/hold a trailing winner when its protected exit still targets
             # a net gain at least as large as the configured stop distance.
+            # Once the peak reaches this floor, a pullback exits with enough
+            # estimated net return to match the stop-loss-plus-cost loss budget.
             profit_floor_bps = estimated_round_trip_cost_bps + max(
-                D("25"), stop_loss_pct * D("100")
+                D("25"),
+                stop_loss_pct * D("100") + estimated_round_trip_cost_bps,
             )
             trailing_activation_bps = max(
                 D(str(getattr(self.config, "tactical_trailing_trigger_bps", 100))),
@@ -1258,7 +1295,7 @@ class TacticalTrader:
 
             # Profit target arms trend-following instead of forcing a full close.
             configured_target_gain_bps = (
-                D(str(getattr(self.config, "tactical_take_profit_pct", 4.1)))
+                D(str(getattr(self.config, "tactical_take_profit_pct", 6.5)))
                 * D("100")
             )
             # Do not arm the trailing regime below the estimated round-trip
@@ -1763,7 +1800,7 @@ class TacticalTrader:
             ),
             "exit_policy_snapshot": {
                 "stop_loss_pct": str(getattr(self.config, "tactical_stop_loss_pct", 1)),
-                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 4.1)),
+                "take_profit_pct": str(getattr(self.config, "tactical_take_profit_pct", 6.5)),
                 "trailing_trigger_bps": str(getattr(self.config, "tactical_trailing_trigger_bps", 100)),
                 "trailing_stop_pct": str(getattr(self.config, "tactical_trailing_stop_pct", 0.7)),
                 "max_hold_seconds": str(getattr(self.config, "tactical_max_hold_seconds", 1800)),
