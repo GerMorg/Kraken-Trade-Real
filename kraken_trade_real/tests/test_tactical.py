@@ -694,6 +694,7 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     assert armed
     assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
     assert D(armed[0][2]["profit_floor_bps"]) == D("265")
+    assert D(armed[0][2]["take_profit_trigger_bps"]) == D("335")
 
 def _reversal_test_trader(position_direction, signal_direction, signal_edge):
     audit = DummyAudit()
