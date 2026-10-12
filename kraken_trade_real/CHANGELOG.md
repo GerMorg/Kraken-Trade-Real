@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.80
+
+- Route live Tactical Spot-long quote funding through the same guarded FX funding manager used by Core when the exact quote currency is not already funded.
+- Run funding only after Tactical risk approval; reserve fees/slippage/safety buffer in quote currency, reconcile after a confirmed conversion, re-check risk, and fail closed on unavailable funds or reconciliation errors.
+- Use exchange-spendable quote balance (including order holds) instead of gross wallet balance for Tactical cash preflight.
+- Add regression tests for successful FX funding, post-conversion reconciliation and fail-closed funding errors.
+- Bump Home Assistant app, package, container and Kraken User-Agent versions to 0.1.80.
+
 ## 0.1.79
 
 - Make Austrian Altvermögen/Neuvermögen attribution inventory-based instead of inferring the tax regime from disposal date.
