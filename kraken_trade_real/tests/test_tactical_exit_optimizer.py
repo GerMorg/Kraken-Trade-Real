@@ -285,3 +285,45 @@ def test_registry_promotes_exit_candidate_only_with_validated_holdout(db):
     )
     assert registry.promote_adaptive_policy("exit-policy-good") is True
     assert registry.active("strategy_tactical") == "exit-policy-good"
+
+
+
+def test_exit_replay_detects_short_stop_loss_at_exact_one_percent_price_rise():
+    trade = _trade("SHORT", [
+        _point(1_000, 100.0),
+        _point(1_010, 101.0, peak=101.0, trough=100.0),
+    ], close=1_010)
+    result = AdaptiveParameterOptimizer._simulate_tactical_exit(trade, _policy())
+    assert result is not None
+    assert result["reason"] == "STOP_LOSS"
+    assert result["gross_bps"] == -100.0
+
+
+def test_exit_replay_uses_live_cost_aware_trailing_trigger_and_max_hold():
+    trade = _trade("LONG", [
+        _point(1_000, 100.0),
+        _point(1_301, 102.5, peak=102.5, trough=100.0),
+    ], close=1_301)
+    trade["cost_snapshot"].update({
+        "entry_fee_bps": 80,
+        "exit_fee_bps": 80,
+        "max_spread_bps": 25,
+        "expected_slippage_bps": 25,
+        "safety_buffer_bps": 30,
+        "margin_open_fee_bps": 0,
+        "rollover_fee_bps": 0,
+    })
+    result = AdaptiveParameterOptimizer._simulate_tactical_exit(
+        trade,
+        _policy(
+            tactical_take_profit_pct=2.2,
+            tactical_trailing_trigger_bps=100,
+            tactical_trailing_stop_pct=0.7,
+            tactical_max_hold_seconds=300,
+        ),
+    )
+    # The peak is +2.5%, below the cost-floor-plus-trailing-distance trigger
+    # of +3.35%; it must not arm trailing and suppress the 300-second time stop.
+    assert result is not None
+    assert result["reason"] == "TIME_STOP"
+    assert result["exit_at"] == 1_301
