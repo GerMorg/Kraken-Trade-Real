@@ -75,7 +75,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
         tactical_reversal_exit_bps=120.0,
     )
     config = AdaptiveConfig(base, FakeRegistry())
-    assert config.tactical_min_expected_move_bps == 350.0
+    assert config.tactical_min_expected_move_bps == 371.0
     assert config.tactical_min_momentum_bps == 60.0
     assert config.tactical_portfolio_pct == 20.0
     assert config.tactical_stop_loss_pct == 1.25
@@ -196,7 +196,7 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     assert config.tactical_min_volume_ratio == 2.0
     assert config.tactical_min_breakout_bps == 25.0
     assert config.tactical_max_spread_bps == 25.0
-    assert config.tactical_adaptive_min_expected_move_bps == 230.0
+    assert config.tactical_adaptive_min_expected_move_bps == 321.0
     assert config.tactical_portfolio_pct == 25.0
     assert config.tactical_stop_loss_pct == 1.0
     assert config.tactical_take_profit_pct == 4.1
@@ -649,6 +649,12 @@ def test_registry_rejects_tactical_policy_below_cost_floors(db):
     ):
         params = dict(TACTICAL_DEFAULTS)
         params[key] = unsafe_value
+        # Isolate the reason under test: the complementary threshold must already
+        # satisfy its own floor or the validation correctly rejects that first.
+        if key == "tactical_min_expected_move_bps":
+            params["tactical_adaptive_min_expected_move_bps"] = 400.0
+        else:
+            params["tactical_min_expected_move_bps"] = 500.0
         registry.register_candidate(
             version,
             "strategy_tactical",
