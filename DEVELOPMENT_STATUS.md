@@ -1,3 +1,21 @@
+# Development Status
+
+## Release candidate — v0.1.86 (audit implementation)
+
+- **Candidate branch:** release/v0.1.86-core-tactical-audit
+- **Base:** main v0.1.85, commit c1d629f6d14273d71fcb7f968dda3576b10bf826
+- **Status:** implementation and regression tests in progress; do not install as a release until all required CI jobs are green and the release PR is merged.
+- **Risk and execution:** provisional portfolio, cash and free-margin reservations across same-cycle orders; reductions do not release capacity before exchange reconciliation; post-order cash-reserve logic covers long and short increases.
+- **Tactical lifecycle:** recover OPEN and TRAILING positions, fail closed on invalid exit quotes and stale/future timestamps, reserve slots for unresolved entries, and filter LIVE-only risk accounting.
+- **Market data and Core strategy:** reject non-finite and crossed quotes/depth; stabilize volatility horizon; block new entries with insufficient history and avoid forced exits caused solely by absent history.
+- **Learning provenance:** estimated Tactical fees/funding are explicitly marked unverified. The live learner accepts only rows marked ledger-verified; existing estimated-only rows remain excluded. Automated verified-outcome attribution for every Tactical episode remains a follow-up before enabling live parameter learning from those episodes.
+- **Risk accounting:** flow-normalized daily PnL/high-water drawdown is used only when the deposit/withdrawal ledger can be completely read and every external flow is valued in EUR. If ledger permissions/history are incomplete or a non-EUR transfer is present, the app logs the limitation and keeps the raw-equity basis.
+- **Futures:** reconciler distinguishes long and short sides; reduce-only stop/partial/trailing actions use price-return PnL only when the open position maps to an instrument and a valid close-side quote is available. This is application-cycle protection, not a guaranteed exchange-native stop order.
+- **Version alignment:** add-on manifest, app package, Docker build version and User-Agent are set to 0.1.86.
+- **Validation:** pending CI for this candidate; green CI is a software-quality gate, not proof of trading profitability. Installed Home Assistant version cannot be verified from repository state alone.
+
+---
+
 # Kraken Trade Real — Development Status
 
 Last reconciled against GitHub: 2026-10-12  
@@ -7,7 +25,7 @@ Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.83
+## Historical notes — v0.1.83
 
 - Tactical live entries now emit a dedicated fill-confirmed event showing BUY/SELL, position direction, filled quantity/price, notional, signal edge/cost and client order ID. Exit events now include order side, entry/exit prices, quantity, exit reason and estimated net result.
 - `CYCLE_COMPLETED.orders` is explicitly marked `CORE_STRATEGY_ONLY`; Tactical runs independently and must be followed through its own events.

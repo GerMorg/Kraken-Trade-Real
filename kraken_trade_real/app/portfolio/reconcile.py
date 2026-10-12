@@ -40,10 +40,17 @@ class PortfolioReconciler:
         self.position_leverages: dict[str, D] = {}
         self.instruments: list[Instrument] = []
         self.spot_tickers: dict[str, Any] = {}
+        self.future_tickers: dict[str, Any] = {}
 
-    def set_market_context(self, instruments: list[Instrument], spot_tickers: dict[str, Any]) -> None:
+    def set_market_context(
+        self,
+        instruments: list[Instrument],
+        spot_tickers: dict[str, Any],
+        future_tickers: dict[str, Any] | None = None,
+    ) -> None:
         self.instruments = instruments
         self.spot_tickers = spot_tickers
+        self.future_tickers = future_tickers if isinstance(future_tickers, dict) else {}
 
     def _ticker_raw(self, instrument: Instrument) -> dict[str, Any] | None:
         keys = (
@@ -228,6 +235,8 @@ class PortfolioReconciler:
         position_pnl_pct: dict[str, D] = {}
         position_basis_eur: dict[str, D] = {}
         position_quantity: dict[str, D] = {}
+        futures_position_symbols: set[str] = set()
+        futures_positions_read_ok = False
         spot_margin_position_symbols: set[str] = set()
         spot_margin_open_order_ids: dict[str, set[str]] = {}
         spot_margin_position_direction_sets: dict[str, set[str]] = {}
@@ -661,24 +670,81 @@ class PortfolioReconciler:
                 )
                 margin += dec(acct.get("initialMargin") or acct.get("marginUsed") or 0)
                 unreal += dec(acct.get("unrealizedPnl") or 0)
-                rows = self.gateway.futures_open_positions().get("openPositions", [])
-                for item in rows if isinstance(rows, list) else []:
+                open_payload = self.gateway.futures_open_positions()
+                if not isinstance(open_payload, dict) or not isinstance(open_payload.get("openPositions", []), list):
+                    raise TypeError("KRAKEN_FUTURES_OPEN_POSITIONS_INVALID_RESPONSE")
+                rows = open_payload.get("openPositions", [])
+                futures_positions_read_ok = True
+                ticker_rows = self.future_tickers.get("tickers", []) if isinstance(self.future_tickers, dict) else []
+                for item in rows:
                     if not isinstance(item, dict):
+                        futures_positions_read_ok = False
                         continue
-                    symbol = str(item.get("symbol") or "")
-                    value = dec(
-                        item.get("value") or item.get("size") or item.get("quantity")
+                    exchange_symbol = str(item.get("symbol") or "")
+                    if not exchange_symbol:
+                        futures_positions_read_ok = False
+                        continue
+                    matched_instrument = next(
+                        (
+                            candidate for candidate in self.instruments
+                            if candidate.venue == "futures"
+                            and exchange_symbol.casefold() in {
+                                candidate.instrument_id.casefold(),
+                                candidate.altname.casefold(),
+                                candidate.symbol.casefold(),
+                            }
+                        ),
+                        None,
                     )
-                    if symbol:
-                        position = value
-                        if str(item.get("side", "buy")).lower() != "buy":
-                            position = -abs(value)
-                        positions[symbol] = position
-                        reported_leverage = dec(item.get("leverage"))
-                        if reported_leverage > 0:
-                            self.position_leverages[symbol] = reported_leverage
-                        gross += abs(position)
-                        net += position
+                    symbol = matched_instrument.symbol if matched_instrument else exchange_symbol
+                    value = dec(item.get("value") or item.get("size") or item.get("quantity"))
+                    if not value.is_finite() or value == 0:
+                        continue
+                    side = str(item.get("side") or "").strip().lower()
+                    if side in {"buy", "long"}:
+                        position = abs(value)
+                    elif side in {"sell", "short"}:
+                        position = -abs(value)
+                    else:
+                        position = abs(value)
+                        self.db.event(
+                            "PORTFOLIO_FUTURES_POSITION_INVALID_SIDE", "WARNING",
+                            {"exchange_symbol": exchange_symbol, "side": side,
+                             "gross_exposure_only": True},
+                        )
+                    positions[symbol] = position
+                    futures_position_symbols.add(symbol)
+                    reported_leverage = dec(item.get("leverage"))
+                    if reported_leverage.is_finite() and reported_leverage > 0:
+                        self.position_leverages[symbol] = reported_leverage
+                    gross += abs(position)
+                    net += position
+
+                    # Kraken futures position price is the average entry price.
+                    # Use the executable close-side quote for a conservative PnL
+                    # percentage; absent or invalid quotes do not trigger exits.
+                    if matched_instrument and side in {"buy", "long", "sell", "short"}:
+                        ticker = next(
+                            (
+                                row for row in ticker_rows
+                                if isinstance(row, dict)
+                                and str(row.get("symbol") or "").casefold() == exchange_symbol.casefold()
+                            ),
+                            None,
+                        )
+                        entry_price = dec(item.get("price"))
+                        exit_price = (
+                            dec(ticker.get("bid")) if ticker and side in {"buy", "long"}
+                            else dec(ticker.get("ask")) if ticker else D("0")
+                        )
+                        if entry_price.is_finite() and entry_price > 0 and exit_price.is_finite() and exit_price > 0:
+                            pct = (
+                                (exit_price / entry_price - D("1")) * D("100")
+                                if side in {"buy", "long"}
+                                else (entry_price / exit_price - D("1")) * D("100")
+                            )
+                            if pct.is_finite():
+                                position_pnl_pct[symbol] = pct
             except Exception as exc:
                 self.margin_account = None
                 self.db.event(
@@ -688,10 +754,11 @@ class PortfolioReconciler:
                 )
 
         equity = equity if equity > 0 else cash + max(D(0), unreal)
-        # Daily P/L is derived from persisted UTC-day equity snapshots. Kraken's
-        # TradeBalance "n" field is not daily realized P/L, and adding it to the
-        # aggregated open-position P/L can double-count the same exposure.
         now = time.time()
+        cash_flow_complete, flow_series_start = self._sync_external_cash_flows(now)
+
+        # Daily P/L is normalized by independently recorded external transfers when
+        # (and only when) ledger pagination and EUR valuation are complete.
         day_start = datetime.datetime.fromtimestamp(
             now, datetime.timezone.utc
         ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -708,33 +775,122 @@ class PortfolioReconciler:
             )
         baseline_equity = dec(baseline.get("equity_eur")) if baseline else D(0)
         daily_pnl = equity - baseline_equity if baseline_equity > 0 else D(0)
-        peak_row = self.db.one(
-            "SELECT equity_eur,captured_at FROM portfolio_snapshots "
-            "ORDER BY CAST(equity_eur AS REAL) DESC, captured_at DESC LIMIT 1"
-        )
+        if cash_flow_complete and baseline and baseline_equity > 0:
+            try:
+                baseline_at = float(baseline["captured_at"])
+                daily_pnl -= self._external_flow_sum(baseline_at, now)
+            except (TypeError, ValueError, OverflowError):
+                cash_flow_complete = False
+
         snapshot_count_row = self.db.one(
             "SELECT COUNT(*) AS n FROM portfolio_snapshots"
         )
-        peak = dec(peak_row.get("equity_eur") if peak_row else equity)
-        drawdown = (
-            (D(1) - equity / peak) * 100
-            if peak > 0 and equity < peak
-            else D(0)
+        peak_captured_at = None
+        if cash_flow_complete:
+            snapshots = self.db.query(
+                "SELECT equity_eur,captured_at FROM portfolio_snapshots "
+                "WHERE captured_at>=? AND captured_at<=? ORDER BY captured_at ASC",
+                (flow_series_start, now),
+            )
+            adjusted_snapshots: list[tuple[D, float]] = []
+            try:
+                # Fetch once and roll flows forward in timestamp order instead of
+                # issuing one database query per snapshot as history grows.
+                flow_rows = self.db.query(
+                    """SELECT occurred_at,flow_eur FROM portfolio_external_cash_flows
+                       WHERE occurred_at>? AND occurred_at<=? AND flow_eur IS NOT NULL
+                       ORDER BY occurred_at ASC""",
+                    (flow_series_start, now),
+                )
+                flow_points: list[tuple[float, D]] = []
+                for flow_row in flow_rows:
+                    try:
+                        flow_at = float(flow_row.get("occurred_at"))
+                        flow_value = D(str(flow_row.get("flow_eur") or "0"))
+                    except (TypeError, ValueError, InvalidOperation, OverflowError):
+                        cash_flow_complete = False
+                        break
+                    if not D(str(flow_at)).is_finite() or not flow_value.is_finite():
+                        cash_flow_complete = False
+                        break
+                    flow_points.append((flow_at, flow_value))
+                flow_points.sort(key=lambda item: item[0])
+                cumulative_flow = D("0")
+                flow_index = 0
+                for row in snapshots:
+                    captured_at = float(row["captured_at"])
+                    while (
+                        flow_index < len(flow_points)
+                        and flow_points[flow_index][0] <= captured_at
+                    ):
+                        cumulative_flow += flow_points[flow_index][1]
+                        flow_index += 1
+                    adjusted_equity = dec(row.get("equity_eur")) - cumulative_flow
+                    if adjusted_equity.is_finite():
+                        adjusted_snapshots.append((adjusted_equity, captured_at))
+                while (
+                    flow_index < len(flow_points)
+                    and flow_points[flow_index][0] <= now
+                ):
+                    cumulative_flow += flow_points[flow_index][1]
+                    flow_index += 1
+                current_adjusted_equity = equity - cumulative_flow
+                candidates = [current_adjusted_equity] + [
+                    value for value, _ in adjusted_snapshots
+                ]
+                peak = max(candidates) if candidates else current_adjusted_equity
+                peak_candidates = [
+                    (value, captured_at) for value, captured_at in adjusted_snapshots
+                    if value == peak
+                ]
+                if peak_candidates:
+                    peak_captured_at = peak_candidates[-1][1]
+                else:
+                    peak_captured_at = now
+                drawdown = (
+                    (D(1) - current_adjusted_equity / peak) * D(100)
+                    if peak > 0 and current_adjusted_equity < peak
+                    else (D(100) if peak > 0 and current_adjusted_equity <= 0 else D(0))
+                )
+            except (TypeError, ValueError, ArithmeticError, OverflowError):
+                cash_flow_complete = False
+                peak = D(0)
+                drawdown = D(0)
+        if not cash_flow_complete:
+            # Preserve the old hard gate only as an explicit fallback; the audit
+            # event discloses when normalization is unavailable or incomplete.
+            peak_row = self.db.one(
+                "SELECT equity_eur,captured_at FROM portfolio_snapshots "
+                "ORDER BY CAST(equity_eur AS REAL) DESC, captured_at DESC LIMIT 1"
+            )
+            peak = dec(peak_row.get("equity_eur") if peak_row else equity)
+            peak_captured_at = peak_row.get("captured_at") if peak_row else None
+            drawdown = (
+                (D(1) - equity / peak) * 100
+                if peak > 0 and equity < peak
+                else D(0)
+            )
+
+        flow_count_row = self.db.one(
+            "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows"
         )
-        # The current high-water mark is based on raw account-equity snapshots.
-        # Until deposits/withdrawals are explicitly reconciled as external cash
-        # flows, expose that limitation rather than implying a flow-adjusted PnL.
         self.db.event(
             "PORTFOLIO_DRAWDOWN_BASIS",
             "INFO",
             {
                 "equity_eur": str(equity),
                 "peak_equity_eur": str(peak),
-                "peak_captured_at": peak_row.get("captured_at") if peak_row else None,
+                "peak_captured_at": peak_captured_at,
                 "snapshot_count": int(snapshot_count_row.get("n") or 0) if snapshot_count_row else 0,
+                "external_cash_flow_entries": int(flow_count_row.get("n") or 0) if flow_count_row else 0,
+                "flow_series_start_at": flow_series_start,
                 "drawdown_pct": str(drawdown),
-                "cash_flow_adjusted": False,
-                "method": "RAW_EQUITY_SNAPSHOT_HIGH_WATER_MARK",
+                "daily_pnl_eur": str(daily_pnl),
+                "cash_flow_adjusted": bool(cash_flow_complete),
+                "method": (
+                    "EXTERNAL_EUR_LEDGER_FLOW_ADJUSTED_HIGH_WATER_MARK"
+                    if cash_flow_complete else "RAW_EQUITY_SNAPSHOT_HIGH_WATER_MARK"
+                ),
             },
         )
         return PortfolioState(
@@ -771,6 +927,8 @@ class PortfolioReconciler:
                 for symbol, directions in spot_margin_position_direction_sets.items()
             },
             spot_margin_open_lot_count=spot_margin_open_lot_count,
+            futures_position_symbols=tuple(sorted(futures_position_symbols)),
+            futures_positions_read_ok=futures_positions_read_ok,
         )
 
 def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:

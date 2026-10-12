@@ -116,7 +116,21 @@ class Database:
             }.items():
                 if name not in path_cols:
                     con.execute(f"ALTER TABLE tactical_price_path ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','13')")
+            tactical_trade_cols = {row[1] for row in con.execute("PRAGMA table_info(tactical_trades)")}
+            if "net_verified" not in tactical_trade_cols:
+                con.execute("ALTER TABLE tactical_trades ADD COLUMN net_verified INTEGER NOT NULL DEFAULT 0")
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS portfolio_external_cash_flows(
+                   ledger_id TEXT PRIMARY KEY, occurred_at REAL NOT NULL,
+                   asset TEXT NOT NULL, flow_type TEXT NOT NULL,
+                   amount_asset TEXT NOT NULL, fee_asset TEXT NOT NULL,
+                   flow_eur TEXT, source_json TEXT NOT NULL)"""
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_time "
+                "ON portfolio_external_cash_flows(occurred_at)"
+            )
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','15')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -806,18 +820,19 @@ class Database:
         exit_reason: str,
         setup_score: Any,
         detail: dict[str, Any],
+        net_verified: bool = False,
     ) -> None:
         self.execute(
             """INSERT OR REPLACE INTO tactical_trades(
                trade_id,symbol,direction,entry_price,exit_price,quantity,
                gross_pnl_eur,fees_eur,net_pnl_eur,opened_at,closed_at,
-               hold_seconds,exit_reason,setup_score,detail_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               hold_seconds,exit_reason,setup_score,detail_json,net_verified
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 trade_id, symbol, direction, str(entry_price), str(exit_price), str(quantity),
                 str(gross_pnl_eur), str(fees_eur), str(net_pnl_eur), opened_at, closed_at,
                 hold_seconds, exit_reason, str(setup_score),
-                json.dumps(detail, sort_keys=True, default=str),
+                json.dumps(detail, sort_keys=True, default=str), int(bool(net_verified)),
             ),
         )
 

@@ -37,20 +37,19 @@ class AdaptiveParameterOptimizer:
             return 0.0
 
     TACTICAL_ENTRY_OUTCOME_BASIS = (
-        "LIVE_POSITION_EPISODES_WITH_CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED"
+        "LIVE_POSITION_EPISODES_LEDGER_VERIFIED_NET_PNL_ONLY"
     )
 
     def _load_live_tactical_episodes(self, now: float) -> tuple[list[dict[str, Any]], int]:
-        """Aggregate complete LIVE position episodes; never mix in SHADOW samples.
+        """Aggregate complete LIVE position episodes with ledger-verified net PnL.
 
-        A position may have several partial-close rows. Those rows form one
-        learning outcome, and an episode is excluded while its position remains
-        open. Fees/net values are the configured-cost estimates stored by the
-        Tactical engine, not ledger-verified exchange net PnL.
+        A position may have several partial-close rows; those form one episode,
+        which is excluded while the position remains open. SHADOW rows and LIVE
+        rows without explicit exchange-ledger verification are not learning labels.
         """
         raw_rows = self.db.query(
             """SELECT trade_id,symbol,direction,opened_at,closed_at,
-                      gross_pnl_eur,fees_eur,net_pnl_eur,exit_reason,detail_json
+                      gross_pnl_eur,fees_eur,net_pnl_eur,exit_reason,detail_json,net_verified
                FROM tactical_trades
                WHERE closed_at >= ?
                ORDER BY closed_at ASC,trade_id ASC LIMIT 1800""",
@@ -69,6 +68,15 @@ class AdaptiveParameterOptimizer:
             except (TypeError, ValueError, json.JSONDecodeError):
                 detail = {}
             if not isinstance(detail, dict) or str(detail.get("mode") or "").upper() != "LIVE":
+                non_live_rows += 1
+                continue
+            # Modeled PnL is not a valid learning label until exchange-ledger
+            # attribution explicitly verifies realized PnL and fees.
+            try:
+                net_verified = int(row.get("net_verified") or 0) == 1
+            except (TypeError, ValueError, OverflowError):
+                net_verified = False
+            if not net_verified:
                 non_live_rows += 1
                 continue
 

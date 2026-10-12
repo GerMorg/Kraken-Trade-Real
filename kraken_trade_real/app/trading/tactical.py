@@ -1856,6 +1856,8 @@ class TacticalTrader:
         return {
             "mode": mode,
             "client_order_id": client_order_id,
+            "net_pnl_verified": False,
+            "net_pnl_source": "CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED",
             "max_favourable_excursion_bps": str(mfe_bps),
             "max_adverse_excursion_bps": str(mae_bps),
             "observed_peak_price": str(position.peak_price),
@@ -1913,6 +1915,28 @@ class TacticalTrader:
             + D(str(getattr(self.config, "tactical_exit_fee_bps", 80)))
         ) / D("10000")
 
+    def _trade_financing_cost(
+        self, position: TacticalPosition, notional_eur: D, now: float
+    ) -> D:
+        """Conservative configured estimate for Kraken Spot-Margin rollovers.
+
+        The exchange ledger is authoritative. This estimate is deliberately marked
+        unverified and may be used for a conservative daily stop, never for learning.
+        """
+        if position.venue != "spot" or position.leverage <= D("1"):
+            return D("0")
+        elapsed = max(0.0, float(now) - float(position.opened_at))
+        rollovers = int(elapsed // 14400.0)
+        if rollovers <= 0:
+            return D("0")
+        try:
+            rollover_bps = D(str(getattr(self.config, "execution_margin_rollover_fee_bps", 4.0)))
+        except (TypeError, ValueError, ArithmeticError):
+            rollover_bps = D("4")
+        if not rollover_bps.is_finite() or rollover_bps < 0:
+            rollover_bps = D("4")
+        return abs(notional_eur) * D(rollovers) * rollover_bps / D("10000")
+
     def _close_shadow(
         self,
         position: TacticalPosition,
@@ -1923,9 +1947,17 @@ class TacticalTrader:
         gross = self._trade_gross_pnl(
             position.direction, position.notional_eur, position.entry_price, price
         )
-        fees = self._trade_fees(position.notional_eur)
+        trading_fees = self._trade_fees(position.notional_eur)
+        financing = self._trade_financing_cost(position, position.notional_eur, now)
+        fees = trading_fees + financing
         net = gross - fees
         trade_id = new_id("tactical_trade")
+        context = self._trade_learning_context(position, "SHADOW")
+        context.update({
+            "estimated_trading_fees_eur": str(trading_fees),
+            "estimated_financing_eur": str(financing),
+            "financing_rate_source": "CONFIG_FALLBACK_NOT_EXCHANGE_CONFIRMED",
+        })
         self.db.save_tactical_trade(
             trade_id,
             position.symbol,
@@ -1941,7 +1973,7 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            self._trade_learning_context(position, "SHADOW"),
+            context,
         )
         self.db.delete_tactical_position(position.symbol)
         with self._lock:
@@ -1975,9 +2007,17 @@ class TacticalTrader:
         gross = self._trade_gross_pnl(
             position.direction, closed_notional, position.entry_price, fill_price
         )
-        fees = self._trade_fees(closed_notional)
+        trading_fees = self._trade_fees(closed_notional)
+        financing = self._trade_financing_cost(position, closed_notional, now)
+        fees = trading_fees + financing
         net = gross - fees
         trade_id = new_id("tactical_trade")
+        context = self._trade_learning_context(position, "LIVE", client_order_id)
+        context.update({
+            "estimated_trading_fees_eur": str(trading_fees),
+            "estimated_financing_eur": str(financing),
+            "financing_rate_source": "CONFIG_FALLBACK_NOT_EXCHANGE_CONFIRMED",
+        })
         self.db.save_tactical_trade(
             trade_id,
             position.symbol,
@@ -1993,7 +2033,7 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            self._trade_learning_context(position, "LIVE", client_order_id),
+            context,
         )
         if ratio >= D("0.999999"):
             self.db.delete_tactical_position(position.symbol)

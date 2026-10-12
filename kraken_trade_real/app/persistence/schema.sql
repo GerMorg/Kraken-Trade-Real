@@ -363,7 +363,8 @@ CREATE TABLE IF NOT EXISTS tactical_trades(
   hold_seconds REAL NOT NULL,
   exit_reason TEXT NOT NULL,
   setup_score TEXT NOT NULL,
-  detail_json TEXT NOT NULL
+  detail_json TEXT NOT NULL,
+  net_verified INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tactical_trades_closed ON tactical_trades(closed_at);
 
@@ -396,3 +397,20 @@ CREATE TABLE IF NOT EXISTS tactical_order_progress(
   terminal INTEGER NOT NULL DEFAULT 0,
   updated_at REAL NOT NULL
 );
+
+
+-- Verified external funding/withdrawal cash flows for flow-normalized equity snapshots.
+-- Only EUR-denominated flows are valued automatically; unknown valuation keeps the
+-- drawdown basis explicitly unadjusted rather than silently using incomplete history.
+CREATE TABLE IF NOT EXISTS portfolio_external_cash_flows(
+  ledger_id TEXT PRIMARY KEY,
+  occurred_at REAL NOT NULL,
+  asset TEXT NOT NULL,
+  flow_type TEXT NOT NULL,
+  amount_asset TEXT NOT NULL,
+  fee_asset TEXT NOT NULL,
+  flow_eur TEXT,
+  source_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_time
+  ON portfolio_external_cash_flows(occurred_at);

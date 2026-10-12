@@ -1,9 +1,10 @@
 from decimal import Decimal
+from dataclasses import replace
 import json
 
 from app.config import Config
 from app.domain.models import Decision, PortfolioState, Signal
-from app.domain.states import Direction
+from app.domain.states import Direction, ProductType
 from app.trading.profit_protection import PositionProfitProtection
 
 D = Decimal
@@ -396,3 +397,39 @@ def test_core_exit_path_resets_profit_high_water_when_exchange_position_changes(
     )
     assert old["closed_at"] is not None
     assert old["close_reason"] == "POSITION_IDENTITY_CHANGED"
+
+
+
+def test_futures_position_receives_reduce_only_stop_loss_without_spot_learning(db, config, instrument):
+    future = replace(
+        instrument, venue="futures", product_type=ProductType.DERIVATIVE,
+        symbol="PF_XBTUSD", instrument_id="PF_XBTUSD", altname="PF_XBTUSD",
+        base="XBT", quote="USD", margin_class="futures",
+    )
+    portfolio = PortfolioState(
+        equity_eur=D("100"), cash_eur=D("80"),
+        positions={"PF_XBTUSD": D("-20")}, gross_eur=D("20"), net_eur=D("-20"),
+        position_pnl_pct={"PF_XBTUSD": D("-5")},
+        futures_position_symbols=("PF_XBTUSD",), futures_positions_read_ok=True,
+    )
+    audit = FakeAudit()
+    manager = PositionProfitProtection(config, db, audit)
+    manager.observe(portfolio, "futures-stop")
+    decision = manager.apply(
+        cycle_id="futures-stop",
+        instrument=future,
+        portfolio=portfolio,
+        decision=None,
+        long_signal=signal_for(future, Direction.LONG),
+        short_signal=signal_for(future, Direction.SHORT),
+        model_version="test",
+        config_hash="test",
+        min_cost_eur=D("0"),
+    )
+
+    assert decision is not None
+    assert decision.rationale["position_management_action"] == "STOP_LOSS_EXIT"
+    assert decision.target_position_eur == D("0")
+    assert decision.execution_direction == Direction.LONG
+    assert decision.reduce_only is True
+    assert db.one("SELECT episode_id FROM core_exit_episodes WHERE symbol='PF_XBTUSD'") is None

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import os
 import signal
@@ -12,6 +11,7 @@ import time
 from typing import Any, Callable
 
 from app.domain.models import digest_config, new_id
+from app.risk.cycle import CycleExposureLedger
 from app.portfolio.reconcile import (
     minimum_orderable_spot_quantity,
     resolve_spot_cash_reduction_quantity,
@@ -58,9 +58,8 @@ def _risk_diagnostic_context(
             D("100"),
             max(D("0.1"), D(str(decision.rationale.get("risk_position_limit_pct", "25")))),
         )
+    # Tactical sizing limits are subordinate to the immutable global net cap.
     net_limit_pct = D(str(config.risk_max_net_pct))
-    if risk_profile == "tactical":
-        net_limit_pct = max(net_limit_pct, position_limit_pct)
 
     if equity > 0:
         projected_gross_pct = gross_after / equity * D("100")
@@ -398,7 +397,7 @@ class TradingRuntime:
         self._watchdog_arm("", "STARTUP_PORTFOLIO")
         try:
             try:
-                startup_spot_tickers,_=self.gateway.public_tickers()
+                startup_spot_tickers,startup_future_tickers=self.gateway.public_tickers()
                 ticker_warnings = list(
                     getattr(self.gateway, "last_public_ticker_warnings", [])
                 )
@@ -409,7 +408,7 @@ class TradingRuntime:
                         component="xstocks_ticker",
                         warnings=ticker_warnings,
                     )
-                self.portfolio.set_market_context(self.instruments,startup_spot_tickers)
+                self.portfolio.set_market_context(self.instruments,startup_spot_tickers,startup_future_tickers)
                 self.audit.emit("STARTUP_PORTFOLIO_MARKET_CONTEXT","INFO",tickers=len(startup_spot_tickers))
             except Exception as exc:
                 self.audit.emit(
@@ -538,7 +537,7 @@ class TradingRuntime:
             market_stage_started=time.monotonic()
             ticker_captured_at=time.time()
             spot_payload,future_payload=self.gateway.public_tickers()
-            self.portfolio.set_market_context(self.instruments,spot_payload)
+            self.portfolio.set_market_context(self.instruments,spot_payload,future_payload)
             self.fx.set_instruments(self.instruments)
             portfolio=self.portfolio.reconcile()
             self.profit_protection.observe(portfolio, cycle_id)
@@ -849,9 +848,11 @@ class TradingRuntime:
             refreshed=0
             quote_missing=0
             latest_spot_payload=spot_payload
+            latest_future_payload=future_payload
             if selected:
                 refreshed_spot,refreshed_future=self.gateway.public_tickers()
                 latest_spot_payload=refreshed_spot
+                latest_future_payload=refreshed_future
                 refreshed_at=time.time()
                 from dataclasses import replace
                 for instrument in selected:
@@ -1099,33 +1100,7 @@ class TradingRuntime:
             # Treat accepted and ambiguous orders as provisional exposure for all
             # remaining decisions in this cycle. Exchange balances/positions may
             # not reflect an order yet, so a stale snapshot must not be reused.
-            cycle_target_reservations: dict[str, D] = {}
-            cycle_reserved_cash_eur = D("0")
-            cycle_reserved_margin_eur = D("0")
-
-            def cycle_risk_portfolio(base):
-                projected_positions = dict(base.positions)
-                for symbol, target in cycle_target_reservations.items():
-                    if target == 0:
-                        projected_positions.pop(symbol, None)
-                    else:
-                        projected_positions[symbol] = target
-                normalized_positions = {
-                    symbol: D(str(value)) for symbol, value in projected_positions.items()
-                    if D(str(value)) != 0
-                }
-                projected_gross = sum(
-                    (abs(value) for value in normalized_positions.values()), D("0")
-                )
-                projected_net = sum(normalized_positions.values(), D("0"))
-                return replace(
-                    base,
-                    positions=normalized_positions,
-                    gross_eur=projected_gross,
-                    net_eur=projected_net,
-                    cash_eur=D(str(base.cash_eur)) - cycle_reserved_cash_eur,
-                    margin_used_eur=D(str(base.margin_used_eur)) + cycle_reserved_margin_eur,
-                )
+            cycle_exposure = CycleExposureLedger()
 
             def available_spot_balance(asset: str) -> D:
                 reader = getattr(self.portfolio, "available_cash_balance", None)
@@ -1512,12 +1487,25 @@ class TradingRuntime:
                         fx_cost_bps=str(fx_cost_bps),
                     )
 
-                risk_portfolio = cycle_risk_portfolio(portfolio)
+                risk_portfolio = cycle_exposure.project(portfolio)
+                risk_margin_account = (
+                    dict(margin_account) if isinstance(margin_account, dict) else margin_account
+                )
+                if risk_margin_account is not None and cycle_exposure.reserved_margin_eur > 0:
+                    try:
+                        free_before_reservations = D(
+                            str(risk_margin_account.get("free_margin") or "0")
+                        )
+                        risk_margin_account["free_margin"] = str(
+                            free_before_reservations - cycle_exposure.reserved_margin_eur
+                        )
+                    except (TypeError, ValueError, ArithmeticError):
+                        risk_margin_account["free_margin"] = "0"
                 risk=self.risk.evaluate(
                     decision,
                     risk_portfolio,
                     snap,
-                    margin_account,
+                    risk_margin_account,
                 )
                 self.db.save_decision(decision)
                 prediction_id=new_id("prediction")
@@ -1798,7 +1786,7 @@ class TradingRuntime:
                         )
                         # Refresh the portfolio after the confirmed FX fill. This
                         # also refreshes BalanceEx holds before any new cash order.
-                        self.portfolio.set_market_context(self.instruments,latest_spot_payload)
+                        self.portfolio.set_market_context(self.instruments,latest_spot_payload,latest_future_payload)
                         portfolio = self.portfolio.reconcile()
                         available_quote = available_spot_balance(instrument.quote)
                         if available_quote + D("0.00000001") < cash_budget_quote:
@@ -1867,28 +1855,11 @@ class TradingRuntime:
                     "UNKNOWN_RECONCILING",
                 }:
                     placed += 1
-                    target = D(str(decision.target_position_eur))
-                    current = D(str(decision.current_position_eur))
-                    same_side = current == 0 or target == 0 or current * target > 0
-                    incremental_notional = (
-                        max(D("0"), abs(target) - abs(current))
-                        if same_side else abs(target)
-                    )
-                    cycle_target_reservations[instrument.symbol] = target
-                    if incremental_notional > 0:
-                        capital_required = (
-                            incremental_notional / lev if lev > 1 else incremental_notional
-                        )
-                        cycle_reserved_cash_eur += capital_required
-                        if lev > 1:
-                            cycle_reserved_margin_eur += incremental_notional / lev
+                    reservation = cycle_exposure.reserve(decision, lev)
                     self.audit.emit(
                         "CYCLE_RISK_EXPOSURE_RESERVED", "INFO",
-                        cycle_id=cycle_id, symbol=instrument.symbol,
-                        target_position_eur=str(target),
-                        incremental_notional_eur=str(incremental_notional),
-                        reserved_cash_eur=str(cycle_reserved_cash_eur),
-                        reserved_margin_eur=str(cycle_reserved_margin_eur),
+                        cycle_id=cycle_id,
+                        **reservation,
                         order_state=str(result.get("state")),
                     )
                     if cash_budget_quote is not None and cash_budget_asset:
@@ -1944,7 +1915,7 @@ class TradingRuntime:
             )
             stage="PORTFOLIO_FINAL"
             self._watchdog_arm(cycle_id, stage)
-            self.portfolio.set_market_context(self.instruments,latest_spot_payload)
+            self.portfolio.set_market_context(self.instruments,latest_spot_payload,latest_future_payload)
             final_portfolio=self.portfolio.reconcile()
             self.profit_protection.observe(final_portfolio, cycle_id)
             self.db.save_portfolio(cycle_id,final_portfolio)

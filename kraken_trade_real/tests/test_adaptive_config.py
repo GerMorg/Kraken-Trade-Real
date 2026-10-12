@@ -835,3 +835,9 @@ def test_core_optimizer_restores_learned_market_filters_toward_baseline(db):
     params = registry.parameters(registry.active("strategy_core"), family="strategy_core")
     assert params["market_min_liquidity_eur"] == 145.5
     assert params["market_max_spread_bps"] == 46.35
+
+
+
+def test_tactical_exit_optimizer_bounds_match_runtime_adaptive_bounds():
+    assert AdaptiveParameterOptimizer.EXIT_POLICY_BOUNDS["tactical_take_profit_pct"] == TACTICAL_POLICY_BOUNDS["tactical_take_profit_pct"]
+    assert TACTICAL_POLICY_BOUNDS["tactical_take_profit_pct"][1] == 8.0
