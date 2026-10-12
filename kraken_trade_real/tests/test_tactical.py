@@ -679,7 +679,7 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
         quantity=D("0.1"), entry_price=D("100"), peak_price=D("106.6"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
-        opened_at=0.0, entry_client_order_id="test-order", setup_score=D("250"),
+        opened_at=1.0, entry_client_order_id="test-order", setup_score=D("250"),
         state="OPEN",
     )
     trader._positions[position.symbol] = position
@@ -966,7 +966,7 @@ def test_tactical_max_hold_still_closes_a_trailing_position():
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
         quantity=D("0.1"), entry_price=D("100"), peak_price=D("103.5"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
-        opened_at=0.0, entry_client_order_id="test-order", setup_score=D("200"),
+        opened_at=1.0, entry_client_order_id="test-order", setup_score=D("200"),
         state="TRAILING",
     )
     trader._positions[position.symbol] = position
