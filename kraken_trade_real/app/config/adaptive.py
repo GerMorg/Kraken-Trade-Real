@@ -70,16 +70,16 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_min_breakout_bps": 25.0,
     "tactical_min_imbalance": 0.10,
     "tactical_max_spread_bps": 25.0,
-    "tactical_min_expected_move_bps": 280.0,
+    "tactical_min_expected_move_bps": 350.0,
     "tactical_stop_loss_pct": 1.0,
-    "tactical_take_profit_pct": 2.2,
+    "tactical_take_profit_pct": 4.1,
     "tactical_trailing_trigger_bps": 100.0,
     "tactical_trailing_stop_pct": 0.7,
     "tactical_max_hold_seconds": 1800,
     "tactical_cooldown_seconds": 120,
     "tactical_reversal_exit_bps": 120.0,
     "tactical_adaptive_entry_enabled": True,
-    "tactical_adaptive_min_expected_move_bps": 230.0,
+    "tactical_adaptive_min_expected_move_bps": 321.0,
     "tactical_adaptive_min_confidence": 0.75,
     "tactical_adaptive_min_net_edge_bps": 15.0,
     "tactical_context_block_bps": 80.0,
@@ -126,12 +126,14 @@ def tactical_minimum_move_floors(
     exit_fee_bps: Any = 80.0,
     expected_slippage_bps: Any = 25.0,
     safety_buffer_bps: Any = 30.0,
+    margin_open_fee_bps: Any = 5.0,
+    stop_loss_pct: Any = 1.0,
 ) -> tuple[float, float]:
-    """Return strict minimum gross-move gates that clear configured trading costs.
+    """Return strict gross-move floors covering costs plus the planned stop risk.
 
-    Values are learned-policy constraints, not expected-profit forecasts. The
-    one-basis-point headroom prevents equality/rounding from admitting a trade
-    whose gross expected move merely equals its configured costs.
+    These are policy guardrails, not expected-profit forecasts. The expected move
+    must cover round-trip costs and at least one configured stop-loss distance.
+    One-basis-point headroom prevents equality/rounding from admitting an exact tie.
     """
     def nonnegative(value: Any, default: float) -> float:
         try:
@@ -146,8 +148,13 @@ def tactical_minimum_move_floors(
         + nonnegative(exit_fee_bps, 80.0)
         + nonnegative(expected_slippage_bps, 25.0)
         + nonnegative(safety_buffer_bps, 30.0)
+        + nonnegative(margin_open_fee_bps, 5.0)
     )
-    return fixed_costs + 1.0, fixed_costs + spread + 1.0
+    stop_risk_bps = nonnegative(stop_loss_pct, 1.0) * 100.0
+    return (
+        fixed_costs + stop_risk_bps + 1.0,
+        fixed_costs + spread + stop_risk_bps + 1.0,
+    )
 
 
 
@@ -239,26 +246,31 @@ class AdaptiveConfig:
 
         # Tactical stop must remain below its profit target.
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
-        target = float(merged.get("tactical_take_profit_pct", 2.2))
+        target = float(merged.get("tactical_take_profit_pct", 4.1))
         if stop >= target:
             merged["tactical_stop_loss_pct"] = 1.0
-            merged["tactical_take_profit_pct"] = 2.2
+            merged["tactical_take_profit_pct"] = 4.1
 
-        # Learned thresholds must remain above the actual cost assumptions loaded
-        # from HA, even if a legacy/corrupt model or optimizer candidate is lower.
+        # Learned thresholds must cover live cost assumptions plus the configured
+        # stop risk, even if a legacy/corrupt model or optimizer candidate is lower.
         adaptive_move_floor, normal_move_floor = tactical_minimum_move_floors(
             merged.get("tactical_max_spread_bps", 25.0),
             entry_fee_bps=getattr(self._base, "tactical_entry_fee_bps", 80.0),
             exit_fee_bps=getattr(self._base, "tactical_exit_fee_bps", 80.0),
             expected_slippage_bps=getattr(self._base, "tactical_expected_slippage_bps", 25.0),
             safety_buffer_bps=getattr(self._base, "tactical_safety_buffer_bps", 30.0),
+            margin_open_fee_bps=getattr(self._base, "tactical_margin_open_fee_bps", 5.0),
+            stop_loss_pct=merged.get(
+                "tactical_stop_loss_pct",
+                getattr(self._base, "tactical_stop_loss_pct", 1.0),
+            ),
         )
         merged["tactical_adaptive_min_expected_move_bps"] = max(
-            float(merged.get("tactical_adaptive_min_expected_move_bps", 230.0)),
+            float(merged.get("tactical_adaptive_min_expected_move_bps", 321.0)),
             adaptive_move_floor,
         )
         merged["tactical_min_expected_move_bps"] = max(
-            float(merged.get("tactical_min_expected_move_bps", 280.0)),
+            float(merged.get("tactical_min_expected_move_bps", 350.0)),
             normal_move_floor,
         )
         with self._lock:

@@ -104,7 +104,7 @@ def cfg(**overrides):
         tactical_short_leverage=2,
         tactical_order_confirm_seconds=5,
         tactical_stop_loss_pct=1,
-        tactical_take_profit_pct=2.2,
+        tactical_take_profit_pct=4.1,
         tactical_trailing_trigger_bps=100,
         tactical_trailing_stop_pct=0.7,
         tactical_max_hold_seconds=1800,
@@ -352,7 +352,7 @@ def test_tactical_short_pnl_and_fees_use_positive_exposure():
     gross = TacticalTrader._trade_gross_pnl(
         Direction.SHORT, D("10"), D("100"), D("95")
     )
-    assert gross == D("10") * (D("100") / D("95") - D("1"))
+    assert gross == D("10") * (D("1") - D("95") / D("100"))
     trader = TacticalTrader(
         cfg(),
         DummyDB(),
@@ -677,7 +677,7 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     )
     position = TacticalPosition(
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
-        quantity=D("0.1"), entry_price=D("100"), peak_price=D("104"),
+        quantity=D("0.1"), entry_price=D("100"), peak_price=D("104.2"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
         opened_at=0.0, entry_client_order_id="test-order", setup_score=D("250"),
         state="OPEN",
@@ -693,8 +693,8 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     armed = [event for event in audit.events if event[0] == "TACTICAL_TREND_FOLLOWING_ARMED"]
     assert armed
     assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
-    assert D(armed[0][2]["profit_floor_bps"]) == D("265")
-    assert D(armed[0][2]["take_profit_trigger_bps"]) == D("335")
+    assert D(armed[0][2]["profit_floor_bps"]) == D("340")
+    assert D(armed[0][2]["take_profit_trigger_bps"]) == D("410")
 
 def _reversal_test_trader(position_direction, signal_direction, signal_edge):
     audit = DummyAudit()
@@ -895,3 +895,90 @@ def test_tactical_entry_policy_snapshot_owns_context_threshold():
     snapshot = trader._entry_policy_snapshot()
 
     assert snapshot["tactical_context_block_bps"] == "47.5"
+
+
+
+def test_tactical_stop_uses_executable_quote_and_linear_short_pnl():
+    for direction, state in (
+        (
+            Direction.LONG,
+            {"price": D("100"), "bid": D("99"), "ask": D("100.01"), "timestamp": 5000.0},
+        ),
+        (
+            Direction.SHORT,
+            {"price": D("100"), "bid": D("100.99"), "ask": D("101"), "timestamp": 5000.0},
+        ),
+    ):
+        audit = DummyAudit()
+        trader = TacticalTrader(
+            cfg(), DummyDB(), audit, None, DummyWS(), None, None, None, None,
+        )
+        inst = instrument()
+        trader._candidates[inst.symbol] = inst
+        trader._portfolio = PortfolioState(
+            equity_eur=D("50"), cash_eur=D("50"), positions={},
+            gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+            unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
+            drawdown_pct=D("0"), open_orders=0, source_timestamp=5000.0,
+        )
+        position = TacticalPosition(
+            symbol=inst.symbol, venue="spot", direction=direction,
+            quantity=D("0.1"), entry_price=D("100"), peak_price=D("100"),
+            trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
+            opened_at=4000.0, entry_client_order_id="test-order", setup_score=D("200"),
+            state="OPEN",
+        )
+        trader._positions[position.symbol] = position
+        trader._fresh_position_state = lambda _position, _now, snapshot=state: snapshot
+        trader._opposite_signal = lambda _position: None
+        exits = []
+        trader._exit = lambda *args: exits.append(args)
+
+        trader._manage_positions(5000.0)
+
+        assert len(exits) == 1
+        assert exits[0][2] == "STOP_LOSS"
+
+
+def test_tactical_short_gross_pnl_uses_entry_notional_return():
+    assert TacticalTrader._trade_gross_pnl(
+        Direction.SHORT, D("100"), D("100"), D("90")
+    ) == D("10")
+    assert TacticalTrader._trade_gross_pnl(
+        Direction.SHORT, D("100"), D("100"), D("110")
+    ) == D("-10")
+
+
+def test_tactical_max_hold_still_closes_a_trailing_position():
+    trader = TacticalTrader(
+        cfg(tactical_max_hold_seconds=1800), DummyDB(), DummyAudit(),
+        None, DummyWS(), None, None, None, None,
+    )
+    inst = instrument()
+    trader._candidates[inst.symbol] = inst
+    trader._portfolio = PortfolioState(
+        equity_eur=D("50"), cash_eur=D("50"), positions={},
+        gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+        unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"), open_orders=0, source_timestamp=5000.0,
+    )
+    position = TacticalPosition(
+        symbol=inst.symbol, venue="spot", direction=Direction.LONG,
+        quantity=D("0.1"), entry_price=D("100"), peak_price=D("103.5"),
+        trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
+        opened_at=0.0, entry_client_order_id="test-order", setup_score=D("200"),
+        state="TRAILING",
+    )
+    trader._positions[position.symbol] = position
+    trader._fresh_position_state = lambda _position, now: {
+        "price": D("103.5"), "bid": D("103.5"), "ask": D("103.51"),
+        "timestamp": now,
+    }
+    trader._opposite_signal = lambda _position: None
+    exits = []
+    trader._exit = lambda *args: exits.append(args)
+
+    trader._manage_positions(3000.0)
+
+    assert len(exits) == 1
+    assert exits[0][2] == "TIME_STOP"

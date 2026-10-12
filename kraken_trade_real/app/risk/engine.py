@@ -99,6 +99,19 @@ class RiskEngine:
                 max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
             )
 
+        # Core candidate selection uses calibrated confidence. Carry that exact
+        # value into the final risk gate; Tactical keeps its direct signal confidence.
+        confidence_for_risk = d.signal.confidence
+        if risk_profile != "tactical":
+            try:
+                calibrated = D(str(
+                    d.rationale.get("calibrated_confidence", d.signal.confidence)
+                ))
+                if calibrated.is_finite():
+                    confidence_for_risk = max(D("0"), min(D("1"), calibrated))
+            except (ArithmeticError, TypeError, ValueError):
+                pass
+
         # Strategy-specific position sizing must never widen the portfolio-wide
         # net-exposure envelope. Tactical position limits may be looser than Core,
         # but the immutable global net cap remains authoritative for every entry.
@@ -165,7 +178,7 @@ class RiskEngine:
             ),
             "confidence": (
                 valid_reduction
-                or d.signal.confidence >= D(str(self.config.strategy_min_confidence))
+                or confidence_for_risk >= D(str(self.config.strategy_min_confidence))
             ),
             "extreme_volatility": (
                 valid_reduction

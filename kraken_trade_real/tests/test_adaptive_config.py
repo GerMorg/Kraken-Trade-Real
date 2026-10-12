@@ -75,7 +75,7 @@ def test_adaptive_config_overlays_only_managed_policy_parameters():
         tactical_reversal_exit_bps=120.0,
     )
     config = AdaptiveConfig(base, FakeRegistry())
-    assert config.tactical_min_expected_move_bps == 350.0
+    assert config.tactical_min_expected_move_bps == 371.0
     assert config.tactical_min_momentum_bps == 60.0
     assert config.tactical_portfolio_pct == 20.0
     assert config.tactical_stop_loss_pct == 1.25
@@ -151,6 +151,17 @@ def test_decision_engine_uses_regime_specific_confidence_scale():
     assert engine._confidence_scale(params, "RANGING") == Decimal("1.2")
     assert engine._confidence_scale(params, "UNKNOWN") == Decimal("1.1")
 
+
+def test_decision_engine_uses_neutral_scale_for_invalid_or_nonfinite_values():
+    engine = DecisionEngine(SimpleNamespace())
+    assert engine._confidence_scale({"confidence_scale": "NaN"}) == Decimal("1")
+    assert engine._confidence_scale({"confidence_scale": "Infinity"}) == Decimal("1")
+    assert engine._confidence_scale({"confidence_scale": "bad"}) == Decimal("1")
+    assert engine._confidence_scale({
+        "confidence_scale": 1.2,
+        "confidence_scale_by_regime": {"TREND_UP": "-Infinity"},
+    }, "TREND_UP") == Decimal("1")
+
 def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     path = tmp_path / "options.json"
     path.write_text(json.dumps({
@@ -180,15 +191,15 @@ def test_legacy_ha_options_cannot_override_learned_parameters(tmp_path):
     config = Config.load(str(path))
     assert config.market_min_liquidity_eur == 50.0
     assert config.market_max_spread_bps == 80.0
-    assert config.tactical_min_expected_move_bps == 280.0
+    assert config.tactical_min_expected_move_bps == 350.0
     assert config.tactical_min_momentum_bps == 40.0
     assert config.tactical_min_volume_ratio == 2.0
     assert config.tactical_min_breakout_bps == 25.0
     assert config.tactical_max_spread_bps == 25.0
-    assert config.tactical_adaptive_min_expected_move_bps == 230.0
+    assert config.tactical_adaptive_min_expected_move_bps == 321.0
     assert config.tactical_portfolio_pct == 25.0
     assert config.tactical_stop_loss_pct == 1.0
-    assert config.tactical_take_profit_pct == 2.2
+    assert config.tactical_take_profit_pct == 4.1
     assert config.tactical_trailing_trigger_bps == 100.0
     assert config.tactical_trailing_stop_pct == 0.7
     assert config.tactical_max_hold_seconds == 1800
@@ -483,7 +494,7 @@ def test_adaptive_config_restores_defaults_for_malformed_or_nonfinite_policy_val
     assert config.strategy_min_confidence == CORE_DEFAULTS["strategy_min_confidence"]
     assert config.strategy_adaptive_cost_ratio == CORE_DEFAULTS["strategy_adaptive_cost_ratio"]
     assert config.tactical_min_momentum_bps == 40.0
-    assert config.tactical_min_expected_move_bps == 280.0
+    assert config.tactical_min_expected_move_bps == 350.0
     assert config.tactical_max_spread_bps == 25.0
     assert all(
         math.isfinite(float(config.as_dict()[key]))
@@ -588,7 +599,7 @@ def test_core_optimizer_handles_positive_verified_outcomes_without_missing_stats
     assert result["recent"]["mean_verified_net_return_bps"] == 70.0
 
 
-def test_adaptive_config_enforces_tactical_move_thresholds_above_configured_costs():
+def test_adaptive_config_enforces_tactical_move_thresholds_above_costs_and_stop_risk():
     class UnderCostRegistry:
         def active(self, family="decision"):
             return f"undercost-{family}"
@@ -612,10 +623,10 @@ def test_adaptive_config_enforces_tactical_move_thresholds_above_configured_cost
     )
     config = AdaptiveConfig(base, UnderCostRegistry())
 
-    # Adaptive entries cover fixed costs; normal entries also cover the learned
-    # maximum spread. An invalid registry value must never reach the live signal gate.
-    assert config.tactical_adaptive_min_expected_move_bps == 256.0
-    assert config.tactical_min_expected_move_bps == 296.0
+    # Both adaptive and normal paths reserve the planned stop-loss risk in addition
+    # to fees, slippage, safety buffer and margin-opening costs.
+    assert config.tactical_adaptive_min_expected_move_bps == 361.0
+    assert config.tactical_min_expected_move_bps == 401.0
 
 
 def test_registry_rejects_tactical_policy_below_cost_floors(db):
@@ -638,6 +649,12 @@ def test_registry_rejects_tactical_policy_below_cost_floors(db):
     ):
         params = dict(TACTICAL_DEFAULTS)
         params[key] = unsafe_value
+        # Isolate the reason under test: the complementary threshold must already
+        # satisfy its own floor or the validation correctly rejects that first.
+        if key == "tactical_min_expected_move_bps":
+            params["tactical_adaptive_min_expected_move_bps"] = 400.0
+        else:
+            params["tactical_min_expected_move_bps"] = 500.0
         registry.register_candidate(
             version,
             "strategy_tactical",
@@ -660,8 +677,8 @@ def test_positive_tactical_optimizer_never_promotes_moves_below_cost_floor(db):
     registry = ModelRegistry(db)
     parent = registry.active("strategy_tactical")
     near_floor = dict(TACTICAL_DEFAULTS)
-    near_floor["tactical_min_expected_move_bps"] = 242.0
-    near_floor["tactical_adaptive_min_expected_move_bps"] = 217.0
+    near_floor["tactical_min_expected_move_bps"] = 346.0
+    near_floor["tactical_adaptive_min_expected_move_bps"] = 321.0
     registry.register_candidate(
         "tactical-policy-near-cost-floor",
         "strategy_tactical",
@@ -689,9 +706,13 @@ def test_positive_tactical_optimizer_never_promotes_moves_below_cost_floor(db):
 
     assert result["status"] == "PROMOTED", result
     active = registry.parameters(registry.active("strategy_tactical"), family="strategy_tactical")
-    assert active["tactical_adaptive_min_expected_move_bps"] >= 216.0
+    assert active["tactical_adaptive_min_expected_move_bps"] >= (
+        80.0 + 80.0 + 25.0 + 30.0 + 5.0
+        + active["tactical_stop_loss_pct"] * 100.0 + 1.0
+    )
     assert active["tactical_min_expected_move_bps"] >= (
-        80.0 + 80.0 + active["tactical_max_spread_bps"] + 25.0 + 30.0 + 1.0
+        80.0 + 80.0 + active["tactical_max_spread_bps"] + 25.0 + 30.0 + 5.0
+        + active["tactical_stop_loss_pct"] * 100.0 + 1.0
     )
 
 def test_adaptive_config_bounds_registry_market_filter_values():

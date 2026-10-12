@@ -23,7 +23,14 @@ class DecisionEngine:
         by_regime = parameters.get("confidence_scale_by_regime", {})
         if regime and isinstance(by_regime, dict) and regime in by_regime:
             scale_value = by_regime[regime]
-        scale = D(str(scale_value))
+        try:
+            scale = D(str(scale_value))
+        except (ArithmeticError, TypeError, ValueError):
+            return D("1")
+        # Corrupt/legacy learned values (NaN, infinities or malformed strings)
+        # must not crash the strategy cycle or poison confidence calibration.
+        if not scale.is_finite():
+            return D("1")
         return max(D("0.5"), min(D("1.5"), scale))
 
     def _target_position(self, equity: D, confidence: D, signal_direction: Direction) -> D:
@@ -317,6 +324,7 @@ class DecisionEngine:
             "short_net_edge_bps": str(short_signal.net_edge_bps),
             "selected_direction": signal.direction.value,
             "execution_direction": execution_direction.value,
+            "calibrated_confidence": str(calibrated_confidence),
             "regime": signal.regime,
             "news_effect_bps": str(signal.news_effect_bps),
             "gemini_effect_bps": str(signal.gemini_effect_bps),

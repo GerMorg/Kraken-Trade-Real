@@ -326,7 +326,7 @@ class Config:
             tactical_min_breakout_bps=f("tactical_min_breakout_bps", 25.0, 1.0, 5000.0),
             tactical_min_imbalance=f("tactical_min_imbalance", 0.10, 0.0, 1.0),
             tactical_max_spread_bps=f("tactical_max_spread_bps", 25.0, 0.1, 1000.0),
-            tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 280.0, 1.0, 10000.0),
+            tactical_min_expected_move_bps=f("tactical_min_expected_move_bps", 350.0, 1.0, 10000.0),
             tactical_entry_fee_bps=f("tactical_entry_fee_bps", 80.0, 0.0, 1000.0),
             tactical_exit_fee_bps=f("tactical_exit_fee_bps", 80.0, 0.0, 1000.0),
             tactical_margin_open_fee_bps=f("tactical_margin_open_fee_bps", 5.0, 0.0, 1000.0),
@@ -334,7 +334,7 @@ class Config:
             tactical_safety_buffer_bps=f("tactical_safety_buffer_bps", 30.0, 0.0, 1000.0),
             tactical_context_block_bps=f("tactical_context_block_bps", 80.0, 0.0, 5000.0),
             tactical_stop_loss_pct=f("tactical_stop_loss_pct", 1.0, 0.1, 20.0),
-            tactical_take_profit_pct=f("tactical_take_profit_pct", 2.2, 0.2, 30.0),
+            tactical_take_profit_pct=f("tactical_take_profit_pct", 4.1, 0.2, 30.0),
             tactical_trailing_trigger_bps=f("tactical_trailing_trigger_bps", 100.0, 1.0, 5000.0),
             tactical_trailing_stop_pct=f("tactical_trailing_stop_pct", 0.7, 0.1, 20.0),
             tactical_max_hold_seconds=i("tactical_max_hold_seconds", 1800, 30),
@@ -347,7 +347,7 @@ class Config:
             tactical_short_leverage=f("tactical_short_leverage", 2.0, 1.0, 5.0),
             tactical_order_confirm_seconds=i("tactical_order_confirm_seconds", 5, 1),
             tactical_adaptive_entry_enabled=b("tactical_adaptive_entry_enabled", True),
-            tactical_adaptive_min_expected_move_bps=f("tactical_adaptive_min_expected_move_bps", 230.0, 1.0, 10000.0),
+            tactical_adaptive_min_expected_move_bps=f("tactical_adaptive_min_expected_move_bps", 321.0, 1.0, 10000.0),
             tactical_adaptive_min_confidence=f("tactical_adaptive_min_confidence", 0.75, 0.5, 1.0),
             tactical_adaptive_min_net_edge_bps=f("tactical_adaptive_min_net_edge_bps", 15.0, 1.0, 1000.0),
             tactical_seed_history=b("tactical_seed_history", True),
@@ -390,15 +390,19 @@ class Config:
             raise ValueError("tactical_short_leverage exceeds the global leverage ceiling")
         if cfg.tactical_stop_loss_pct >= cfg.tactical_take_profit_pct:
             raise ValueError("tactical stop-loss must be below take-profit")
-        minimum_cost = (
+        minimum_move_for_risk = (
             cfg.tactical_entry_fee_bps
             + cfg.tactical_exit_fee_bps
             + cfg.tactical_max_spread_bps
             + cfg.tactical_expected_slippage_bps
             + cfg.tactical_safety_buffer_bps
+            + cfg.tactical_margin_open_fee_bps
+            + cfg.tactical_stop_loss_pct * 100.0
         )
-        if cfg.tactical_min_expected_move_bps <= minimum_cost:
-            raise ValueError("tactical minimum expected move must clear configured costs")
+        if cfg.tactical_min_expected_move_bps <= minimum_move_for_risk:
+            raise ValueError(
+                "tactical minimum expected move must clear round-trip costs plus stop-loss risk"
+            )
         # Tactical may be configured in live-intent mode while global order
         # submission remains disabled. TradingAuthority is the final gate and
         # requires live_enabled=True and kill_switch=False for actual orders.
