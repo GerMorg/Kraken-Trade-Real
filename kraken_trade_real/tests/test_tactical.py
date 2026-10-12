@@ -177,6 +177,83 @@ def market_state(now=1000.0, direction="LONG"):
     }
 
 
+def test_live_tactical_spot_entry_uses_guarded_fx_funding_and_spendable_balance():
+    class FundingPortfolio:
+        available = D("20")
+        reconciliations = 0
+        def available_cash_balance(self, asset):
+            assert asset == "USD"
+            return self.available
+        def cash_balance(self, asset):
+            return self.available_cash_balance(asset)
+        def reconcile(self):
+            self.reconciliations += 1
+            return SimpleNamespace(equity_eur=D("100"), positions={})
+
+    class FundingManager:
+        def __init__(self):
+            self.calls = []
+        def ensure_quote_funds(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ready": True, "converted": True, "reason": "FX_CONVERSION_FILLED"}
+
+    portfolio, funding = FundingPortfolio(), FundingManager()
+    trader = TacticalTrader(
+        cfg(tactical_shadow_mode=False), DummyDB(), DummyAudit(), None, DummyWS(),
+        None, portfolio, None, None,
+    )
+    trader.fx_funding = funding
+    signal = TacticalSignal(
+        symbol="BTC/USD", direction=Direction.LONG, score=D("300"),
+        expected_move_bps=D("500"), expected_cost_bps=D("200"),
+        spread_bps=D("2"), momentum_60_bps=D("100"), momentum_180_bps=D("150"),
+        volatility_bps=D("20"), volume_ratio=D("3"), breakout_bps=D("50"),
+        imbalance=D("0.5"), confidence=D("0.9"), reason="VOL_BREAKOUT_LONG",
+    )
+    ready, refreshed = trader._ensure_live_spot_quote_funds(
+        instrument(product_type=ProductType.SPOT, leverage_levels=(D("1"),)),
+        D("0.1"), D("100"), signal, 1234.0,
+    )
+    assert ready is True and refreshed is not None
+    assert portfolio.reconciliations == 1
+    assert funding.calls[0]["quote"] == "USD"
+    assert funding.calls[0]["required_quote"] > D("10")
+    assert funding.calls[0]["protected_symbol"] == "BTC/USD"
+
+
+def test_live_tactical_spot_entry_fails_closed_when_fx_funding_is_not_ready():
+    class FundingPortfolio:
+        def available_cash_balance(self, asset):
+            return D("1")
+        def cash_balance(self, asset):
+            return D("1")
+    class FundingManager:
+        def ensure_quote_funds(self, **kwargs):
+            return {"ready": False, "reason": "FX_SOURCE_FUNDS_UNAVAILABLE"}
+    audit = DummyAudit()
+    trader = TacticalTrader(
+        cfg(tactical_shadow_mode=False), DummyDB(), audit, None, DummyWS(),
+        None, FundingPortfolio(), None, None,
+    )
+    trader.fx_funding = FundingManager()
+    signal = TacticalSignal(
+        symbol="BTC/USD", direction=Direction.LONG, score=D("300"),
+        expected_move_bps=D("500"), expected_cost_bps=D("200"),
+        spread_bps=D("2"), momentum_60_bps=D("100"), momentum_180_bps=D("150"),
+        volatility_bps=D("20"), volume_ratio=D("3"), breakout_bps=D("50"),
+        imbalance=D("0.5"), confidence=D("0.9"), reason="VOL_BREAKOUT_LONG",
+    )
+    ready, refreshed = trader._ensure_live_spot_quote_funds(
+        instrument(product_type=ProductType.SPOT, leverage_levels=(D("1"),)),
+        D("0.1"), D("100"), signal, 1234.0,
+    )
+    assert ready is False and refreshed is None
+    assert any(
+        code == "TACTICAL_ENTRY_BLOCKED" and payload.get("reason") == "FX_SOURCE_FUNDS_UNAVAILABLE"
+        for code, _, payload in audit.events
+    )
+
+
 def test_tactical_long_signal_requires_cost_aware_breakout():
     websocket = DummyWS()
     websocket.market_snapshot = lambda symbol: market_state(direction="LONG")
