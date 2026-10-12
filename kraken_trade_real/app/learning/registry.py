@@ -267,6 +267,7 @@ class ModelRegistry:
 
             adaptive_move_floor, normal_move_floor = tactical_minimum_move_floors(
                 effective["tactical_max_spread_bps"],
+                stop_loss_pct=effective["tactical_stop_loss_pct"],
             )
             if float(effective["tactical_adaptive_min_expected_move_bps"]) < adaptive_move_floor:
                 return "TACTICAL_ADAPTIVE_MOVE_BELOW_ESTIMATED_COST_FLOOR"
