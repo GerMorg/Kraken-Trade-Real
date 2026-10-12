@@ -2,15 +2,15 @@
 
 Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.82 (PR pending)**  
+Main version: **0.1.82**  
 Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.82 (PR pending)
+## Latest release — v0.1.82
 
 - Adds explicit `ENTRY_FEE_NOT_QUOTE_DENOMINATED` / `EXIT_FEE_NOT_QUOTE_DENOMINATED` counts when an exchange-ledger fee is verified but paid in a non-quote currency. This closes a diagnostic blind spot for estimate-only realized outcomes.
-- Full CI must pass before merge; no risk gate or order behavior changes.
+- PR #94 merged as `cc28cf5435626af10fa4f0e242defa5b059c31bb`; all five PR checks passed. The post-merge main CI is being verified. No risk gate or order behavior changes.
 
 ## Previous release — v0.1.81
 
