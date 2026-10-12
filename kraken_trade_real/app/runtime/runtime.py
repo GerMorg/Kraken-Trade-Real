@@ -225,6 +225,9 @@ class TradingRuntime:
         self.config_hash=digest_config(config_snapshot)
         self.instruments: list[Any]=[]
         self.fx=FXConversionManager(config, db, audit, authority, portfolio, self.instruments)
+        if self.tactical is not None:
+            # Tactical live Spot entries share Core's audited quote-funding path.
+            self.tactical.fx_funding = self.fx
         self.profit_protection = PositionProfitProtection(config, db, audit)
         if getattr(config, "tactical_position_limit_legacy_default_overridden", False):
             self.audit.emit(
