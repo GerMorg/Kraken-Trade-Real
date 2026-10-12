@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.83
+- Add explicit Tactical live-entry fill events with BUY/SELL side, direction, quantity, fill price, notional, estimated move/cost/net edge and order ID.
+- Enrich Tactical exit order/fill events with actual order side, entry/exit prices, quantity, exit reason, estimated fees and net result.
+- Mark `CYCLE_COMPLETED.orders` as Core-strategy-only so Tactical orders running on their independent thread are not mistaken for missing orders.
+- Prevent the trailing regime from arming below the estimated round-trip cost floor plus the trailing distance; avoids disabling the time stop at a nominal target that is not yet cost-covering.
+- Bump Home Assistant app, package, container and Kraken API User-Agent versions to 0.1.83.
+
+
 ## 0.1.82
 - Report when a ledger-verified fill fee is denominated in the base asset rather than the instrument quote asset, so estimate-only realized outcomes have an explicit cause.
 - Add regression coverage for non-quote-denominated fees in attribution diagnostics.

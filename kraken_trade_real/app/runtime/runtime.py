@@ -1920,6 +1920,8 @@ class TradingRuntime:
                 cycle_id=cycle_id,
                 selected=len(selected),
                 orders=placed,
+                orders_scope="CORE_STRATEGY_ONLY",
+                tactical_orders_are_emitted_as_separate_events=True,
                 blockers=blockers[:5],
             )
             return {"cycle_id":cycle_id,"status":"COMPLETED","placed":placed,"selected":len(selected),"blockers":blockers}

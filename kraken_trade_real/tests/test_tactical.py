@@ -631,7 +631,7 @@ def test_tactical_notional_uses_margin_budget_and_respects_exposure_cap():
     assert capped._position_notional(D("50"), D("3")) == D("12.5")
 
 
-def test_tactical_keeps_winner_running_after_take_profit_threshold():
+def test_tactical_does_not_arm_trailing_below_cost_floor():
     audit = DummyAudit()
     trader = TacticalTrader(
         cfg(), DummyDB(), audit, None, DummyWS(), None, None, None, None,
@@ -648,7 +648,7 @@ def test_tactical_keeps_winner_running_after_take_profit_threshold():
         symbol=inst.symbol, venue="spot", direction=Direction.LONG,
         quantity=D("0.1"), entry_price=D("100"), peak_price=D("102"),
         trough_price=D("100"), notional_eur=D("10"), leverage=D("1"),
-        opened_at=0.0, entry_client_order_id="test-order", setup_score=D("200"),
+        opened_at=4000.0, entry_client_order_id="test-order", setup_score=D("200"),
         state="OPEN",
     )
     trader._positions[position.symbol] = position
@@ -658,8 +658,8 @@ def test_tactical_keeps_winner_running_after_take_profit_threshold():
     trader._exit = lambda *args: exits.append(args)
     trader._manage_positions(5000.0)
     assert exits == []
-    assert position.state == "TRAILING"
-    assert any(event[0] == "TACTICAL_TREND_FOLLOWING_ARMED" for event in audit.events)
+    assert position.state == "OPEN"
+    assert not any(event[0] == "TACTICAL_TREND_FOLLOWING_ARMED" for event in audit.events)
 
 
 def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
@@ -694,6 +694,7 @@ def test_tactical_trailing_exit_is_cost_aware_and_locks_after_cost_floor():
     assert armed
     assert D(armed[0][2]["estimated_round_trip_cost_bps"]) == D("240")
     assert D(armed[0][2]["profit_floor_bps"]) == D("265")
+    assert D(armed[0][2]["take_profit_trigger_bps"]) == D("335")
 
 def _reversal_test_trader(position_direction, signal_direction, signal_edge):
     audit = DummyAudit()
