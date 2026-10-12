@@ -360,8 +360,10 @@ class CoreSpotRealizedOutcomeLedger:
                     "detail_json": json.dumps({
                         "entry_fee_attribution_status": lot.get("entry_fee_attribution_status", ""),
                         "entry_fee_currency": lot.get("entry_fee_currency", "UNVERIFIED"),
+                        "entry_quote_asset": lot.get("quote_asset", ""),
                         "exit_fee_attribution_status": attribution_status,
                         "exit_fee_currency": fee_currency,
+                        "exit_quote_asset": quote_asset,
                         "entry_margin_ledger_verified": bool(lot.get("margin_ledger_verified")),
                         "exit_margin_ledger_verified": margin_ledger_verified,
                         "margin_ledger_close_amount": str(margin_ledger_amount) if margin_ledger_verified else "",
@@ -593,14 +595,31 @@ class CoreSpotRealizedOutcomeLedger:
                 detail = {}
             if not isinstance(detail, dict):
                 detail = {}
-            if str(detail.get("entry_fee_attribution_status") or "") not in {
-                "LEDGER_VERIFIED", "ZERO_FEE_REPORTED"
-            }:
+            entry_fee_status = str(detail.get("entry_fee_attribution_status") or "")
+            entry_fee_currency = str(detail.get("entry_fee_currency") or "")
+            entry_quote_asset = str(detail.get("entry_quote_asset") or "")
+            if entry_fee_status not in {"LEDGER_VERIFIED", "ZERO_FEE_REPORTED"}:
                 unverified_net_reason_counts["ENTRY_FEE_NOT_VERIFIED"] += 1
-            if str(detail.get("exit_fee_attribution_status") or "") not in {
-                "LEDGER_VERIFIED", "ZERO_FEE_REPORTED"
-            }:
+            elif (
+                entry_fee_status == "LEDGER_VERIFIED"
+                and entry_fee_currency
+                and entry_quote_asset
+                and canonical_asset(entry_fee_currency) != canonical_asset(entry_quote_asset)
+            ):
+                unverified_net_reason_counts["ENTRY_FEE_NOT_QUOTE_DENOMINATED"] += 1
+
+            exit_fee_status = str(detail.get("exit_fee_attribution_status") or "")
+            exit_fee_currency = str(detail.get("exit_fee_currency") or "")
+            exit_quote_asset = str(detail.get("exit_quote_asset") or "")
+            if exit_fee_status not in {"LEDGER_VERIFIED", "ZERO_FEE_REPORTED"}:
                 unverified_net_reason_counts["EXIT_FEE_NOT_VERIFIED"] += 1
+            elif (
+                exit_fee_status == "LEDGER_VERIFIED"
+                and exit_fee_currency
+                and exit_quote_asset
+                and canonical_asset(exit_fee_currency) != canonical_asset(exit_quote_asset)
+            ):
+                unverified_net_reason_counts["EXIT_FEE_NOT_QUOTE_DENOMINATED"] += 1
             if not bool(detail.get("quote_asset_matches", False)):
                 unverified_net_reason_counts["ENTRY_EXIT_QUOTE_ASSET_MISMATCH"] += 1
             leveraged = (
