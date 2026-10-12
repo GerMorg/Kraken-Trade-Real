@@ -141,7 +141,6 @@ def test_fifo_attribution_handles_partial_long_closes_and_aggregates_by_entry_de
     assert Decimal(outcome["estimated_net_pnl_quote"]) == Decimal("-5.45")
     assert Decimal(outcome["gross_return_bps"]) == Decimal("-250.0")
     assert outcome["fee_status"] == "QUOTE_ESTIMATE_ONLY"
-    assert result["unverified_net_reason_counts"]["ENTRY_FEE_NOT_QUOTE_DENOMINATED"] == 1
     assert outcome["net_verified"] == 0
     legs = db.query("SELECT * FROM core_realized_legs ORDER BY closed_at")
     assert [row["closing_decision_id"] for row in legs] == ["D-CLOSE-1", "D-CLOSE-2"]
@@ -317,6 +316,7 @@ def test_base_asset_fee_is_not_mislabeled_as_verified_quote_net(db):
     # Estimated quote PnL is still available, with its estimate-only label.
     assert outcome["estimated_net_pnl_quote"] is not None
     assert outcome["fee_status"] == "QUOTE_ESTIMATE_ONLY"
+    assert result["unverified_net_reason_counts"]["ENTRY_FEE_NOT_QUOTE_DENOMINATED"] == 1
 
 
 
