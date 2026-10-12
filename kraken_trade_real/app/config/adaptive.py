@@ -70,16 +70,16 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_min_breakout_bps": 25.0,
     "tactical_min_imbalance": 0.10,
     "tactical_max_spread_bps": 25.0,
-    "tactical_min_expected_move_bps": 350.0,
+    "tactical_min_expected_move_bps": 600.0,
     "tactical_stop_loss_pct": 1.0,
-    "tactical_take_profit_pct": 4.1,
+    "tactical_take_profit_pct": 6.5,
     "tactical_trailing_trigger_bps": 100.0,
     "tactical_trailing_stop_pct": 0.7,
     "tactical_max_hold_seconds": 1800,
     "tactical_cooldown_seconds": 120,
     "tactical_reversal_exit_bps": 120.0,
     "tactical_adaptive_entry_enabled": True,
-    "tactical_adaptive_min_expected_move_bps": 321.0,
+    "tactical_adaptive_min_expected_move_bps": 541.0,
     "tactical_adaptive_min_confidence": 0.75,
     "tactical_adaptive_min_net_edge_bps": 15.0,
     "tactical_context_block_bps": 80.0,
@@ -110,7 +110,7 @@ TACTICAL_POLICY_BOUNDS: dict[str, tuple[float, float]] = {
     "tactical_adaptive_min_net_edge_bps": (5.0, 100.0),
     "tactical_context_block_bps": (10.0, 200.0),
     "tactical_stop_loss_pct": (0.35, 2.0),
-    "tactical_take_profit_pct": (1.0, 5.0),
+    "tactical_take_profit_pct": (1.0, 8.0),
     "tactical_trailing_trigger_bps": (50.0, 500.0),
     "tactical_trailing_stop_pct": (0.2, 1.5),
     "tactical_max_hold_seconds": (300, 7200),
@@ -152,8 +152,8 @@ def tactical_minimum_move_floors(
     )
     stop_risk_bps = nonnegative(stop_loss_pct, 1.0) * 100.0
     return (
-        fixed_costs + stop_risk_bps + 1.0,
-        fixed_costs + spread + stop_risk_bps + 1.0,
+        2.0 * fixed_costs + stop_risk_bps + 1.0,
+        2.0 * (fixed_costs + spread) + stop_risk_bps + 1.0,
     )
 
 
@@ -246,10 +246,10 @@ class AdaptiveConfig:
 
         # Tactical stop must remain below its profit target.
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
-        target = float(merged.get("tactical_take_profit_pct", 4.1))
+        target = float(merged.get("tactical_take_profit_pct", 6.5))
         if stop >= target:
             merged["tactical_stop_loss_pct"] = 1.0
-            merged["tactical_take_profit_pct"] = 4.1
+            merged["tactical_take_profit_pct"] = 6.5
 
         # Learned thresholds must cover live cost assumptions plus the configured
         # stop risk, even if a legacy/corrupt model or optimizer candidate is lower.
@@ -266,11 +266,11 @@ class AdaptiveConfig:
             ),
         )
         merged["tactical_adaptive_min_expected_move_bps"] = max(
-            float(merged.get("tactical_adaptive_min_expected_move_bps", 321.0)),
+            float(merged.get("tactical_adaptive_min_expected_move_bps", 541.0)),
             adaptive_move_floor,
         )
         merged["tactical_min_expected_move_bps"] = max(
-            float(merged.get("tactical_min_expected_move_bps", 350.0)),
+            float(merged.get("tactical_min_expected_move_bps", 600.0)),
             normal_move_floor,
         )
         with self._lock:
