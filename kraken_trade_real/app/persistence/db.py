@@ -2,6 +2,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -779,8 +780,10 @@ class Database:
         return self.query(sql, params)
 
     def tactical_positions(self) -> list[dict[str, Any]]:
+        # TRAILING is still an open position state, not a completed trade.
+        # Restore both states on every process/container restart.
         return self.query(
-            "SELECT * FROM tactical_positions WHERE state='OPEN' ORDER BY opened_at"
+            "SELECT * FROM tactical_positions WHERE state IN ('OPEN','TRAILING') ORDER BY opened_at"
         )
 
     def delete_tactical_position(self, symbol: str) -> None:
@@ -819,21 +822,70 @@ class Database:
         )
 
     def tactical_trade_count(self, since_timestamp: float) -> int:
-        row = self.one(
-            "SELECT COUNT(*) AS n FROM tactical_trades WHERE closed_at>=?",
+        """Count LIVE entry episodes, not partial-close rows or SHADOW examples."""
+        rows = self.query(
+            "SELECT symbol,direction,opened_at,detail_json FROM tactical_trades WHERE opened_at>=?",
             (since_timestamp,),
         )
-        return int(row["n"]) if row else 0
+        episodes: set[tuple[str, str, float]] = set()
+        for row in rows:
+            try:
+                detail = json.loads(row.get("detail_json") or "{}")
+                opened_at = float(row.get("opened_at") or 0)
+            except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                continue
+            if (
+                not isinstance(detail, dict)
+                or str(detail.get("mode") or "").upper() != "LIVE"
+                or not math.isfinite(opened_at)
+                or opened_at <= 0
+            ):
+                continue
+            episodes.add((
+                str(row.get("symbol") or ""),
+                str(row.get("direction") or "").upper(),
+                opened_at,
+            ))
+        # Count positions against the rate limit even before the first exit fill.
+        active_rows = self.query(
+            "SELECT symbol,direction,opened_at FROM tactical_positions WHERE opened_at>=?",
+            (since_timestamp,),
+        )
+        for row in active_rows:
+            try:
+                opened_at = float(row.get("opened_at") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(opened_at) and opened_at > 0:
+                episodes.add((
+                    str(row.get("symbol") or ""),
+                    str(row.get("direction") or "").upper(),
+                    opened_at,
+                ))
+        return len(episodes)
 
     def tactical_today_net_pnl(self) -> Decimal:
+        """Sum realized LIVE rows only; SHADOW results cannot move the live stop."""
         now = datetime.datetime.now(datetime.timezone.utc)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        row = self.one(
-            "SELECT COALESCE(SUM(CAST(net_pnl_eur AS REAL)),0) AS pnl "
-            "FROM tactical_trades WHERE closed_at>=?",
+        rows = self.query(
+            "SELECT net_pnl_eur,detail_json FROM tactical_trades WHERE closed_at>=?",
             (start,),
         )
-        return Decimal(str(row["pnl"])) if row else Decimal("0")
+        total = Decimal("0")
+        for row in rows:
+            try:
+                detail = json.loads(row.get("detail_json") or "{}")
+                pnl = Decimal(str(row.get("net_pnl_eur") or "0"))
+            except (TypeError, ValueError, ArithmeticError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(detail, dict)
+                and str(detail.get("mode") or "").upper() == "LIVE"
+                and pnl.is_finite()
+            ):
+                total += pnl
+        return total
 
     def tax_event_exists(self, event_id: str) -> bool:
         return self.one("SELECT event_id FROM tax_events WHERE event_id=?", (event_id,)) is not None

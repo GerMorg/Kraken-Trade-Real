@@ -265,9 +265,38 @@ class TacticalTrader:
             self._reconcile_pending()
             self._manage_positions(now)
             with self._lock:
-                has_capacity = len(self._positions) < int(
-                    getattr(self.config, "tactical_max_positions", 1)
-                )
+                tracked_symbols = set(self._positions) | set(self._invalid_position_symbols)
+            max_positions = max(1, int(getattr(self.config, "tactical_max_positions", 1)))
+            pending_symbols: set[str] = set()
+            pending_query_ok = True
+            query = getattr(self.db, "query", None)
+            if callable(query):
+                try:
+                    rows = query(
+                        """SELECT DISTINCT o.symbol
+                           FROM orders o JOIN decisions d ON d.decision_id=o.decision_id
+                           WHERE d.strategy_version=?
+                             AND o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE',
+                                             'PARTIALLY_FILLED','UNKNOWN_RECONCILING')""",
+                        (self.STRATEGY_VERSION,),
+                    )
+                    pending_symbols = {
+                        str(row.get("symbol") or "") for row in rows if row.get("symbol")
+                    }
+                except Exception as exc:
+                    pending_query_ok = False
+                    self.audit.emit(
+                        "TACTICAL_PENDING_CAPACITY_READ_FAILED", "ERROR",
+                        error_type=type(exc).__name__, error=str(exc)[:240],
+                        action="BLOCK_NEW_ENTRIES_UNTIL_RECONCILED",
+                    )
+            # Open/partial exit orders on an already tracked symbol consume no
+            # additional slot; unresolved entries on another symbol do.
+            pending_symbols.difference_update(tracked_symbols)
+            has_capacity = (
+                pending_query_ok
+                and len(tracked_symbols) + len(pending_symbols) < max_positions
+            )
             if has_capacity and now >= self._cooldown_until:
                 self._evaluate_entries(now)
         except Exception as exc:
@@ -1189,10 +1218,28 @@ class TacticalTrader:
                     direction=position.direction.value,
                 )
                 continue
-            last_price = D(str(state.get("price", "0")))
-            bid = D(str(state.get("bid", "0") or "0"))
-            ask = D(str(state.get("ask", "0") or "0"))
-            if last_price <= 0:
+            try:
+                last_price = D(str(state.get("price", "0")))
+                bid = D(str(state.get("bid", "0") or "0"))
+                ask = D(str(state.get("ask", "0") or "0"))
+            except (ArithmeticError, TypeError, ValueError, OverflowError) as exc:
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID", "ERROR",
+                    symbol=position.symbol, reason="UNPARSABLE_EXIT_PRICE",
+                    error_type=type(exc).__name__,
+                )
+                continue
+            if (
+                not all(value.is_finite() for value in (last_price, bid, ask))
+                or last_price <= 0
+                or bid < 0
+                or ask < 0
+            ):
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID", "ERROR",
+                    symbol=position.symbol, reason="NONFINITE_OR_NONPOSITIVE_EXIT_PRICE",
+                    price=str(last_price), bid=str(bid), ask=str(ask),
+                )
                 continue
             if bid > 0 and ask > 0 and bid > ask:
                 self.audit.emit(
@@ -1998,11 +2045,13 @@ class TacticalTrader:
     ) -> dict[str, Any] | None:
         state = self.websocket.market_snapshot(position.symbol)
         max_age = float(getattr(self.config, "tactical_market_max_age_seconds", 5))
-        if state is not None:
+        if isinstance(state, dict):
             try:
-                if now - float(state.get("timestamp") or 0) <= max_age:
+                timestamp = float(state.get("timestamp") or 0)
+                age = now - timestamp
+                if math.isfinite(timestamp) and 0.0 <= age <= max_age:
                     return state
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass
         instrument = self._candidates.get(position.symbol) or self._instrument_from_db(position.symbol)
         if instrument is None:
