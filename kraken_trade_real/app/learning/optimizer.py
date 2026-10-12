@@ -409,7 +409,7 @@ class AdaptiveParameterOptimizer:
 
     EXIT_POLICY_BOUNDS = {
         "tactical_stop_loss_pct": (0.35, 2.0),
-        "tactical_take_profit_pct": (1.0, 5.0),
+        "tactical_take_profit_pct": (1.0, 8.0),
         "tactical_trailing_trigger_bps": (50.0, 500.0),
         "tactical_trailing_stop_pct": (0.2, 1.5),
         "tactical_max_hold_seconds": (300, 7200),

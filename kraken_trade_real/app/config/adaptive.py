@@ -245,12 +245,14 @@ class AdaptiveConfig:
             merged["tactical_min_volatility_bps"] = TACTICAL_DEFAULTS["tactical_min_volatility_bps"]
             merged["tactical_max_volatility_bps"] = TACTICAL_DEFAULTS["tactical_max_volatility_bps"]
 
-        # Tactical stop must remain below its profit target.
+        # Keep both the adaptive bounds and runtime invariant aligned with the
+        # optimizer's full target range (the target arms trailing management; it
+        # is not an unconditional full-position sell price).
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
         target = float(merged.get("tactical_take_profit_pct", 6.5))
         if stop >= target:
-            merged["tactical_stop_loss_pct"] = 1.0
-            merged["tactical_take_profit_pct"] = 6.5
+            merged["tactical_stop_loss_pct"] = TACTICAL_DEFAULTS["tactical_stop_loss_pct"]
+            merged["tactical_take_profit_pct"] = TACTICAL_DEFAULTS["tactical_take_profit_pct"]
 
         # Learned thresholds must cover live cost assumptions plus the configured
         # stop risk, even if a legacy/corrupt model or optimizer candidate is lower.

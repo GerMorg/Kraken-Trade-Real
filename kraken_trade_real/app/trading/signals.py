@@ -37,6 +37,10 @@ class SignalEngine:
         momentum_60 = features.get("return_60", D("0"))
         momentum_240 = features.get("return_240", D("0"))
         vol = max(D("1"), features.get("volatility", D("999")))
+        # Core volatility is expressed in percentage points over a fixed 15-bar
+        # horizon. Keep the historical model coefficient explicit as a bps surcharge
+        # per percentage point; do not silently mix it with a changing sample horizon.
+        volatility_cost_bps = vol * D("1.5")
         liquidity = max(D("1"), features.get("liquidity", D("1")))
         spread = features.get("spread_bps", D("999"))
         quality = (
@@ -58,7 +62,7 @@ class SignalEngine:
 
         cost = (
             spread
-            + vol * D("1.5")
+            + volatility_cost_bps
             + self._fee_cost_bps()
         )
         long_conf = max(
@@ -85,6 +89,7 @@ class SignalEngine:
                 "return_15": momentum_15,
                 "return_60": momentum_60,
                 "return_240": momentum_240,
+                "volatility_cost_bps": volatility_cost_bps,
             }
         )
         return (
