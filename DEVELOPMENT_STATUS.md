@@ -1,21 +1,22 @@
 # Kraken Trade Real — Development Status
 
-Last reconciled against GitHub: 2026-10-11  
+Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.79**  
-Latest runtime release commit (v0.1.79): `dbbedb1ca6035b13b847231d5641d16e22676ed2`
+Main version: **0.1.80**  
+Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.79
+## Latest release — v0.1.80
 
-- Scope: make Austrian tax-ledger disposal attribution use tracked acquisition-regime inventory rather than assuming the sale date determines whether the holding is Altvermögen or Neuvermögen.
-- Ambiguous legacy or mixed inventory is now marked incomplete and sent for manual review without fabricating a taxable gain, consuming an ambiguous lot, or asserting tax-neutral crypto-to-crypto rollover.
-- Automatic crypto-to-crypto basis carry is restricted to uniquely tracked Neuvermögen for transactions on/after 2022-03-01. Altvermögen and earlier swaps are explicitly review-required; this is conservative tax-reporting support, not a final tax determination.
-- Regression coverage added for Altvermögen sold after the reform, mixed Alt-/Neuvermögen, Altvermögen crypto swaps and pre-2022 swap treatment.
-- PR #88 merged as runtime commit `dbbedb1ca6035b13b847231d5641d16e22676ed2` only after all five CI jobs passed on the PR head; final PR CI recorded 293 passing tests. Main-branch post-merge CI must still be checked for this commit.
-- The supplied v0.1.77 runtime log covered only the first two post-install cycles; zero new fills or verified outcomes in that interval was not treated as proof of sync failure.
-- Release metadata must stay aligned across config.yaml, pyproject.toml, Dockerfile, and Kraken User-Agent.
+- Scope: wire Tactical live Spot-long entries to the same audited FX quote-funding manager used by Core, so EUR cash can fund a risk-approved USD-quoted entry where the guarded conversion rules allow it.
+- Tactical funding now occurs only after the initial risk decision allows the entry. If a conversion occurs, portfolio balances are reconciled and risk is checked again before order submission. Spendable quote balance and shared fee/slippage/safety reserves are used; funding or reconciliation uncertainty fails closed.
+- The v0.1.79 log supplied on 2026-10-12 spans 2026-10-12 07:26:39–14:43:54 UTC (the 10,000-line excerpt covers about 7h17m). It contains 88 Core cycles and no Core orders. Of 840 Core risk decisions, 753 were rejected by the 15% drawdown gate; this release deliberately does not bypass that protection.
+- The same log showed three Tactical signals blocked because spendable USD was only about 1.02 USD against a roughly 58 USD order requirement. The FX-funding path addresses this independent Tactical funding gap, but it will not create trades while the global drawdown gate rejects them.
+- Portfolio snapshot in the excerpt showed about €206.5 equity, about €204.1 cash, and only one tracked open Spot position AAVE/EUR of about €2.4, with a dust amount below Kraken's minimum orderable quantity. This log alone does not prove that any other exchange-side margin/futures positions are absent; check separate margin reconciliation evidence if such positions are expected.
+- Fill sync completed each cycle but inserted/matched zero fills in the sampled windows; the realized attribution rebuild repeatedly reported 13 anomalies, 16 estimated-only outcomes, and 0 verified net outcomes across 120 processed fills. These remain explicit follow-up diagnostics; do not promote estimated PnL to verified learning.
+- PR #90 merged as runtime commit `cbf653a4e9c3659f8df9f075025ba1758b8f5c20` after all five CI jobs passed on the exact PR head (295 tests passed). Confirm main-branch post-merge CI for this commit separately.
+- Keep release metadata aligned across config.yaml, pyproject.toml, Dockerfile and Kraken User-Agent.
 
 ## Recently merged releases
 
@@ -27,6 +28,7 @@ All listed PRs were merged only after all five CI jobs passed.
 - **0.1.76 — PR #81:** Tactical cooldown is now a bounded, versioned learned parameter (30–600 seconds), hidden from HA options and protected against legacy `options.json` overrides. It increases after poor verified live outcomes and decreases cautiously only after improving outcomes. Hard trade-rate and risk caps remain immutable.
 - **0.1.78 — PR #85:** Fixed Tactical risk-gate inconsistency: a Tactical per-position allowance can no longer widen the portfolio-wide `risk_max_net_pct` hard cap. Regression coverage now requires a `net_limit` rejection for 75% projected net exposure when the global cap is 50%, even if the Tactical per-position cap is 80%.
 - **0.1.79 — PR #88:** Prevented Austrian tax-ledger attribution from equating disposal date with acquisition regime; legacy/mixed inventory and pre-effective-date crypto swaps are marked incomplete for review rather than receiving fabricated gains or automatic neutral treatment.
+- **0.1.80 — PR #90:** Wired risk-approved Tactical live Spot longs to guarded FX quote funding, followed by portfolio reconciliation and a second risk check after conversion.
 - Obsolete PRs #30, #35 and #49 were closed as superseded by later releases and the newer adaptive-policy architecture.
 
 ## Findings from the supplied v0.1.56 log
