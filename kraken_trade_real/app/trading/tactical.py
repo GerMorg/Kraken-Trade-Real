@@ -12,6 +12,7 @@ from typing import Any
 from app.domain.models import Decision, Instrument, MarketSnapshot, PortfolioState, Signal, new_id
 from app.domain.states import Direction, ProductType
 from app.domain.symbols import canonical_asset, resolve_instrument_symbol
+from app.trading.cash_budget import spot_cash_required_quote
 
 
 D = Decimal
@@ -87,6 +88,8 @@ class TacticalTrader:
         self.portfolio = portfolio
         self.intents = intents
         self.risk = risk
+        # Wired by TradingRuntime to Core's guarded FX funding manager.
+        self.fx_funding: Any | None = None
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -487,6 +490,81 @@ class TacticalTrader:
             self._ranked_instruments = ranked_instruments
         return ordered_symbols
 
+    def _ensure_live_spot_quote_funds(
+        self, instrument: Instrument, quantity: D, price: D,
+        signal: TacticalSignal, now: float,
+    ) -> tuple[bool, PortfolioState | None]:
+        """Ensure a risk-approved live Spot long has spendable quote funds."""
+        required = spot_cash_required_quote(quantity, price, self.config)
+        funding = self.fx_funding
+        funding_result: dict[str, Any] | None = None
+        refreshed: PortfolioState | None = None
+        if funding is not None:
+            try:
+                funding_result = funding.ensure_quote_funds(
+                    quote=instrument.quote, required_quote=required,
+                    cycle_id=f"tactical_{int(now)}", source_preference="EUR",
+                    dependent_edge_bps=signal.net_edge_bps,
+                    protected_symbol=instrument.symbol,
+                )
+            except Exception as exc:
+                self.audit.emit(
+                    "TACTICAL_ENTRY_BLOCKED", "ERROR", symbol=instrument.symbol,
+                    direction=signal.direction.value, reason="QUOTE_FUNDING_EXCEPTION",
+                    error_type=type(exc).__name__, error=str(exc)[:300],
+                )
+                return False, None
+            if not funding_result.get("ready"):
+                self.audit.emit(
+                    "TACTICAL_ENTRY_BLOCKED", "INFO", symbol=instrument.symbol,
+                    direction=signal.direction.value,
+                    reason=str(funding_result.get("reason") or "QUOTE_FUNDING_NOT_READY"),
+                    quote=instrument.quote, required_quote=str(required),
+                    funding_result=funding_result,
+                )
+                return False, None
+            if funding_result.get("converted"):
+                try:
+                    refreshed = self.portfolio.reconcile()
+                    self.update_portfolio(refreshed)
+                except Exception as exc:
+                    self.audit.emit(
+                        "TACTICAL_ENTRY_BLOCKED", "ERROR", symbol=instrument.symbol,
+                        direction=signal.direction.value,
+                        reason="QUOTE_FUNDING_RECONCILIATION_FAILED",
+                        error_type=type(exc).__name__, error=str(exc)[:300],
+                    )
+                    return False, None
+        reader = getattr(self.portfolio, "available_cash_balance", None)
+        try:
+            available = D(str(
+                reader(instrument.quote) if callable(reader)
+                else self.portfolio.cash_balance(instrument.quote)
+            ))
+        except Exception as exc:
+            self.audit.emit(
+                "TACTICAL_ENTRY_BLOCKED", "ERROR", symbol=instrument.symbol,
+                direction=signal.direction.value, reason="QUOTE_BALANCE_READ_FAILED",
+                error_type=type(exc).__name__, error=str(exc)[:300],
+            )
+            return False, None
+        if available < required:
+            self.audit.emit(
+                "TACTICAL_ENTRY_BLOCKED", "INFO", symbol=instrument.symbol,
+                direction=signal.direction.value, reason="QUOTE_FUNDS_UNAVAILABLE",
+                quote=instrument.quote, available_quote=str(available),
+                required_quote=str(required),
+            )
+            return False, None
+        if funding is not None:
+            self.audit.emit(
+                "TACTICAL_QUOTE_FUNDING_READY", "INFO", symbol=instrument.symbol,
+                direction=signal.direction.value, quote=instrument.quote,
+                available_quote=str(available), required_quote=str(required),
+                converted=bool(funding_result and funding_result.get("converted")),
+            )
+        return True, refreshed
+
     def _evaluate_entries(self, now: float) -> None:
         with self._lock:
             candidates = list(self._candidates.values())
@@ -800,31 +878,6 @@ class TacticalTrader:
             self._last_action = "ENTRY_MINIMUM_COST"
             return
 
-        if (
-            signal.direction == Direction.LONG
-            and instrument.venue == "spot"
-            and leverage <= D("1")
-            and not self._shadow_mode()
-        ):
-            available_quote = self.portfolio.cash_balance(instrument.quote)
-            quote_rate = self.portfolio.quote_to_eur_rate(instrument.quote)
-            required_quote = (
-                notional / quote_rate if quote_rate and quote_rate > 0 else D("0")
-            )
-            if quote_rate is None or available_quote < required_quote:
-                self.audit.emit(
-                    "TACTICAL_ENTRY_BLOCKED",
-                    "INFO",
-                    symbol=signal.symbol,
-                    direction=signal.direction.value,
-                    reason="QUOTE_FUNDS_UNAVAILABLE",
-                    quote=instrument.quote,
-                    available_quote=str(available_quote),
-                    required_quote=str(required_quote),
-                )
-                self._last_action = "ENTRY_QUOTE_FUNDS_BLOCK"
-                return
-
         state = self.websocket.market_snapshot(signal.symbol)
         if state is None:
             return
@@ -914,6 +967,39 @@ class TacticalTrader:
         if not risk.allowed:
             self._last_action = f"RISK_{risk.reason}"
             return
+
+        # Fund only after the trade passed risk checks: this avoids conversion or
+        # position liquidation for an entry that the global risk engine will block.
+        if (
+            not self._shadow_mode()
+            and signal.direction == Direction.LONG
+            and instrument.venue == "spot"
+            and leverage <= D("1")
+        ):
+            funded, refreshed_portfolio = self._ensure_live_spot_quote_funds(
+                instrument, quantity, snapshot.ask if snapshot.ask > 0 else snapshot.price,
+                signal, now,
+            )
+            if not funded:
+                self._last_action = "ENTRY_QUOTE_FUNDS_BLOCK"
+                return
+            if refreshed_portfolio is not None:
+                portfolio = refreshed_portfolio
+                risk = self.risk.evaluate(
+                    decision, portfolio, snapshot,
+                    self.portfolio.spot_margin_account
+                    if instrument.product_type.value == "SPOT_MARGIN"
+                    else self.portfolio.futures_margin_account,
+                )
+                self.audit.emit(
+                    "TACTICAL_RISK_RECHECK_AFTER_FX", "INFO",
+                    symbol=signal.symbol, direction=signal.direction.value,
+                    allowed=risk.allowed, reason=risk.reason, checks=risk.checks,
+                    equity_eur=str(portfolio.equity_eur),
+                )
+                if not risk.allowed:
+                    self._last_action = f"RISK_AFTER_FX_{risk.reason}"
+                    return
 
         if self._shadow_mode():
             client_order_id = "SHADOW-" + new_id("order")[-30:]
