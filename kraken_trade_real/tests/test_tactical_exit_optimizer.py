@@ -296,7 +296,7 @@ def test_exit_replay_detects_short_stop_loss_at_exact_one_percent_price_rise():
     result = AdaptiveParameterOptimizer._simulate_tactical_exit(trade, _policy())
     assert result is not None
     assert result["reason"] == "STOP_LOSS"
-    assert result["gross_bps"] == -100.0
+    assert abs(result["gross_bps"] + 100.0) < 1e-6
 
 
 def test_exit_replay_uses_live_cost_aware_trailing_trigger_and_max_hold():
@@ -322,8 +322,8 @@ def test_exit_replay_uses_live_cost_aware_trailing_trigger_and_max_hold():
             tactical_max_hold_seconds=300,
         ),
     )
-    # The peak is +2.5%, below the cost-floor-plus-trailing-distance trigger
-    # of +3.35%; it must not arm trailing and suppress the 300-second time stop.
+    # The peak is +2.5%, below the cost-floor-plus-stop-risk-plus-trailing trigger
+    # of +4.10%; it must not arm trailing and suppress the 300-second time stop.
     assert result is not None
     assert result["reason"] == "TIME_STOP"
     assert result["exit_at"] == 1_301
