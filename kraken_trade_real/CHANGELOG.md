@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.85
+- Tighten Tactical reward/risk admission: forecast net edge must cover the configured stop distance plus the modeled round-trip cost reserve, targeting approximately 1:1 net reward/risk under the conservative assumptions. Default gross expected-move floor rises to 600 bps; adaptive/normal cost floors are doubled to reflect that costs are incurred on both the winning and stopped-out scenario.
+- Align cost-aware trailing protection to the same economics: at the protected floor, estimated net gain covers the stop-loss-plus-cost budget. Default target/arming threshold is 6.5% for the baseline assumptions and increases automatically with wider spread, financing and other cost reserves.
+- Reject crossed bid/ask books and invalid/non-finite quote/spread data before entry; calculate quote spread from bid/ask and use the higher of exchange-reported and calculated spread. Malformed history points/volume ratios cannot poison the signal calculation.
+- Keep exit management fail-safe when quote fields contain non-numeric or non-finite values; log and skip that observation instead of crashing the cycle.
+- Extend regression tests across quote boundaries, cost understatement, NaN/malformed history, doubled cost floors, risk/reward calculations and live/replay target parity.
+- Align app, package, add-on, Docker and Kraken User-Agent release metadata at 0.1.85.
+
 ## 0.1.84
 - Correct Tactical SHORT profit/loss, peak-gain and realized gross-PnL calculations to use returns against entry notional; evaluate exits at executable bid (LONG) / ask (SHORT) prices.
 - Keep Tactical maximum holding time effective even after trailing activation; align counterfactual exit replay with live trailing activation and maximum-hold rules.
