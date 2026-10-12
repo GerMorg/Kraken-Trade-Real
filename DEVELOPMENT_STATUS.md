@@ -2,17 +2,17 @@
 
 Last reconciled against GitHub: 2026-10-12  
 Repository: `GerMorg/Kraken-Trade-Real`  
-Main version: **0.1.83 (PR pending)**  
+Main version: **0.1.83**  
 Latest runtime release commit (v0.1.80): `cbf653a4e9c3659f8df9f075025ba1758b8f5c20`
 
 This file is the durable continuation record for work split across chats/timeouts. Always verify the current `main` branch and open PRs before resuming; do not assume this file is newer than GitHub.
 
-## Latest release — v0.1.83 (PR pending)
+## Latest release — v0.1.83
 
 - Tactical live entries now emit a dedicated fill-confirmed event showing BUY/SELL, position direction, filled quantity/price, notional, signal edge/cost and client order ID. Exit events now include order side, entry/exit prices, quantity, exit reason and estimated net result.
 - `CYCLE_COMPLETED.orders` is explicitly marked `CORE_STRATEGY_ONLY`; Tactical runs independently and must be followed through its own events.
 - The trailing regime only arms once the estimated cost floor plus trailing distance is reached, avoiding a lower nominal target disabling the time stop before the trade is cost-covering.
-- Full CI must pass before merge; no risk limits were relaxed.
+- PR #96 merged as `35a2edf7ae9198049a164a31f84e3f74e0ccb87c`; all five PR checks passed. Post-merge main CI is being verified. No risk limits were relaxed.
 
 ## Previous release — v0.1.82
 
