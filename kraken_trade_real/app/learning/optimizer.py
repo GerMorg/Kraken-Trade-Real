@@ -937,7 +937,9 @@ class AdaptiveParameterOptimizer:
                 entry_fee_bps + exit_fee_bps + spread_bps + slippage_bps + financing_bps
             )
             # Safety buffer is a trigger margin, not an actual cash cost.
-            profit_floor_bps = estimated_net_cost_bps + safety_bps + 25.0
+            profit_floor_bps = (
+                estimated_net_cost_bps + safety_bps + max(25.0, stop_loss_pct * 100.0)
+            )
             trailing_activation_bps = max(
                 trailing_trigger_bps,
                 profit_floor_bps + trailing_stop_pct * 100.0,
@@ -947,8 +949,8 @@ class AdaptiveParameterOptimizer:
                 or pnl_bps < profit_floor_bps
             )
 
-            # Match the production engine's order: arm trend following before its
-            # non-trailing time stop, and evaluate stop-loss before trailing exit.
+            # Match production priority: update the trailing regime before evaluating
+            # stop-loss, trailing stop, time stop and directional reversal.
             target_gain_bps = max(
                 take_profit_pct * 100.0,
                 profit_floor_bps + trailing_stop_pct * 100.0,
