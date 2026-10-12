@@ -1041,3 +1041,35 @@ def test_tactical_entry_requires_net_edge_to_cover_stop_risk_and_costs():
     signal = trader._build_signal(instrument(), market_state(direction="LONG"), 1000.0)
     assert signal is None
     assert trader._last_signal_reason == "EXPECTED_MOVE_OR_EDGE_TOO_SMALL"
+
+
+
+def test_tactical_book_imbalance_ignores_malformed_nonfinite_and_nonpositive_levels():
+    valid_bids = ((D("100"), D("2")),)
+    valid_asks = ((D("100"), D("1")),)
+    malformed_bids = (
+        (D("100"), D("2")),
+        (D("NaN"), D("500")),
+        (D("Infinity"), D("1")),
+        (D("-1"), D("20")),
+        (D("100"), D("-9")),
+        ("not-a-level",),
+        (D("100"),),
+    )
+    assert TacticalTrader._book_imbalance(valid_bids, valid_asks) == D("1") / D("3")
+    assert TacticalTrader._book_imbalance(malformed_bids, valid_asks) == D("1") / D("3")
+    assert TacticalTrader._book_imbalance(((D("NaN"), D("1")),), ()) == D("0")
+
+
+def test_tactical_price_sampling_sorts_out_of_order_input_and_rejects_nonfinite_points():
+    points = (
+        (980.0, D("102")),
+        (900.0, D("100")),
+        (990.0, D("103")),
+        (995.0, D("NaN")),
+        (996.0, D("Infinity")),
+    )
+    sampled = TacticalTrader._sample_prices(points, 1000.0, 180.0, 10.0)
+    assert sampled
+    assert all(timestamp <= 1000.0 and price.is_finite() and price > 0 for timestamp, price in sampled)
+    assert sampled == sorted(sampled, key=lambda point: point[0])
