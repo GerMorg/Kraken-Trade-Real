@@ -104,7 +104,7 @@ def cfg(**overrides):
         tactical_short_leverage=2,
         tactical_order_confirm_seconds=5,
         tactical_stop_loss_pct=1,
-        tactical_take_profit_pct=2.2,
+        tactical_take_profit_pct=4.1,
         tactical_trailing_trigger_bps=100,
         tactical_trailing_stop_pct=0.7,
         tactical_max_hold_seconds=1800,
