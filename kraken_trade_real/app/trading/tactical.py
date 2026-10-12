@@ -2147,6 +2147,10 @@ class TacticalTrader:
         return bool(getattr(self.config, "tactical_shadow_mode", True))
 
     def _load_positions(self) -> None:
+        # Also supports recovery callers that reconstruct this component without
+        # invoking __init__ (e.g. after controlled runtime hand-off).
+        if not hasattr(self, "_invalid_position_symbols"):
+            self._invalid_position_symbols = set()
         rows = self.db.tactical_positions()
         for row in rows:
             try:
