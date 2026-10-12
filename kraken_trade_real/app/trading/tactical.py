@@ -2364,7 +2364,13 @@ class TacticalTrader:
         if not points:
             return []
         cutoff = now - horizon_seconds
-        usable = [(ts, price) for ts, price in points if cutoff <= ts <= now and price > 0]
+        usable = sorted(
+            (
+                (ts, price) for ts, price in points
+                if math.isfinite(ts) and cutoff <= ts <= now and price.is_finite() and price > 0
+            ),
+            key=lambda point: point[0],
+        )
         if not usable:
             return []
         sampled: list[tuple[float, D]] = []
@@ -2407,10 +2413,31 @@ class TacticalTrader:
         bids: tuple[tuple[D, D], ...],
         asks: tuple[tuple[D, D], ...],
     ) -> D:
-        bid_value = sum((price * qty for price, qty in bids), D("0"))
-        ask_value = sum((price * qty for price, qty in asks), D("0"))
+        def level_value(levels: Any) -> D:
+            value = D("0")
+            for level in levels or ():
+                if not isinstance(level, (tuple, list)) or len(level) < 2:
+                    continue
+                try:
+                    price = D(str(level[0]))
+                    quantity = D(str(level[1]))
+                    if (
+                        not price.is_finite() or not quantity.is_finite()
+                        or price <= 0 or quantity <= 0
+                    ):
+                        continue
+                    value += price * quantity
+                except (ArithmeticError, TypeError, ValueError, OverflowError):
+                    continue
+            return value if value.is_finite() and value > 0 else D("0")
+
+        bid_value = level_value(bids)
+        ask_value = level_value(asks)
         total = bid_value + ask_value
-        return (bid_value - ask_value) / total if total > 0 else D("0")
+        if not total.is_finite() or total <= 0:
+            return D("0")
+        imbalance = (bid_value - ask_value) / total
+        return imbalance if imbalance.is_finite() else D("0")
 
     @staticmethod
     def _score(
