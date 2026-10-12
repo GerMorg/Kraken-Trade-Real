@@ -337,7 +337,7 @@ class AdaptiveParameterOptimizer:
             adaptive_move_floor,
         )
         candidate["tactical_min_expected_move_bps"] = max(
-            float(candidate.get("tactical_min_expected_move_bps", 280.0)),
+            float(candidate.get("tactical_min_expected_move_bps", 350.0)),
             normal_move_floor,
         )
 
