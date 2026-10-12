@@ -72,7 +72,7 @@ TACTICAL_DEFAULTS: dict[str, Any] = {
     "tactical_max_spread_bps": 25.0,
     "tactical_min_expected_move_bps": 350.0,
     "tactical_stop_loss_pct": 1.0,
-    "tactical_take_profit_pct": 2.2,
+    "tactical_take_profit_pct": 4.1,
     "tactical_trailing_trigger_bps": 100.0,
     "tactical_trailing_stop_pct": 0.7,
     "tactical_max_hold_seconds": 1800,
@@ -246,10 +246,10 @@ class AdaptiveConfig:
 
         # Tactical stop must remain below its profit target.
         stop = float(merged.get("tactical_stop_loss_pct", 1.0))
-        target = float(merged.get("tactical_take_profit_pct", 2.2))
+        target = float(merged.get("tactical_take_profit_pct", 4.1))
         if stop >= target:
             merged["tactical_stop_loss_pct"] = 1.0
-            merged["tactical_take_profit_pct"] = 2.2
+            merged["tactical_take_profit_pct"] = 4.1
 
         # Learned thresholds must cover live cost assumptions plus the configured
         # stop risk, even if a legacy/corrupt model or optimizer candidate is lower.
