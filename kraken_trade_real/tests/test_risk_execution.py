@@ -253,3 +253,47 @@ def test_risk_engine_normalizes_float_leverage_from_legacy_decision(config, inst
     assert result.allowed is True
     assert isinstance(result.effective_leverage, Decimal)
     assert result.effective_leverage == Decimal("2")
+
+
+
+def test_core_calibrated_confidence_is_reused_by_final_risk_gate(config, instrument):
+    from app.domain.models import MarketSnapshot, PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.trading.decision import DecisionEngine
+
+    config = __import__("dataclasses").replace(
+        config, strategy_min_confidence=0.58, strategy_min_edge_bps=25.0
+    )
+    long_signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("300"), Decimal("100"),
+        Decimal("0.4"), "TREND_UP", Decimal("0"), Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    short_signal = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("-50"), Decimal("100"),
+        Decimal("0.4"), "TREND_DOWN", Decimal("0"), Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("100"),
+        positions={}, gross_eur=Decimal("0"), net_eur=Decimal("0"),
+        margin_used_eur=Decimal("0"), unrealized_pnl_eur=Decimal("0"),
+        realized_pnl_eur=Decimal("0"), daily_pnl_eur=Decimal("0"),
+        drawdown_pct=Decimal("0"), open_orders=0, source_timestamp=1.0,
+    )
+    decision = DecisionEngine(config).choose(
+        instrument, long_signal, short_signal, portfolio,
+        "test-model", "test-config", model_parameters={"confidence_scale": 1.5},
+    )
+    assert decision is not None
+    assert Decimal(decision.rationale["calibrated_confidence"]) == Decimal("0.6")
+
+    market = MarketSnapshot(
+        instrument.symbol, Decimal("100"), Decimal("99.9"), Decimal("100.1"),
+        Decimal("100000"), 1.0, tuple(Decimal("100") for _ in range(40)),
+    )
+    result = RiskEngine(
+        config, SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+    ).evaluate(decision, portfolio, market, {})
+    assert result.checks["confidence"] is True
+    assert result.allowed is True
