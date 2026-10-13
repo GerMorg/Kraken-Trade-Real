@@ -31,6 +31,126 @@ class PositionProfitProtection:
         self.db = db
         self.audit = audit
 
+    SIGNAL_EXIT_CONFIRMATION_KEY_PREFIX = "core_signal_exit_confirmation::"
+    DEFAULT_SIGNAL_EXIT_CONFIRMATIONS = 2
+    DEFAULT_SIGNAL_REENTRY_COOLDOWN_SECONDS = 900.0
+
+    def _clear_signal_exit_confirmation(self, symbol: str) -> None:
+        self.db.execute(
+            "DELETE FROM metadata WHERE key=?",
+            (self.SIGNAL_EXIT_CONFIRMATION_KEY_PREFIX + symbol,),
+        )
+
+    def _signal_exit_confirmed(
+        self, *, symbol: str, cycle_id: str, current_position: D, now: float
+    ) -> tuple[bool, int, int]:
+        """Require consecutive position-consistent bad-signal cycles before a strategic exit.
+
+        Independent price-based stop-loss and profit-protection exits bypass this
+        confirmation gate. The state persists across restarts.
+        """
+        key = self.SIGNAL_EXIT_CONFIRMATION_KEY_PREFIX + symbol
+        row = self.db.one("SELECT value FROM metadata WHERE key=?", (key,))
+        try:
+            state = json.loads(str(row.get("value") or "{}")) if row else {}
+            if not isinstance(state, dict):
+                state = {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            state = {}
+        try:
+            previous_count = max(0, int(state.get("count") or 0))
+            previous_at = float(state.get("observed_at") or 0)
+            previous_position = D(str(state.get("position_eur") or "0"))
+            previous_cycle = str(state.get("cycle_id") or "")
+        except (TypeError, ValueError, ArithmeticError, OverflowError):
+            previous_count, previous_at, previous_position, previous_cycle = 0, 0.0, D("0"), ""
+        interval = max(30.0, float(getattr(self.config, "market_scan_interval_seconds", 300)))
+        max_gap = max(900.0, interval * 3.0)
+        position_tolerance = max(D("0.5"), abs(current_position) * D("0.05"))
+        same_position = (
+            previous_position != 0
+            and abs(abs(previous_position) - abs(current_position)) <= position_tolerance
+        )
+        if previous_cycle == cycle_id:
+            count = previous_count
+        elif previous_count > 0 and same_position and 0 <= now - previous_at <= max_gap:
+            count = previous_count + 1
+        else:
+            count = 1
+        required = max(
+            1,
+            min(
+                5,
+                int(getattr(self.config, "strategy_signal_exit_confirmations",
+                            self.DEFAULT_SIGNAL_EXIT_CONFIRMATIONS)),
+            ),
+        )
+        payload = json.dumps({
+            "count": count, "required": required, "observed_at": now,
+            "cycle_id": cycle_id, "position_eur": str(current_position),
+        }, sort_keys=True)
+        self.db.execute(
+            "INSERT INTO metadata(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, payload),
+        )
+        return count >= required, count, required
+
+    def _reentry_cooldown_active(self, symbol: str, now: float, cycle_id: str) -> bool:
+        """Block immediate re-entry after an executed full close, not after an intent."""
+        try:
+            cooldown = max(
+                0.0,
+                min(7200.0, float(getattr(
+                    self.config, "strategy_signal_reentry_cooldown_seconds",
+                    self.DEFAULT_SIGNAL_REENTRY_COOLDOWN_SECONDS,
+                ))),
+            )
+            if cooldown <= 0:
+                return False
+            rows = self.db.query(
+                """SELECT o.created_at,d.rationale_json
+                   FROM orders AS o
+                   JOIN decisions AS d ON d.decision_id=o.decision_id
+                   WHERE o.symbol=? AND o.reduce_only=1 AND o.state='FILLED'
+                   ORDER BY o.created_at DESC LIMIT 10""",
+                (symbol,),
+            )
+        except Exception as exc:
+            self.audit.emit(
+                "POSITION_REENTRY_COOLDOWN_READ_FAILED", "WARNING",
+                cycle_id=cycle_id, symbol=symbol, error_type=type(exc).__name__,
+                action="DO_NOT_BLOCK_ENTRY_ON_COOLDOWN_READ_FAILURE",
+            )
+            return False
+        for row in rows:
+            try:
+                closed_at = float(row.get("created_at") or 0)
+                rationale = json.loads(row.get("rationale_json") or "{}")
+                if not isinstance(rationale, dict):
+                    continue
+                target_value = D(str(rationale.get("target_position_eur") or "0"))
+                management_action = str(rationale.get("position_management_action") or "")
+                rebalance_action = str(rationale.get("rebalance_action") or "")
+                full_close = (
+                    target_value == 0
+                    or management_action in {"STOP_LOSS_EXIT", "TRAILING_PROFIT_EXIT"}
+                    or rebalance_action in {"FLATTEN_STALE_EDGE", "FLATTEN_NEGATIVE_EDGE"}
+                )
+                age = now - closed_at
+                if full_close and 0 <= age < cooldown:
+                    self.audit.emit(
+                        "POSITION_REENTRY_COOLDOWN", "INFO",
+                        cycle_id=cycle_id, symbol=symbol,
+                        last_full_close_at=closed_at, age_seconds=round(age, 3),
+                        cooldown_seconds=cooldown, remaining_seconds=round(cooldown - age, 3),
+                        action="BLOCK_IMMEDIATE_REENTRY",
+                    )
+                    return True
+            except (TypeError, ValueError, ArithmeticError, OverflowError, json.JSONDecodeError):
+                continue
+        return False
+
     def _exit_policy_snapshot(self) -> dict[str, str]:
         """Capture the exact non-risk Core exit policy used for each episode observation."""
         keys = (
@@ -667,6 +787,13 @@ class PositionProfitProtection:
             return decision
 
         symbol = instrument.symbol
+        now = time.time()
+        current = _d(portfolio.positions.get(symbol))
+        if current == 0 and decision is not None and self._reentry_cooldown_active(
+            symbol, now, cycle_id
+        ):
+            self._clear_signal_exit_confirmation(symbol)
+            return None
         if is_futures_position:
             # A derivative position may be stopped/reduced only with a fresh
             # reconciled open-position identity and a valid close-side price return.
@@ -683,7 +810,8 @@ class PositionProfitProtection:
                 return decision
         elif symbol not in getattr(portfolio, "spot_margin_position_symbols", ()):
             return decision
-        current = _d(portfolio.positions.get(symbol))
+        # Unverified PnL cannot activate price-based protection, but new entries
+        # still observe the completed-close cooldown above.
         pnl_pct_value = portfolio.position_pnl_pct.get(symbol)
         if current == 0 or pnl_pct_value is None:
             return decision
@@ -723,6 +851,42 @@ class PositionProfitProtection:
             action = "PARTIAL_TAKE_PROFIT"
 
         if not action:
+            rebalance_action = (
+                str(decision.rationale.get("rebalance_action") or "")
+                if decision is not None and decision.reduce_only else ""
+            )
+            signal_exit = (
+                decision is not None
+                and decision.reduce_only
+                and _d(decision.target_position_eur) == 0
+                and rebalance_action in {"FLATTEN_STALE_EDGE", "FLATTEN_NEGATIVE_EDGE"}
+            )
+            if signal_exit:
+                confirmed, count, required = self._signal_exit_confirmed(
+                    symbol=symbol, cycle_id=cycle_id,
+                    current_position=current, now=now,
+                )
+                if not confirmed:
+                    self.audit.emit(
+                        "POSITION_SIGNAL_EXIT_DEFERRED", "INFO",
+                        cycle_id=cycle_id, symbol=symbol,
+                        rebalance_action=rebalance_action,
+                        confirmation_count=count, confirmation_required=required,
+                        current_position_eur=str(current),
+                        action="KEEP_POSITION_AWAIT_NEXT_VALID_CYCLE",
+                    )
+                    return None
+                self._clear_signal_exit_confirmation(symbol)
+                self.audit.emit(
+                    "POSITION_SIGNAL_EXIT_CONFIRMED", "INFO",
+                    cycle_id=cycle_id, symbol=symbol,
+                    rebalance_action=rebalance_action,
+                    confirmation_count=count, current_position_eur=str(current),
+                    action="ALLOW_SIGNAL_DRIVEN_FULL_EXIT",
+                )
+                return decision
+            # A recovered signal breaks the consecutive-confirmation sequence.
+            self._clear_signal_exit_confirmation(symbol)
             # Once a partial gain has been taken, don't allow the normal sizing
             # strategy to immediately rebuild the same exposure in the same asset.
             if partial_taken and decision is not None:
@@ -745,6 +909,8 @@ class PositionProfitProtection:
                     return None
             return decision
 
+        if action:
+            self._clear_signal_exit_confirmation(symbol)
         target = (
             D("0")
             if action in {"TRAILING_PROFIT_EXIT", "STOP_LOSS_EXIT"}
