@@ -344,7 +344,8 @@ CREATE TABLE IF NOT EXISTS tactical_positions(
   setup_score TEXT NOT NULL,
   state TEXT NOT NULL,
   entry_policy_json TEXT NOT NULL DEFAULT '{}',
-  entry_context_json TEXT NOT NULL DEFAULT '{}'
+  entry_context_json TEXT NOT NULL DEFAULT '{}',
+  mode TEXT NOT NULL DEFAULT 'UNKNOWN'
 );
 CREATE INDEX IF NOT EXISTS idx_tactical_positions_state ON tactical_positions(state);
 

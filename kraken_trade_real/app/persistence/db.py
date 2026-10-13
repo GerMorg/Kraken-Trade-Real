@@ -82,9 +82,21 @@ class Database:
             for name, definition in {
                 "entry_policy_json": "TEXT NOT NULL DEFAULT '{}'",
                 "entry_context_json": "TEXT NOT NULL DEFAULT '{}'",
+                "mode": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
             }.items():
                 if name not in tcols:
                     con.execute(f"ALTER TABLE tactical_positions ADD COLUMN {name} {definition}")
+            # Legacy shadow simulations already carry a SHADOW- client ID.
+            # Infer their mode deterministically; unknown legacy IDs default to
+            # LIVE so potentially real exposure is never silently dropped.
+            con.execute(
+                """UPDATE tactical_positions
+                   SET mode=CASE
+                       WHEN UPPER(entry_client_order_id) LIKE 'SHADOW-%' THEN 'SHADOW'
+                       ELSE 'LIVE'
+                   END
+                   WHERE mode IS NULL OR mode='' OR mode='UNKNOWN'"""
+            )
             # Verified-fee attribution columns are additive and nullable for old data.
             # Existing estimates remain intact; verified fields are populated only
             # when both entry and exit fees are independently traceable to quote asset.
@@ -130,7 +142,7 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_time "
                 "ON portfolio_external_cash_flows(occurred_at)"
             )
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','15')")
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','16')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -684,20 +696,27 @@ class Database:
         state: str,
         entry_policy: dict[str, Any] | None = None,
         entry_context: dict[str, Any] | None = None,
+        mode: str | None = None,
     ) -> None:
-        """Persist Tactical position state without overwriting its entry snapshot.
+        """Persist Tactical state, immutable entry snapshots and execution mode.
 
-        Routine mark-to-market updates usually omit the optional JSON fields. In
-        that case, preserve the first immutable entry snapshot already stored.
+        Routine updates may omit the mode; keep the original per-position mode
+        rather than adopting the current HA option after a restart/config change.
         """
         policy_json = json.dumps(entry_policy or {}, sort_keys=True, default=str)
         context_json = json.dumps(entry_context or {}, sort_keys=True, default=str)
+        mode_override = str(mode or "").strip().upper()
+        if mode_override and mode_override not in {"LIVE", "SHADOW"}:
+            raise ValueError("INVALID_TACTICAL_POSITION_MODE")
+        mode_value = mode_override or (
+            "SHADOW" if str(entry_client_order_id).upper().startswith("SHADOW-") else "LIVE"
+        )
         self.execute(
             """INSERT INTO tactical_positions(
                symbol,venue,direction,quantity,entry_price,peak_price,trough_price,
                notional_eur,leverage,opened_at,last_update,entry_client_order_id,
-               setup_score,state,entry_policy_json,entry_context_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               setup_score,state,entry_policy_json,entry_context_json,mode
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(symbol) DO UPDATE SET
                venue=excluded.venue,direction=excluded.direction,quantity=excluded.quantity,
                entry_price=excluded.entry_price,peak_price=excluded.peak_price,
@@ -705,6 +724,7 @@ class Database:
                leverage=excluded.leverage,last_update=excluded.last_update,
                entry_client_order_id=excluded.entry_client_order_id,
                setup_score=excluded.setup_score,state=excluded.state,
+               mode=CASE WHEN ?='' THEN tactical_positions.mode ELSE excluded.mode END,
                entry_policy_json=CASE
                    WHEN excluded.entry_policy_json='{}'
                    THEN tactical_positions.entry_policy_json
@@ -717,6 +737,7 @@ class Database:
                 symbol, venue, direction, str(quantity), str(entry_price), str(peak_price),
                 str(trough_price), str(abs(Decimal(str(notional_eur)))), str(leverage), opened_at, time.time(),
                 entry_client_order_id, str(setup_score), state, policy_json, context_json,
+                mode_value, mode_override,
             ),
         )
 
@@ -863,7 +884,8 @@ class Database:
             ))
         # Count positions against the rate limit even before the first exit fill.
         active_rows = self.query(
-            "SELECT symbol,direction,opened_at FROM tactical_positions WHERE opened_at>=?",
+            "SELECT symbol,direction,opened_at FROM tactical_positions "
+            "WHERE opened_at>=? AND mode='LIVE'",
             (since_timestamp,),
         )
         for row in active_rows:

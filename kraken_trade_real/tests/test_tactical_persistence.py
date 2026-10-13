@@ -24,13 +24,14 @@ def test_tactical_position_and_trade_persistence(tmp_path):
         "BTC/USD", "spot", "SHORT",
         Decimal("0.01"), Decimal("100"), Decimal("100"),
         Decimal("101"), Decimal("-10"), Decimal("2"),
-        1000.0, "entry-1", Decimal("250"), "OPEN",
-        entry_policy=entry_policy, entry_context=entry_context,
+        1000.0, "SHADOW-entry-1", Decimal("250"), "OPEN",
+        entry_policy=entry_policy, entry_context=entry_context, mode="SHADOW",
     )
     rows = db.tactical_positions()
     assert len(rows) == 1
     assert rows[0]["direction"] == "SHORT"
     assert rows[0]["notional_eur"] == "10"
+    assert rows[0]["mode"] == "SHADOW"
     assert json.loads(rows[0]["entry_policy_json"]) == entry_policy
     assert json.loads(rows[0]["entry_context_json"]) == entry_context
 
@@ -39,7 +40,7 @@ def test_tactical_position_and_trade_persistence(tmp_path):
     db.save_tactical_position(
         "BTC/USD", "spot", "SHORT",
         Decimal("0.009"), Decimal("100"), Decimal("100"), Decimal("101"),
-        Decimal("9"), Decimal("2"), 1000.0, "entry-1", Decimal("250"), "OPEN",
+        Decimal("9"), Decimal("2"), 1000.0, "SHADOW-entry-1", Decimal("250"), "OPEN",
     )
     refreshed = db.tactical_positions()[0]
     assert json.loads(refreshed["entry_policy_json"]) == entry_policy
@@ -54,6 +55,7 @@ def test_tactical_position_and_trade_persistence(tmp_path):
     recovered = restored._positions["BTC/USD"]
     assert recovered.entry_policy == entry_policy
     assert recovered.entry_context == entry_context
+    assert recovered.mode == "SHADOW"
 
     db.save_tactical_trade(
         "trade-1", "BTC/USD", "SHORT",
@@ -62,11 +64,10 @@ def test_tactical_position_and_trade_persistence(tmp_path):
         Decimal("0.04"), 1000.0, 1100.0, 100.0,
         "TAKE_PROFIT", Decimal("250"), {"mode": "SHADOW"},
     )
-    # This fixture models a completed SHADOW exit, so remove its active
-    # position row before testing the live-only episode counter.
-    db.delete_tactical_position("BTC/USD")
+    # A still-open SHADOW simulation must not consume the LIVE trade-rate limit.
     assert db.tactical_trade_count(900.0) == 0
     assert db.tactical_today_net_pnl() == Decimal("0")
+    db.delete_tactical_position("BTC/USD")
     assert db.tactical_positions() == []
 
 
@@ -96,7 +97,8 @@ def test_tactical_entry_snapshot_columns_migrate_idempotently(tmp_path):
     columns = {row["name"] for row in db.query("PRAGMA table_info(tactical_positions)")}
     assert "entry_policy_json" in columns
     assert "entry_context_json" in columns
-    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "15"
+    assert "mode" in columns
+    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "16"
 
     # Opening the existing database a second time is safe.
     reopened = Database(db_path)
@@ -105,6 +107,7 @@ def test_tactical_entry_snapshot_columns_migrate_idempotently(tmp_path):
     }
     assert "entry_policy_json" in reopened_columns
     assert "entry_context_json" in reopened_columns
+    assert "mode" in reopened_columns
 
 
 

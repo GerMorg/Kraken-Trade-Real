@@ -61,6 +61,7 @@ class TacticalPosition:
     # Defaults keep older persisted rows and test fixtures backward compatible.
     entry_policy: dict[str, Any] = field(default_factory=dict)
     entry_context: dict[str, Any] = field(default_factory=dict)
+    mode: str = "LIVE"
 
 
 class TacticalTrader:
@@ -1086,6 +1087,7 @@ class TacticalTrader:
                 snapshot.price,
                 client_order_id,
                 now,
+                mode="SHADOW",
             )
             self.audit.emit(
                 "TACTICAL_SHADOW_ENTRY",
@@ -1145,7 +1147,7 @@ class TacticalTrader:
         )
         self._open_position(
             decision, signal, fill_qty, fill_price, intent.client_order_id, now,
-            requested_quantity=intent.quantity, notional_eur=actual_notional,
+            requested_quantity=intent.quantity, notional_eur=actual_notional, mode="LIVE",
         )
         self.audit.emit(
             "TACTICAL_LIVE_ENTRY_FILL_CONFIRMED",
@@ -1537,7 +1539,7 @@ class TacticalTrader:
             )
             return
 
-        if self._shadow_mode():
+        if position.mode == "SHADOW":
             self._close_shadow(position, price, reason, now)
             self._last_action = "SHADOW_EXIT"
             return
@@ -1696,6 +1698,7 @@ class TacticalTrader:
         *,
         requested_quantity: D | None = None,
         notional_eur: D | None = None,
+        mode: str | None = None,
     ) -> None:
         actual_notional = (
             abs(notional_eur)
@@ -1724,6 +1727,11 @@ class TacticalTrader:
             signal.score,
             entry_policy=dict(entry_policy),
             entry_context=dict(entry_context),
+            mode=(
+                str(mode or "").upper()
+                if str(mode or "").upper() in {"LIVE", "SHADOW"}
+                else ("SHADOW" if client_order_id.upper().startswith("SHADOW-") else "LIVE")
+            ),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -1743,6 +1751,7 @@ class TacticalTrader:
             position.state,
             entry_policy=position.entry_policy,
             entry_context=position.entry_context,
+            mode=position.mode,
         )
         self._record_entry_price_point(position)
 
@@ -2280,6 +2289,10 @@ class TacticalTrader:
                     str(row.get("state") or "OPEN"),
                     self._json_dict(row.get("entry_policy_json")),
                     self._json_dict(row.get("entry_context_json")),
+                    str(row.get("mode") or (
+                        "SHADOW" if str(row.get("entry_client_order_id") or "").upper().startswith("SHADOW-")
+                        else "LIVE"
+                    )).upper(),
                 )
                 numeric_values = (
                     position.quantity, position.entry_price, position.peak_price,
@@ -2297,6 +2310,16 @@ class TacticalTrader:
                     or position.opened_at <= 0
                 ):
                     raise ValueError("INVALID_STORED_POSITION_NUMERICS")
+                if position.mode not in {"LIVE", "SHADOW"}:
+                    position.mode = (
+                        "SHADOW" if position.entry_client_order_id.upper().startswith("SHADOW-")
+                        else "LIVE"
+                    )
+                    self.audit.emit(
+                        "TACTICAL_POSITION_MODE_RECOVERED", "WARNING",
+                        symbol=position.symbol, mode=position.mode,
+                        reason="LEGACY_MODE_INFERRED_FROM_ENTRY_ORDER_ID",
+                    )
                 if position.state not in {"OPEN", "TRAILING"}:
                     position.state = "OPEN"
                     self.audit.emit(
@@ -2312,7 +2335,7 @@ class TacticalTrader:
                     position.quantity, position.entry_price, position.peak_price,
                     position.trough_price, position.notional_eur, position.leverage,
                     position.opened_at, position.entry_client_order_id,
-                    position.setup_score, position.state,
+                    position.setup_score, position.state, mode=position.mode,
                 )
             except Exception as exc:
                 symbol = str(row.get("symbol", "") or "")
@@ -2488,7 +2511,7 @@ class TacticalTrader:
         self, *, instrument: Instrument, direction: Direction, quantity: D, price: D,
         notional_eur: D, leverage: D, opened_at: float, client_order_id: str,
         setup_score: D, entry_policy: dict[str, Any] | None = None,
-        entry_context: dict[str, Any] | None = None,
+        entry_context: dict[str, Any] | None = None, mode: str | None = None,
     ) -> None:
         if quantity <= 0 or price <= 0:
             return
@@ -2497,6 +2520,11 @@ class TacticalTrader:
             abs(notional_eur), leverage, opened_at, client_order_id, setup_score,
             entry_policy=dict(entry_policy or {}),
             entry_context=dict(entry_context or {}),
+            mode=(
+                str(mode or "").upper()
+                if str(mode or "").upper() in {"LIVE", "SHADOW"}
+                else ("SHADOW" if client_order_id.upper().startswith("SHADOW-") else "LIVE")
+            ),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -2507,6 +2535,7 @@ class TacticalTrader:
             position.entry_client_order_id, position.setup_score, position.state,
             entry_policy=position.entry_policy,
             entry_context=position.entry_context,
+            mode=position.mode,
         )
 
     def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:
