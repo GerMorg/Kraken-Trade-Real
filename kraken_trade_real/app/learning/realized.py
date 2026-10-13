@@ -60,10 +60,24 @@ class CoreSpotRealizedOutcomeLedger:
                WHERE lower(f.venue)='spot'
                ORDER BY f.created_at ASC, f.order_id ASC, f.trade_id ASC"""
         )
+        instrument_rows = self.db.query(
+            "SELECT symbol,base FROM instruments WHERE lower(venue)='spot'"
+        )
+        base_by_symbol = {
+            str(row.get("symbol") or ""): canonical_asset(str(row.get("base") or ""))
+            for row in instrument_rows
+        }
+
+        def base_for_symbol(symbol: str) -> str:
+            known_base = base_by_symbol.get(symbol, "")
+            if known_base:
+                return known_base
+            return canonical_asset(symbol.split("/", 1)[0]) if "/" in symbol else ""
 
         lots_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         legs: list[dict[str, Any]] = []
         anomalies: list[dict[str, Any]] = []
+        unscorable_opening_decisions: set[str] = set()
         processed = 0
 
         def anomaly(row: dict[str, Any], reason: str, detail: dict[str, Any]) -> None:
@@ -211,10 +225,65 @@ class CoreSpotRealizedOutcomeLedger:
                 continue
 
             closing_direction = "LONG" if direction == "SHORT" else "SHORT"
-            position_lots = lots_by_key[(symbol, closing_direction)]
-            # Snapshot identity before mutating lots for this fill. Otherwise an
-            # early FIFO leg could make a multi-decision position look unambiguous
-            # to the later leg of this very same exchange fill.
+            local_key = (symbol, closing_direction)
+            position_lots = list(lots_by_key[local_key])
+            source_key_by_lot: dict[int, tuple[str, str]] = {
+                id(open_lot): local_key for open_lot in position_lots
+            }
+
+            # Cash Spot inventory is fungible by base asset. An older runtime
+            # could buy Q/USD but then sell the balance via Q/EUR. Consume those
+            # base units to keep inventory honest, but never subtract entry and
+            # exit prices/fees in different quote currencies or learn from that
+            # incomplete outcome.
+            close_is_cash_spot_sell = (
+                direction == "SHORT"
+                and side == "sell"
+                and bool(int(row.get("reduce_only") or 0))
+                and not bool(int(row.get("margin") or 0))
+                and _decimal(row.get("leverage") or "1") == D("1")
+            )
+            close_base = base_for_symbol(symbol)
+            if close_is_cash_spot_sell and close_base:
+                cross_lots: list[tuple[tuple[str, str], dict[str, Any]]] = []
+                for candidate_key, candidate_lots in lots_by_key.items():
+                    candidate_symbol, candidate_direction = candidate_key
+                    if (
+                        candidate_key == local_key
+                        or candidate_direction != "LONG"
+                        or base_for_symbol(candidate_symbol) != close_base
+                    ):
+                        continue
+                    for candidate_lot in candidate_lots:
+                        if _decimal(candidate_lot.get("remaining_quantity") or "0") <= 0:
+                            continue
+                        try:
+                            cash_spot_lot = (
+                                not bool(candidate_lot.get("margin", False))
+                                and _decimal(candidate_lot.get("leverage") or "1") == D("1")
+                            )
+                        except (TypeError, ValueError, InvalidOperation):
+                            cash_spot_lot = False
+                        if cash_spot_lot:
+                            cross_lots.append((candidate_key, candidate_lot))
+                cross_lots.sort(
+                    key=lambda pair: (
+                        float(pair[1].get("opened_at") or 0),
+                        str(pair[1].get("lot_id") or ""),
+                    )
+                )
+                for candidate_key, candidate_lot in cross_lots:
+                    position_lots.append(candidate_lot)
+                    source_key_by_lot[id(candidate_lot)] = candidate_key
+                position_lots.sort(
+                    key=lambda lot: (
+                        float(lot.get("opened_at") or 0),
+                        str(lot.get("lot_id") or ""),
+                    )
+                )
+
+            # Snapshot identity before mutating lots. An early FIFO leg must not
+            # make a multi-decision position look unambiguous later in this fill.
             opening_decisions_at_fill = {
                 str(open_lot.get("opening_decision_id") or "")
                 for open_lot in position_lots
@@ -228,6 +297,38 @@ class CoreSpotRealizedOutcomeLedger:
                 if lot_qty_before <= 0:
                     continue
                 matched_qty = min(lot_qty_before, remaining_close_qty)
+                source_key = source_key_by_lot.get(id(lot), local_key)
+                if source_key[0] != symbol:
+                    # Consume cross-pair base quantity but quarantine the entire
+                    # opening decision from PnL promotion: the saved prices and
+                    # fee estimates may belong to different quote currencies.
+                    allocated_entry_fee_cross = (
+                        lot["remaining_entry_fee_est_quote"] * matched_qty / lot_qty_before
+                    )
+                    allocated_verified_entry_fee_cross = (
+                        lot["remaining_entry_fee_verified_quote"] * matched_qty / lot_qty_before
+                        if lot["entry_fee_verified"] and lot_qty_before > 0 else ZERO
+                    )
+                    lot["remaining_quantity"] = lot_qty_before - matched_qty
+                    lot["remaining_entry_fee_est_quote"] -= allocated_entry_fee_cross
+                    if lot["entry_fee_verified"]:
+                        lot["remaining_entry_fee_verified_quote"] -= allocated_verified_entry_fee_cross
+                    remaining_close_qty -= matched_qty
+                    opening_decision = str(lot.get("opening_decision_id") or "")
+                    if opening_decision:
+                        unscorable_opening_decisions.add(opening_decision)
+                    anomaly(row, "CROSS_QUOTE_CASH_SPOT_CLOSE_MATCHED_PNL_UNSCORABLE", {
+                        "opening_symbol": source_key[0],
+                        "closing_symbol": symbol,
+                        "base_asset": close_base,
+                        "entry_quote_asset": lot.get("quote_asset", ""),
+                        "exit_quote_asset": quote_asset,
+                        "matched_quantity": str(matched_qty),
+                        "entry_fee_est_quote_allocated": str(allocated_entry_fee_cross),
+                        "exit_fee_currency": fee_currency,
+                        "reason": "DO_NOT_SUBTRACT_PRICES_OR_FEES_IN_DIFFERENT_QUOTE_CURRENCIES",
+                    })
+                    continue
                 allocated_entry_fee = (
                     lot["remaining_entry_fee_est_quote"] * matched_qty / lot_qty_before
                 )
@@ -392,12 +493,16 @@ class CoreSpotRealizedOutcomeLedger:
                     "matched_quantity": str(quantity - remaining_close_qty),
                     "unmatched_quantity": str(remaining_close_qty),
                 })
-            lots_by_key[(symbol, closing_direction)] = [
-                lot for lot in position_lots if lot["remaining_quantity"] > 0
-            ]
+            for source_key in set(source_key_by_lot.values()):
+                lots_by_key[source_key] = [
+                    lot for lot in lots_by_key[source_key]
+                    if _decimal(lot.get("remaining_quantity") or "0") > 0
+                ]
 
         outcomes_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
         for leg in legs:
+            if leg["opening_decision_id"] in unscorable_opening_decisions:
+                continue
             key = (
                 leg["opening_decision_id"], leg["symbol"], leg["direction"]
             )

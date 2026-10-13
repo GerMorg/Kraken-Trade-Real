@@ -410,3 +410,72 @@ def test_margin_trade_in_wrong_ledger_currency_is_not_marked_verified(db):
     assert result["verified_net_outcomes"] == 0
     assert outcome["net_verified"] == 0
     assert outcome["verified_net_return_bps"] is None
+
+
+def test_legacy_cash_spot_close_on_another_quote_consumes_inventory_without_fake_pnl(db):
+    from app.learning.realized import CoreSpotRealizedOutcomeLedger
+
+    _add_order(
+        db,
+        exchange_order_id="ENTRY-Q-USD",
+        client_order_id="entry-q-usd",
+        decision_id="decision-entry-q-usd",
+        direction="LONG",
+        side="buy",
+        reduce_only=False,
+        symbol="Q/USD",
+        margin=False,
+        leverage="1",
+    )
+    _add_fill(
+        db,
+        exchange_order_id="ENTRY-Q-USD",
+        client_order_id="entry-q-usd",
+        decision_id="decision-entry-q-usd",
+        trade_id="entry-fill",
+        timestamp=100.0,
+        side="buy",
+        quantity="10",
+        price="2",
+        fee="0.01",
+        quote_asset="USD",
+        symbol="Q/USD",
+    )
+    _add_order(
+        db,
+        exchange_order_id="EXIT-Q-EUR",
+        client_order_id="exit-q-eur",
+        decision_id="decision-exit-q-eur",
+        direction="SHORT",
+        side="sell",
+        reduce_only=True,
+        symbol="Q/EUR",
+        margin=False,
+        leverage="1",
+    )
+    _add_fill(
+        db,
+        exchange_order_id="EXIT-Q-EUR",
+        client_order_id="exit-q-eur",
+        decision_id="decision-exit-q-eur",
+        trade_id="exit-fill",
+        timestamp=130.0,
+        side="sell",
+        quantity="10",
+        price="1.8",
+        fee="0.01",
+        quote_asset="EUR",
+        symbol="Q/EUR",
+    )
+
+    result = CoreSpotRealizedOutcomeLedger(db).rebuild()
+
+    assert result["status"] == "REBUILT"
+    assert result["attribution_anomaly_reason_counts"].get(
+        "CROSS_QUOTE_CASH_SPOT_CLOSE_MATCHED_PNL_UNSCORABLE"
+    ) == 1
+    assert result["attribution_anomaly_reason_counts"].get(
+        "REDUCE_ONLY_EXCEEDS_LOCAL_INVENTORY", 0
+    ) == 0
+    assert db.one("SELECT COUNT(*) AS n FROM core_inventory_lots")["n"] == 0
+    assert db.one("SELECT COUNT(*) AS n FROM core_realized_outcomes")["n"] == 0

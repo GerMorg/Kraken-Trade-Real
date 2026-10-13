@@ -5,6 +5,7 @@ from typing import Any
 
 from app.domain.models import Decision, Instrument, PortfolioState, Signal, new_id
 from app.domain.states import Direction
+from app.domain.symbols import canonical_asset
 
 D = Decimal
 
@@ -14,6 +15,54 @@ class DecisionEngine:
 
     def __init__(self, config: Any) -> None:
         self.config = config
+
+    @staticmethod
+    def _unmanaged_spot_inventory(
+        instrument: Instrument, portfolio: PortfolioState, current: D
+    ) -> bool:
+        """Fail closed rather than trade an unverified wallet balance as a position.
+
+        Cash Spot wallet quantities are fungible across quote markets. Automated
+        Core reductions are enabled only when the reconciler matched the whole
+        base balance to app-managed FIFO inventory on the same pair.
+        """
+        if instrument.venue != "spot":
+            return False
+        product_type = str(
+            getattr(instrument.product_type, "value", instrument.product_type)
+        ).upper()
+        # Spot Margin has separate exchange lot/side reconciliation. This
+        # guard specifically protects fungible cash-wallet inventory.
+        if product_type != "SPOT":
+            return False
+        symbol = instrument.symbol
+        cash_managed_symbols = set(
+            getattr(portfolio, "spot_cash_position_symbols", ()) or ()
+        )
+        margin_managed_symbols = set(
+            getattr(portfolio, "spot_margin_position_symbols", ()) or ()
+        )
+        if current != 0 and symbol not in cash_managed_symbols:
+            return True
+
+        # Wallet balances are base-asset fungible, not quote-pair-specific.
+        # If an unverified XBT/EUR wallet lot exists, do not open a new XBT/USD
+        # position that would double-count or later liquidate the same units.
+        target_base = canonical_asset(instrument.base)
+        if target_base:
+            for held_symbol, held_value in (getattr(portfolio, "positions", {}) or {}).items():
+                try:
+                    if D(str(held_value or "0")) == 0 or "/" not in str(held_symbol):
+                        continue
+                    held_base = canonical_asset(str(held_symbol).split("/", 1)[0])
+                except (ArithmeticError, TypeError, ValueError):
+                    continue
+                if held_base != target_base:
+                    continue
+                if held_symbol in cash_managed_symbols or held_symbol in margin_managed_symbols:
+                    continue
+                return True
+        return False
 
     def _confidence_scale(
         self, model_parameters: dict[str, Any] | None, regime: str | None = None
@@ -179,6 +228,8 @@ class DecisionEngine:
     ) -> str:
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
+        if self._unmanaged_spot_inventory(instrument, portfolio, current):
+            return "UNMANAGED_SPOT_POSITION_KEEP"
         if current != 0:
             held_signal = long_signal if current > 0 else short_signal
             if D(str(held_signal.features.get("history_sufficient", "1"))) <= 0:
@@ -265,6 +316,8 @@ class DecisionEngine:
     ) -> Decision | None:
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
+        if self._unmanaged_spot_inventory(instrument, portfolio, current):
+            return None
 
         candidates = self._candidate_signals(
             instrument, long_signal, short_signal, model_parameters, current=current
