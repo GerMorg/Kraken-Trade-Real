@@ -379,3 +379,22 @@ def test_unmatched_cash_spot_wallet_inventory_is_not_signal_sold(config):
     assert engine.rejection_reason(
         instrument, long_signal, short_signal, portfolio, {}, Decimal("0.5")
     ) == "UNMANAGED_SPOT_POSITION_KEEP"
+
+    # The same unverified XBT wallet units must not be opened again under the
+    # alternate quote market just because that pair's position key is currently 0.
+    alternate = usd_instrument()
+    alt_long = Signal(
+        alternate.symbol, Direction.LONG, Decimal("200"), Decimal("50"),
+        Decimal("0.9"), "TREND_UP", Decimal("0"), Decimal("0"), features,
+    )
+    alt_short = Signal(
+        alternate.symbol, Direction.SHORT, Decimal("0"), Decimal("100"),
+        Decimal("0.1"), "TREND_DOWN", Decimal("0"), Decimal("0"), features,
+    )
+    assert engine.choose(
+        alternate, alt_long, alt_short, portfolio, "model", "config", {},
+        Decimal("0.5"),
+    ) is None
+    assert engine.rejection_reason(
+        alternate, alt_long, alt_short, portfolio, {}, Decimal("0.5")
+    ) == "UNMANAGED_SPOT_POSITION_KEEP"
