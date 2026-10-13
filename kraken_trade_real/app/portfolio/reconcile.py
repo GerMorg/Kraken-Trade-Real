@@ -289,8 +289,12 @@ class PortfolioReconciler:
             requested_start = history_start
         if not D(str(requested_start)).is_finite() or requested_start <= 0:
             requested_start = history_start
-        series_start = max(history_start, requested_start)
-        if not D(str(now)).is_finite() or now < series_start:
+        scope_start = max(history_start, requested_start)
+        # Keep syncing ledger history from its original start so daily P/L remains
+        # independently auditable; use scope_start only for the active epoch's
+        # completeness decision.
+        series_start = history_start
+        if not D(str(now)).is_finite() or now < scope_start:
             return False, series_start
 
         last_attempt_row = self.db.one(
@@ -304,6 +308,9 @@ class PortfolioReconciler:
         )
         completed_series_row = self.db.one(
             "SELECT value FROM metadata WHERE key='portfolio_cash_flow_series_start'"
+        )
+        completed_scope_row = self.db.one(
+            "SELECT value FROM metadata WHERE key='portfolio_cash_flow_scope_start'"
         )
         try:
             last_attempt = float(last_attempt_row.get("value")) if last_attempt_row else 0.0
@@ -322,16 +329,23 @@ class PortfolioReconciler:
             )
         except (TypeError, ValueError, OverflowError):
             completed_series_start = 0.0
+        try:
+            completed_scope_start = (
+                float(completed_scope_row.get("value")) if completed_scope_row else 0.0
+            )
+        except (TypeError, ValueError, OverflowError):
+            completed_scope_start = 0.0
         if last_attempt > 0 and now - last_attempt <= self.CASH_FLOW_SYNC_INTERVAL_SECONDS:
             unresolved = self.db.one(
                 "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
                 "WHERE occurred_at>=? AND flow_eur IS NULL",
-                (series_start,),
+                (scope_start,),
             )
             stored_complete = bool(
                 complete_row
                 and str(complete_row.get("value")) == "1"
                 and completed_series_start >= series_start
+                and completed_scope_start >= scope_start
             )
             return stored_complete and not int(unresolved.get("n") or 0), series_start
 
@@ -444,10 +458,15 @@ class PortfolioReconciler:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(series_start),),
             )
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_scope_start',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(scope_start),),
+            )
             unresolved = self.db.one(
                 "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
                 "WHERE occurred_at>=? AND flow_eur IS NULL",
-                (series_start,),
+                (scope_start,),
             )
             complete = int(unresolved.get("n") or 0) == 0
             self.db.execute(
@@ -1026,8 +1045,10 @@ class PortfolioReconciler:
             now, since_at=drawdown_reset_at
         )
 
-        # Daily P/L is normalized by independently recorded external transfers when
-        # (and only when) ledger pagination and EUR valuation are complete.
+        # Daily P/L is normalized only when the full intraday interval is covered
+        # and all flows in that interval have a reliable EUR value. Drawdown epoch
+        # completeness is scoped separately below, so an old foreign-currency
+        # transfer cannot silently make today's P/L look normalized.
         day_start = datetime.datetime.fromtimestamp(
             now, datetime.timezone.utc
         ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -1045,13 +1066,25 @@ class PortfolioReconciler:
         baseline_equity = dec(baseline.get("equity_eur")) if baseline else D(0)
         daily_pnl_raw = equity - baseline_equity if baseline_equity > 0 else D(0)
         daily_pnl = daily_pnl_raw
-        if cash_flow_complete and baseline and baseline_equity > 0:
+        daily_flow_complete = bool(cash_flow_complete and baseline and baseline_equity > 0)
+        if daily_flow_complete:
             try:
                 baseline_at = float(baseline["captured_at"])
-                daily_pnl = daily_pnl_raw - self._external_flow_sum(baseline_at, now)
+                if baseline_at < flow_series_start:
+                    daily_flow_complete = False
+                else:
+                    unresolved_daily = self.db.one(
+                        "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
+                        "WHERE occurred_at>? AND occurred_at<=? AND flow_eur IS NULL",
+                        (baseline_at, now),
+                    )
+                    daily_flow_complete = int(unresolved_daily.get("n") or 0) == 0
+                if daily_flow_complete:
+                    daily_pnl = daily_pnl_raw - self._external_flow_sum(baseline_at, now)
             except (TypeError, ValueError, ArithmeticError, OverflowError):
-                cash_flow_complete = False
-                daily_pnl = daily_pnl_raw
+                daily_flow_complete = False
+        if not daily_flow_complete:
+            daily_pnl = daily_pnl_raw
 
         snapshot_count_row = self.db.one(
             "SELECT COUNT(*) AS n FROM portfolio_snapshots WHERE captured_at>=?",
@@ -1182,6 +1215,8 @@ class PortfolioReconciler:
                 "drawdown_pct": str(drawdown),
                 "daily_pnl_eur": str(daily_pnl),
                 "cash_flow_adjusted": bool(cash_flow_complete),
+                "daily_cash_flow_adjusted": bool(daily_flow_complete),
+                "cash_flow_scope_start_at": scope_start if "scope_start" in locals() else drawdown_reset_at,
                 "method": (
                     "EXTERNAL_EUR_LEDGER_FLOW_ADJUSTED_HIGH_WATER_MARK"
                     if cash_flow_complete else "RAW_EQUITY_SNAPSHOT_HIGH_WATER_MARK"
