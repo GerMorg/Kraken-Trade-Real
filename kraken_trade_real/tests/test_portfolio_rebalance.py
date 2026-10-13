@@ -336,6 +336,13 @@ def test_portfolio_reconciliation_keeps_cash_spot_positions_on_their_opening_pai
 
     portfolio = reconciler.reconcile()
 
+    assert "XBT/USD" in portfolio.positions, {
+        "positions": {key: str(value) for key, value in portfolio.positions.items()},
+        "events": [
+            (row.get("code"), row.get("payload_json"))
+            for row in db.query("SELECT code,payload_json FROM events ORDER BY id DESC LIMIT 8")
+        ],
+    }
     assert portfolio.positions["XBT/USD"] == Decimal("540.000")
     assert portfolio.positions["XBT/EUR"] == Decimal("1100.00")
     assert set(portfolio.spot_cash_position_symbols) == {"XBT/USD", "XBT/EUR"}
