@@ -222,12 +222,12 @@ def test_optimizer_promotes_bounded_policy_from_realized_loss_window(db):
             """INSERT INTO tactical_trades(
                 trade_id,symbol,direction,entry_price,exit_price,quantity,gross_pnl_eur,
                 fees_eur,net_pnl_eur,opened_at,closed_at,hold_seconds,exit_reason,
-                setup_score,detail_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                setup_score,detail_json,net_verified
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 f"loss-{index}", "BTC/USD", "LONG", "100", "99", "1",
                 "-1", "0.1", "-1.1", closed - 300, closed, 300,
-                "STOP_LOSS", "0.8", '{"mode":"LIVE"}',
+                "STOP_LOSS", "0.8", '{"mode":"LIVE"}', 1,
             ),
         )
     optimizer = AdaptiveParameterOptimizer(db, registry)
@@ -517,13 +517,13 @@ def test_tactical_entry_optimizer_ignores_shadow_rows_and_aggregates_partial_clo
             """INSERT INTO tactical_trades(
                 trade_id,symbol,direction,entry_price,exit_price,quantity,gross_pnl_eur,
                 fees_eur,net_pnl_eur,opened_at,closed_at,hold_seconds,exit_reason,
-                setup_score,detail_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                setup_score,detail_json,net_verified
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 trade_id, symbol, "LONG", "100", "99", "1",
                 str(net_pnl + 0.1), "0.1", str(net_pnl), opened, closed,
                 max(1.0, closed - opened), "STOP_LOSS", "0.8",
-                json.dumps({"mode": mode}),
+                json.dumps({"mode": mode}), 1 if mode == "LIVE" else 0,
             ),
         )
 
@@ -554,7 +554,7 @@ def test_tactical_entry_optimizer_ignores_shadow_rows_and_aggregates_partial_clo
     assert result["samples"] == 59
     assert result["excluded_non_live_rows"] == 80
     assert result["outcome_basis"] == (
-        "LIVE_POSITION_EPISODES_WITH_CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED"
+        "LIVE_POSITION_EPISODES_LEDGER_VERIFIED_NET_PNL_ONLY"
     )
 
 def test_core_optimizer_handles_positive_verified_outcomes_without_missing_stats(db):

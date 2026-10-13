@@ -74,7 +74,7 @@ def test_core_exit_episode_path_upserts_once_per_cycle_and_closes(tmp_path):
 
 def test_core_exit_episode_schema_migration_is_idempotent(tmp_path):
     db = Database(str(tmp_path / "trader.db"))
-    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "13"
+    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "15"
     db._init_schema()
-    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "13"
+    assert db.one("SELECT value FROM metadata WHERE key='schema_version'")["value"] == "15"
     assert db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='core_exit_path_points'")

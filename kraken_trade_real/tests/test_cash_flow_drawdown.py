@@ -21,7 +21,7 @@ class LedgerGateway:
     def spot_ledgers(self, params):
         self.calls.append(dict(params))
         if params["type"] == "deposit":
-            asset = "XUSD" if self.foreign_asset else "ZEUR"
+            asset = "ZUSD" if self.foreign_asset else "ZEUR"
             return {
                 "count": 1,
                 "ledger": {

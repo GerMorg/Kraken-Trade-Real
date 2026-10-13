@@ -23,5 +23,5 @@ def test_tactical_net_diagnostic_uses_global_limit():
     assert result["position_limit_pct"] == "80"
     assert result["net_limit_pct"] == "50"
     assert result["net_limit_eur"] == "50"
-    assert result["projected_net_pct"] == "60"
+    assert D(result["projected_net_pct"]) == D("60")
     assert result["failed_checks"] == ["net_limit"]

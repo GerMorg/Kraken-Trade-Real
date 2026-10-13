@@ -62,9 +62,11 @@ def test_tactical_position_and_trade_persistence(tmp_path):
         Decimal("0.04"), 1000.0, 1100.0, 100.0,
         "TAKE_PROFIT", Decimal("250"), {"mode": "SHADOW"},
     )
+    # This fixture models a completed SHADOW exit, so remove its active
+    # position row before testing the live-only episode counter.
+    db.delete_tactical_position("BTC/USD")
     assert db.tactical_trade_count(900.0) == 0
     assert db.tactical_today_net_pnl() == Decimal("0")
-    db.delete_tactical_position("BTC/USD")
     assert db.tactical_positions() == []
 
 
