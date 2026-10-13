@@ -30,7 +30,9 @@ class DecisionEngine:
         product_type = str(
             getattr(instrument.product_type, "value", instrument.product_type)
         ).upper()
-        if product_type not in {"SPOT", "SPOT_MARGIN"}:
+        # Spot Margin has separate exchange lot/side reconciliation. This
+        # guard specifically protects fungible cash-wallet inventory.
+        if product_type != "SPOT":
             return False
         symbol = instrument.symbol
         cash_managed = symbol in set(
