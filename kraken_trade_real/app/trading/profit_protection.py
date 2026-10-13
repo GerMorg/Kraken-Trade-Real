@@ -129,11 +129,12 @@ class PositionProfitProtection:
                 rationale = json.loads(row.get("rationale_json") or "{}")
                 if not isinstance(rationale, dict):
                     continue
-                target_value = D(str(rationale.get("target_position_eur") or "0"))
+                target_raw = rationale.get("target_position_eur")
+                target_value = D(str(target_raw)) if target_raw is not None else None
                 management_action = str(rationale.get("position_management_action") or "")
                 rebalance_action = str(rationale.get("rebalance_action") or "")
                 full_close = (
-                    target_value == 0
+                    (target_value is not None and target_value == 0)
                     or management_action in {"STOP_LOSS_EXIT", "TRAILING_PROFIT_EXIT"}
                     or rebalance_action in {"FLATTEN_STALE_EDGE", "FLATTEN_NEGATIVE_EDGE"}
                 )
