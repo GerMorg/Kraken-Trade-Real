@@ -15,6 +15,32 @@ class DecisionEngine:
     def __init__(self, config: Any) -> None:
         self.config = config
 
+    @staticmethod
+    def _unmanaged_spot_inventory(
+        instrument: Instrument, portfolio: PortfolioState, current: D
+    ) -> bool:
+        """Fail closed rather than trade an unverified wallet balance as a position.
+
+        Cash Spot wallet quantities are fungible across quote markets. Automated
+        Core reductions are enabled only when the reconciler matched the whole
+        base balance to app-managed FIFO inventory on the same pair.
+        """
+        if current == 0 or instrument.venue != "spot":
+            return False
+        product_type = str(
+            getattr(instrument.product_type, "value", instrument.product_type)
+        ).upper()
+        if product_type not in {"SPOT", "SPOT_MARGIN"}:
+            return False
+        symbol = instrument.symbol
+        cash_managed = symbol in set(
+            getattr(portfolio, "spot_cash_position_symbols", ()) or ()
+        )
+        margin_managed = symbol in set(
+            getattr(portfolio, "spot_margin_position_symbols", ()) or ()
+        )
+        return not cash_managed and not margin_managed
+
     def _confidence_scale(
         self, model_parameters: dict[str, Any] | None, regime: str | None = None
     ) -> D:
@@ -179,6 +205,8 @@ class DecisionEngine:
     ) -> str:
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
+        if self._unmanaged_spot_inventory(instrument, portfolio, current):
+            return "UNMANAGED_SPOT_POSITION_KEEP"
         if current != 0:
             held_signal = long_signal if current > 0 else short_signal
             if D(str(held_signal.features.get("history_sufficient", "1"))) <= 0:
@@ -265,6 +293,8 @@ class DecisionEngine:
     ) -> Decision | None:
         effective_min_cost = min_cost_eur if min_cost_eur is not None else instrument.min_cost
         current = portfolio.positions.get(instrument.symbol, D("0"))
+        if self._unmanaged_spot_inventory(instrument, portfolio, current):
+            return None
 
         candidates = self._candidate_signals(
             instrument, long_signal, short_signal, model_parameters, current=current
