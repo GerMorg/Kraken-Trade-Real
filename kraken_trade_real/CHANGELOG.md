@@ -1,3 +1,12 @@
+## 0.1.88
+
+- Preserve each app-managed cash-Spot position's original quote pair during portfolio reconciliation. Reconcile fungible base-asset wallet quantity to the full FIFO inventory, and split reconciled holdings by opening pair instead of silently mapping (for example) Q/USD inventory to Q/EUR.
+- Keep unverified or quantity-mismatched cash-Spot wallet inventory valuation-only; do not trigger signal-driven sells until the entire wallet quantity is matched to app-managed FIFO inventory on the same pair.
+- Repair legacy cross-quote cash-Spot exits in FIFO rebuild by consuming matched base quantity across quote pairs without subtracting prices or fees from unlike currencies. Mark the roundtrip unscorable, suppress related incomplete outcomes from learning, and avoid inventing a residual open lot or fabricated PnL.
+- Require two consecutive position-consistent cycles before a signal-only Core full exit. Price-based stop-loss and profit-protection actions remain immediate. Add a 15-minute cooldown after an actually filled full close to avoid immediate re-entry churn.
+- Add regression tests for split-pair inventory valuation, unmanaged wallet holdings, legacy cross-quote closes, signal-exit hysteresis, and full-close re-entry cooldown.
+- Bump Home Assistant app, Python package and container versions to 0.1.88.
+
 ## 0.1.87
 
 - Reset drawdown tracking to a persistent v87 epoch so legacy/corrupted equity peaks from prior database migrations cannot block new entries indefinitely; retain old snapshots for audit while excluding them from the new high-water mark.
