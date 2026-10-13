@@ -371,3 +371,46 @@ def test_core_decision_does_not_flatten_held_position_when_history_is_insufficie
     assert engine.rejection_reason(
         instrument, long_signal, short_signal, portfolio,
     ) == "INSUFFICIENT_HISTORY_KEEP_POSITION"
+
+
+
+def test_cost_model_impact_requires_eur_normalized_turnover():
+    model = CostModel()
+    # Huge/small raw base-volume values must not be mistaken for EUR turnover.
+    low_raw_volume = SimpleNamespace(
+        spread_bps=Decimal("10"), volume_24h=Decimal("0.01"), metadata={"volatility": Decimal("3")}
+    )
+    high_raw_volume = SimpleNamespace(
+        spread_bps=Decimal("10"), volume_24h=Decimal("1000000000"), metadata={"volatility": Decimal("3")}
+    )
+    assert model.estimate(low_raw_volume, Decimal("10"), Decimal("1")).impact_bps == Decimal("80")
+    assert model.estimate(high_raw_volume, Decimal("10"), Decimal("1")).impact_bps == Decimal("80")
+
+    normalized = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("0.01"),
+        liquidity_eur_24h=Decimal("100000"),
+        quote_asset="USD",
+        metadata={"volatility": Decimal("3")},
+    )
+    assert model.estimate(normalized, Decimal("100"), Decimal("1")).impact_bps == Decimal("10")
+
+
+def test_cost_model_impact_uses_quote_turnover_only_when_quote_is_eur():
+    model = CostModel()
+    eur_quote = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("100"),
+        volume_24h_quote=Decimal("50000"),
+        quote_asset="EUR",
+        metadata={"volatility": Decimal("3")},
+    )
+    usd_quote_without_fx = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("100"),
+        volume_24h_quote=Decimal("50000"),
+        quote_asset="USD",
+        metadata={"volatility": Decimal("3")},
+    )
+    assert model.estimate(eur_quote, Decimal("100"), Decimal("1")).impact_bps == Decimal("20")
+    assert model.estimate(usd_quote_without_fx, Decimal("100"), Decimal("1")).impact_bps == Decimal("80")

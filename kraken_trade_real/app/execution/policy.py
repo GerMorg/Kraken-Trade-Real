@@ -65,7 +65,25 @@ class CostModel:
         spread = D(str(market.spread_bps))
         metadata = market.metadata if hasattr(market, "metadata") else {}
         volatility = D(str(max(D("0"), metadata.get("volatility", D("0")))))
-        impact = max(D("2"), notional_eur / max(D("1"), D(str(market.volume_24h))) * D("10000"))
+        # Impact compares EUR notional only with EUR-normalized turnover.
+        # Spot volume_24h is base-asset quantity, so dividing an EUR amount by it
+        # produces a unit error and can understate cost by orders of magnitude.
+        raw_turnover = getattr(market, "liquidity_eur_24h", None)
+        if raw_turnover is None:
+            quote_asset = str(getattr(market, "quote_asset", "") or "").upper()
+            quote_turnover = getattr(market, "volume_24h_quote", None)
+            if quote_asset in {"EUR", "ZEUR"} and quote_turnover is not None:
+                raw_turnover = quote_turnover
+        try:
+            turnover_eur = D(str(raw_turnover)) if raw_turnover is not None else D("0")
+        except (TypeError, ValueError, ArithmeticError):
+            turnover_eur = D("0")
+        if turnover_eur.is_finite() and turnover_eur > 0 and notional_eur.is_finite() and notional_eur >= 0:
+            impact = max(D("2"), min(D("80"), notional_eur / turnover_eur * D("10000")))
+        else:
+            # Missing or incompatible liquidity units fail closed to the upper
+            # modeled impact bound; never pretend raw base volume is EUR turnover.
+            impact = D("80")
         slippage = max(D("2"), min(D("80"), volatility * D("2")))
         if leverage <= D("1"):
             financing = D("0")

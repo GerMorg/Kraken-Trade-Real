@@ -1100,3 +1100,39 @@ def test_tactical_corrupt_stored_position_is_not_silently_deleted_or_reentered()
     assert "BTC/USD" in trader._invalid_position_symbols
     assert db.deleted == []
     assert any(event[0] == "TACTICAL_POSITION_RESTORE_FAILED" for event in audit.events)
+
+
+
+def test_stale_market_data_at_max_hold_emits_exit_unavailable_and_keeps_position_tracked():
+    from threading import RLock
+
+    position = TacticalPosition(
+        symbol="BTC/USD",
+        venue="spot",
+        direction=Direction.LONG,
+        quantity=D("0.01"),
+        entry_price=D("100"),
+        peak_price=D("101"),
+        trough_price=D("99"),
+        notional_eur=D("10"),
+        leverage=D("1"),
+        opened_at=1000.0,
+        entry_client_order_id="entry-stale",
+        setup_score=D("250"),
+        state="TRAILING",
+    )
+    trader = object.__new__(TacticalTrader)
+    trader._lock = RLock()
+    trader._positions = {"BTC/USD": position}
+    trader._invalid_position_symbols = set()
+    trader.config = cfg(tactical_max_hold_seconds=60)
+    trader.db = DummyDB()
+    trader.audit = DummyAudit()
+    trader._fresh_position_state = lambda _position, _now: None
+
+    trader._manage_positions(now=1100.0)
+
+    events = [code for code, _level, _payload in trader.audit.events]
+    assert "TACTICAL_POSITION_DATA_STALE" in events
+    assert "TACTICAL_EXIT_UNAVAILABLE_MARKET_DATA" in events
+    assert "BTC/USD" in trader._positions

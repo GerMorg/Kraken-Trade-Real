@@ -1211,12 +1211,33 @@ class TacticalTrader:
                 continue
             state = self._fresh_position_state(position, now)
             if state is None:
+                holding_seconds = max(0.0, now - position.opened_at)
+                max_hold_seconds = max(
+                    1.0, float(getattr(self.config, "tactical_max_hold_seconds", 1800))
+                )
+                exit_due = holding_seconds >= max_hold_seconds
                 self.audit.emit(
                     "TACTICAL_POSITION_DATA_STALE",
                     "WARNING",
                     symbol=position.symbol,
                     direction=position.direction.value,
+                    holding_seconds=round(holding_seconds, 2),
+                    max_hold_seconds=max_hold_seconds,
+                    exit_due=exit_due,
                 )
+                if exit_due:
+                    # No safe executable quote means no market/limit order can be
+                    # constructed or risk-checked honestly. Keep the position tracked,
+                    # block replacement entries through the occupied slot, and raise
+                    # an explicit high-severity signal until valid data returns.
+                    self.audit.emit(
+                        "TACTICAL_EXIT_UNAVAILABLE_MARKET_DATA",
+                        "ERROR",
+                        symbol=position.symbol,
+                        direction=position.direction.value,
+                        exit_reason="TIME_STOP",
+                        action="RETRY_WITHOUT_OPENING_REPLACEMENT_POSITION",
+                    )
                 continue
             try:
                 last_price = D(str(state.get("price", "0")))
