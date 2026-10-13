@@ -228,6 +228,197 @@ class PortfolioReconciler:
             ),
         )
 
+    CASH_FLOW_SYNC_INTERVAL_SECONDS = 3600.0
+
+    def _sync_external_cash_flows(self, now: float) -> tuple[bool, float]:
+        """Sync deposit/withdrawal ledger pages; value only provable EUR flows.
+
+        Historical non-EUR flows are not converted with a current market quote.
+        One unvalued external flow means the normalized basis is unavailable.
+        """
+        baseline = self.db.one(
+            "SELECT MIN(captured_at) AS start_at FROM portfolio_snapshots"
+        )
+        try:
+            series_start = float(baseline.get("start_at")) if baseline else 0.0
+        except (TypeError, ValueError, OverflowError):
+            series_start = 0.0
+        if not D(str(series_start)).is_finite() or series_start <= 0:
+            return False, 0.0
+        if not D(str(now)).is_finite() or now < series_start:
+            return False, series_start
+
+        last_attempt_row = self.db.one(
+            "SELECT value FROM metadata WHERE key='portfolio_cash_flow_last_attempt_at'"
+        )
+        last_success_row = self.db.one(
+            "SELECT value FROM metadata WHERE key='portfolio_cash_flow_sync_until'"
+        )
+        complete_row = self.db.one(
+            "SELECT value FROM metadata WHERE key='portfolio_cash_flow_sync_complete'"
+        )
+        try:
+            last_attempt = float(last_attempt_row.get("value")) if last_attempt_row else 0.0
+        except (TypeError, ValueError, OverflowError):
+            last_attempt = 0.0
+        try:
+            last_success = float(last_success_row.get("value")) if last_success_row else 0.0
+        except (TypeError, ValueError, OverflowError):
+            last_success = 0.0
+
+        # The order engine cycles much more frequently than the private ledger
+        # should be queried. Attempt and successful-sync watermarks are separate.
+        if last_attempt > 0 and now - last_attempt <= self.CASH_FLOW_SYNC_INTERVAL_SECONDS:
+            unresolved = self.db.one(
+                "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows WHERE flow_eur IS NULL"
+            )
+            stored_complete = bool(complete_row and str(complete_row.get("value")) == "1")
+            return stored_complete and not int(unresolved.get("n") or 0), series_start
+
+        self.db.execute(
+            "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_last_attempt_at',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(now),),
+        )
+        query_start = max(series_start, last_success - 1.0) if last_success > 0 else series_start
+        try:
+            ledger_reader = getattr(self.gateway, "spot_ledgers", None)
+            if not callable(ledger_reader):
+                raise RuntimeError("KRAKEN_SPOT_LEDGERS_UNAVAILABLE")
+
+            for flow_type in ("deposit", "withdrawal"):
+                offset = 0
+                while True:
+                    response = ledger_reader({
+                        "type": flow_type,
+                        "start": str(int(query_start)),
+                        "end": str(int(now)),
+                        "ofs": offset,
+                    })
+                    if not isinstance(response, dict) or not isinstance(response.get("ledger"), dict):
+                        raise TypeError("KRAKEN_LEDGER_INVALID_RESPONSE")
+                    ledger = response["ledger"]
+                    try:
+                        count = int(response.get("count") or 0)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise ValueError("KRAKEN_LEDGER_COUNT_INVALID") from exc
+                    if count < 0:
+                        raise ValueError("KRAKEN_LEDGER_COUNT_NEGATIVE")
+                    if not ledger and offset < count:
+                        if count:
+                            raise RuntimeError("KRAKEN_LEDGER_PAGINATION_GAP")
+                        break
+
+                    for ledger_id, entry in ledger.items():
+                        if not isinstance(entry, dict):
+                            raise TypeError("KRAKEN_LEDGER_ENTRY_INVALID")
+                        try:
+                            occurred_at = float(entry.get("time"))
+                            amount = D(str(entry.get("amount")))
+                            fee = D(str(entry.get("fee") or "0"))
+                        except (TypeError, ValueError, InvalidOperation, OverflowError) as exc:
+                            raise ValueError("KRAKEN_LEDGER_AMOUNT_OR_TIME_INVALID") from exc
+                        if (
+                            not D(str(occurred_at)).is_finite()
+                            or occurred_at < series_start
+                            or occurred_at > now
+                            or not amount.is_finite()
+                            or not fee.is_finite()
+                            or fee < 0
+                        ):
+                            raise ValueError("KRAKEN_LEDGER_NUMERIC_RANGE_INVALID")
+
+                        asset = canonical_asset(entry.get("asset") or "")
+                        fee_asset = canonical_asset(entry.get("fee_asset") or entry.get("asset") or "")
+                        flow_eur: D | None = None
+                        # A current spot quote is not an adequate historical valuation.
+                        # Only EUR amounts with EUR-denominated fees are normalized.
+                        if asset == "EUR" and fee_asset == "EUR":
+                            candidate_flow = amount - fee
+                            if candidate_flow.is_finite():
+                                flow_eur = candidate_flow
+                        self.db.execute(
+                            """INSERT OR REPLACE INTO portfolio_external_cash_flows(
+                                 ledger_id,occurred_at,asset,flow_type,amount_asset,
+                                 fee_asset,flow_eur,source_json
+                               ) VALUES(?,?,?,?,?,?,?,?)""",
+                            (
+                                str(ledger_id), occurred_at, asset, flow_type,
+                                str(amount), fee_asset,
+                                str(flow_eur) if flow_eur is not None else None,
+                                json.dumps(entry, sort_keys=True, default=str),
+                            ),
+                        )
+
+                    received = len(ledger)
+                    if received == 0:
+                        break
+                    offset += received
+                    if offset >= count:
+                        break
+                    if offset > 1_000_000:
+                        raise RuntimeError("KRAKEN_LEDGER_PAGINATION_LIMIT")
+                    if offset <= 0:
+                        raise RuntimeError("KRAKEN_LEDGER_OFFSET_NOT_ADVANCING")
+
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_sync_until',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(now),),
+            )
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_series_start',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(series_start),),
+            )
+            unresolved = self.db.one(
+                "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows WHERE flow_eur IS NULL"
+            )
+            complete = int(unresolved.get("n") or 0) == 0
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_sync_complete',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("1" if complete else "0",),
+            )
+            if not complete:
+                self.db.event(
+                    "PORTFOLIO_CASH_FLOW_UNVALUED", "WARNING",
+                    {
+                        "unvalued_entries": int(unresolved.get("n") or 0),
+                        "basis": "RAW_EQUITY_SNAPSHOT_HIGH_WATER_MARK",
+                        "reason": "NON_EUR_EXTERNAL_FLOW_REQUIRES_HISTORICAL_EUR_VALUATION",
+                    },
+                )
+            return complete, series_start
+        except Exception as exc:
+            self.db.event(
+                "PORTFOLIO_EXTERNAL_CASH_FLOW_SYNC_FAILED", "WARNING",
+                {
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:300],
+                    "cash_flow_adjusted": False,
+                    "action": "RETAIN_RAW_EQUITY_BASIS",
+                },
+            )
+            return False, series_start
+
+    def _external_flow_sum(self, start_at: float, end_at: float) -> D:
+        """Sum signed, net-of-fee EUR external flows over (start_at, end_at]."""
+        rows = self.db.query(
+            """SELECT flow_eur FROM portfolio_external_cash_flows
+               WHERE occurred_at>? AND occurred_at<=? ORDER BY occurred_at""",
+            (float(start_at), float(end_at)),
+        )
+        total = D("0")
+        for row in rows:
+            if row.get("flow_eur") is None:
+                raise ValueError("UNVALUED_EXTERNAL_CASH_FLOW")
+            amount = D(str(row["flow_eur"]))
+            if not amount.is_finite():
+                raise ValueError("INVALID_EXTERNAL_CASH_FLOW_EUR")
+            total += amount
+        return total
+
     def reconcile(self) -> PortfolioState:
         cash = equity = gross = net = margin = unreal = realized = D(0)
         positions: dict[str, D] = {}
@@ -741,7 +932,7 @@ class PortfolioReconciler:
                             pct = (
                                 (exit_price / entry_price - D("1")) * D("100")
                                 if side in {"buy", "long"}
-                                else (entry_price / exit_price - D("1")) * D("100")
+                                else (D("1") - exit_price / entry_price) * D("100")
                             )
                             if pct.is_finite():
                                 position_pnl_pct[symbol] = pct
@@ -774,13 +965,15 @@ class PortfolioReconciler:
                 (day_start, now),
             )
         baseline_equity = dec(baseline.get("equity_eur")) if baseline else D(0)
-        daily_pnl = equity - baseline_equity if baseline_equity > 0 else D(0)
+        daily_pnl_raw = equity - baseline_equity if baseline_equity > 0 else D(0)
+        daily_pnl = daily_pnl_raw
         if cash_flow_complete and baseline and baseline_equity > 0:
             try:
                 baseline_at = float(baseline["captured_at"])
-                daily_pnl -= self._external_flow_sum(baseline_at, now)
-            except (TypeError, ValueError, OverflowError):
+                daily_pnl = daily_pnl_raw - self._external_flow_sum(baseline_at, now)
+            except (TypeError, ValueError, ArithmeticError, OverflowError):
                 cash_flow_complete = False
+                daily_pnl = daily_pnl_raw
 
         snapshot_count_row = self.db.one(
             "SELECT COUNT(*) AS n FROM portfolio_snapshots"
@@ -857,6 +1050,8 @@ class PortfolioReconciler:
                 peak = D(0)
                 drawdown = D(0)
         if not cash_flow_complete:
+            # Use the raw basis for both hard gates when flow normalization fails.
+            daily_pnl = daily_pnl_raw
             # Preserve the old hard gate only as an explicit fallback; the audit
             # event discloses when normalization is unavailable or incomplete.
             peak_row = self.db.one(

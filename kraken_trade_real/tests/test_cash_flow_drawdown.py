@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-import time
 
 from app.domain.models import PortfolioState
 from app.persistence.db import Database

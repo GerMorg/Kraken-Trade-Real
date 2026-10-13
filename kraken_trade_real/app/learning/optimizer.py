@@ -776,14 +776,14 @@ class AdaptiveParameterOptimizer:
         rows = self.db.query(
             """SELECT trade_id,symbol,direction,entry_price,exit_price,quantity,
                       gross_pnl_eur,fees_eur,net_pnl_eur,opened_at,closed_at,
-                      hold_seconds,exit_reason,detail_json
+                      hold_seconds,exit_reason,detail_json,net_verified
                FROM tactical_trades
-               WHERE closed_at >= ?
+               WHERE closed_at >= ? AND net_verified=1
                ORDER BY closed_at ASC LIMIT 2400""",
             (now - 180 * 86400,),
         )
         active_rows = self.db.query(
-            "SELECT symbol,opened_at FROM tactical_positions WHERE state='OPEN'"
+            "SELECT symbol,opened_at FROM tactical_positions WHERE state IN ('OPEN','TRAILING')"
         )
         active = {(str(row["symbol"]), float(row["opened_at"])) for row in active_rows}
         grouped: dict[tuple[str, float, str], dict[str, Any]] = {}
@@ -794,7 +794,8 @@ class AdaptiveParameterOptimizer:
                 direction = str(row["direction"]).upper()
                 closed_at = float(row["closed_at"])
                 detail = json.loads(row.get("detail_json") or "{}")
-                if not isinstance(detail, dict) or detail.get("mode") != "LIVE":
+                net_verified = int(row.get("net_verified") or 0) == 1
+                if not isinstance(detail, dict) or detail.get("mode") != "LIVE" or not net_verified:
                     continue
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
@@ -1033,7 +1034,7 @@ class AdaptiveParameterOptimizer:
             # Count position episodes, not partial-close rows. Do this cheap
             # preflight before reconstructing thousands of price-path records.
             fresh_episodes = self.db.query(
-                "SELECT symbol,opened_at FROM tactical_trades WHERE closed_at>? "
+                "SELECT symbol,opened_at FROM tactical_trades WHERE closed_at>? AND net_verified=1 "
                 "GROUP BY symbol,opened_at",
                 (last_at,),
             )
@@ -1046,7 +1047,7 @@ class AdaptiveParameterOptimizer:
                 }
 
         watermark_row = self.db.one(
-            "SELECT MAX(closed_at) AS closed_at FROM tactical_trades WHERE closed_at>=?",
+            "SELECT MAX(closed_at) AS closed_at FROM tactical_trades WHERE closed_at>=? AND net_verified=1",
             (now - 180 * 86400,),
         )
         watermark = (

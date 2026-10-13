@@ -55,7 +55,6 @@ class RiskEngine:
         )
         gross_after = p.gross_eur - current_abs + desired_abs
         net_after = p.net_eur - current + desired
-        delta = desired - current
         eq = p.equity_eur
 
         if eq <= 0:
