@@ -313,7 +313,10 @@ class PortfolioReconciler:
                         if not isinstance(entry, dict):
                             raise TypeError("KRAKEN_LEDGER_ENTRY_INVALID")
                         try:
-                            occurred_at = float(entry.get("time"))
+                            raw_time = entry.get("time")
+                            if raw_time is None:
+                                raise ValueError("KRAKEN_LEDGER_TIME_MISSING")
+                            occurred_at = float(raw_time)
                             amount = D(str(entry.get("amount")))
                             fee = D(str(entry.get("fee") or "0"))
                         except (TypeError, ValueError, InvalidOperation, OverflowError) as exc:
