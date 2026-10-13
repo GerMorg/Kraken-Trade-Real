@@ -1,3 +1,11 @@
+## 0.1.87
+
+- Reset drawdown tracking to a persistent v87 epoch so legacy/corrupted equity peaks from prior database migrations cannot block new entries indefinitely; retain old snapshots for audit while excluding them from the new high-water mark.
+- Keep the reset epoch stable across restarts and expose reset time, ignored legacy snapshot count, post-reset snapshot count, and effective drawdown-series start in `PORTFOLIO_DRAWDOWN_BASIS` diagnostics.
+- Filter both normalized and raw fallback drawdown peaks to snapshots at or after the reset epoch; unvalued legacy cash-flow rows can no longer resurrect a pre-v87 peak through the raw fallback.
+- Preserve the hard drawdown gate for new exposure and existing validated reduce-only exit bypass; keep market evaluation and learning independent of entry acceptance.
+- Bump Home Assistant app, package, runtime and container versions to 0.1.87.
+
 ## 0.1.86
 
 - Reserve projected exposure, open-position slots, cash and free margin across accepted, partially filled, and exchange-ambiguous Core orders in a trading cycle.
