@@ -258,3 +258,124 @@ def test_spot_balance_smaller_than_exchange_minimum_is_real_dust():
     )
     assert quantity == Decimal("0.05")
     assert reason == "DUST_POSITION"
+
+
+def xbt_eur_instrument() -> Instrument:
+    return Instrument(
+        venue="spot",
+        product_type=ProductType.SPOT,
+        symbol="XBT/EUR",
+        instrument_id="XXBTZEUR",
+        altname="XBTEUR",
+        base="XXBT",
+        quote="ZEUR",
+        status="online",
+        margin_available=False,
+        long_available=True,
+        short_available=False,
+        leverage_levels=(Decimal("1"),),
+        min_order_qty=Decimal("0.0001"),
+        min_cost=Decimal("1"),
+        lot_decimals=4,
+        price_decimals=2,
+        tick_size=Decimal("0.01"),
+        margin_class="spot",
+    )
+
+
+def _add_open_cash_lot(
+    db, *, symbol: str, lot_id: str, quantity: str, quote_asset: str, entry_price: str
+):
+    db.execute(
+        """INSERT INTO core_inventory_lots(
+             lot_id,symbol,direction,opened_at,entry_order_id,entry_trade_id,
+             opening_decision_id,entry_price,remaining_quantity,
+             remaining_entry_fee_est_quote,remaining_entry_fee_verified_quote,
+             entry_fee_verified,quote_asset,detail_json
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            lot_id, symbol, "LONG", 100.0, f"order-{lot_id}", f"trade-{lot_id}",
+            f"decision-{lot_id}", entry_price, quantity, "0", "0", 0,
+            quote_asset, '{"margin":false,"leverage":"1"}',
+        ),
+    )
+
+
+def test_portfolio_reconciliation_keeps_cash_spot_positions_on_their_opening_pairs(
+    db, fake_gateway
+):
+    instruments = [usd_instrument(), xbt_eur_instrument(), usd_eur_instrument()]
+    _add_open_cash_lot(
+        db, symbol="XBT/USD", lot_id="usd-lot", quantity="0.01",
+        quote_asset="ZUSD", entry_price="59000",
+    )
+    _add_open_cash_lot(
+        db, symbol="XBT/EUR", lot_id="eur-lot", quantity="0.02",
+        quote_asset="ZEUR", entry_price="54000",
+    )
+
+    fake_gateway.spot_private = lambda method, params=None: (
+        {"XXBT": "0.03", "ZEUR": "500"}
+        if method == "Balance"
+        else {"eb": "2500", "e": "2500", "n": "0", "m": "0", "mf": "2500", "ml": "9999"}
+        if method == "TradeBalance"
+        else {}
+    )
+    fake_gateway.spot_open_positions = lambda: {}
+    fake_gateway.spot_ledgers = lambda params: {"count": 0, "ledger": {}}
+
+    reconciler = PortfolioReconciler(fake_gateway, db)
+    reconciler.set_market_context(
+        instruments,
+        {
+            "XXBTZUSD": {"c": ["60000"]},
+            "XXBTZEUR": {"c": ["55000"]},
+            "ZUSDZEUR": {"c": ["0.9"]},
+        },
+    )
+
+    portfolio = reconciler.reconcile()
+
+    assert portfolio.positions["XBT/USD"] == Decimal("540.000")
+    assert portfolio.positions["XBT/EUR"] == Decimal("1100.00")
+    assert set(portfolio.spot_cash_position_symbols) == {"XBT/USD", "XBT/EUR"}
+    assert "XBT/USD" in portfolio.position_pnl_pct
+    assert "XBT/EUR" in portfolio.position_pnl_pct
+
+
+def test_unmatched_cash_spot_wallet_inventory_is_not_signal_sold(config):
+    from app.domain.models import Instrument, PortfolioState, Signal
+    from app.domain.states import Direction, ProductType
+
+    instrument = Instrument(
+        venue="spot", product_type=ProductType.SPOT,
+        symbol="XBT/EUR", instrument_id="XXBTZEUR", altname="XBTEUR",
+        base="XXBT", quote="ZEUR", status="online",
+        margin_available=False, long_available=True, short_available=False,
+        leverage_levels=(Decimal("1"),), min_order_qty=Decimal("0.0001"),
+        min_cost=Decimal("1"), lot_decimals=4, price_decimals=2,
+        tick_size=Decimal("0.01"), margin_class="spot",
+    )
+    features = {"volatility": Decimal("2")}
+    long_signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("200"), Decimal("50"),
+        Decimal("0.9"), "TREND_UP", Decimal("0"), Decimal("0"), features,
+    )
+    short_signal = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("0"), Decimal("100"),
+        Decimal("0.1"), "TREND_DOWN", Decimal("0"), Decimal("0"), features,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("80"),
+        positions={instrument.symbol: Decimal("20")},
+        spot_cash_position_symbols=(),
+    )
+    engine = DecisionEngine(config)
+
+    assert engine.choose(
+        instrument, long_signal, short_signal, portfolio, "model", "config", {},
+        Decimal("0.5"),
+    ) is None
+    assert engine.rejection_reason(
+        instrument, long_signal, short_signal, portfolio, {}, Decimal("0.5")
+    ) == "UNMANAGED_SPOT_POSITION_KEEP"
