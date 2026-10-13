@@ -17,7 +17,7 @@ class FakeDB:
         return None
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
-        if "portfolio_drawdown_tracking_reset_at" in sql and len(params) == 2:
+        if "INSERT INTO metadata" in sql and len(params) == 2:
             self.metadata[str(params[0])] = str(params[1])
 
     def event(self, code: str, level: str, payload: dict[str, Any]) -> None:
