@@ -146,7 +146,14 @@ def test_legacy_unvalued_flows_before_drawdown_epoch_do_not_poison_new_basis(tmp
     )
 
     assert complete is True
-    assert series_start == epoch
+    # The function retains the full-history start for daily P/L accounting,
+    # while persisting the active drawdown epoch separately.
+    assert series_start == start
+    assert float(
+        db.one(
+            "SELECT value FROM metadata WHERE key='portfolio_cash_flow_scope_start'"
+        )["value"]
+    ) == epoch
     assert db.one(
         "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
         "WHERE occurred_at>=? AND flow_eur IS NULL",
