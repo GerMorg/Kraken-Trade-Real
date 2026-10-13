@@ -5,6 +5,10 @@
 - Filter both normalized and raw fallback drawdown peaks to snapshots at or after the reset epoch; unvalued legacy cash-flow rows can no longer resurrect a pre-v87 peak through the raw fallback.
 - Preserve the hard drawdown gate for new exposure and existing validated reduce-only exit bypass; keep market evaluation and learning independent of entry acceptance.
 - Bump Home Assistant app, package, runtime and container versions to 0.1.87.
+- Scope drawdown cash-flow completeness to the active v87 epoch, so unvalued legacy transfers before the reset do not permanently force a raw drawdown fallback; keep the full ledger history available for daily P/L audit.
+- Check daily P/L flow completeness independently for the UTC-day interval; an unvalued transfer in that interval cannot be silently treated as trading profit/loss normalization.
+- Add regression coverage for legacy unvalued flows outside the reset epoch, new-entry drawdown blocking, reduce-only exits, and invalid future reset metadata.
+- Verify rejected risk candidates are recorded as predictions before the order gate, while actual execution/order outcomes remain tracked separately; learning feedback runs at cycle start independently of order count.
 
 ## 0.1.86
 
