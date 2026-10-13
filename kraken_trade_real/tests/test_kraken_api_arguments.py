@@ -812,3 +812,22 @@ def test_any_increasing_spot_margin_short_requires_margin_even_when_already_shor
     # Cash-Spot sells that reduce a held position do not count as opening a short.
     assert _requires_spot_margin_short_risk(instrument, Direction.SHORT, True) is False
     assert _requires_spot_margin_short_risk(instrument, Direction.LONG, False) is False
+
+
+
+def test_spot_ledgers_uses_full_paginated_ledgers_endpoint():
+    gateway = KrakenGateway("", "")
+    captured = {}
+
+    def fake_private(method, params=None):
+        captured["method"] = method
+        captured["params"] = dict(params or {})
+        return {"ledger": {}, "count": 0}
+
+    gateway.spot_private = fake_private
+    params = {"type": "deposit", "start": "1800000000", "end": "1800000100", "ofs": 50}
+    result = gateway.spot_ledgers(params)
+
+    assert captured["method"] == "Ledgers"
+    assert captured["params"] == params
+    assert result == {"ledger": {}, "count": 0}

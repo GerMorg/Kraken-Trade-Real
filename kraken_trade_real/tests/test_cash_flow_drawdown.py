@@ -90,3 +90,35 @@ def test_unvalued_external_flow_keeps_drawdown_basis_unadjusted(tmp_path):
     row = db.one("SELECT asset,flow_eur FROM portfolio_external_cash_flows")
     assert row["asset"] == "USD"
     assert row["flow_eur"] is None
+
+
+
+def test_failed_refresh_invalidates_previous_complete_cash_flow_sync(tmp_path):
+    db, start = _portfolio_db(tmp_path)
+
+    class ToggleFailureGateway(LedgerGateway):
+        fail = False
+
+        def spot_ledgers(self, params):
+            if self.fail:
+                self.calls.append(dict(params))
+                raise RuntimeError("SIMULATED_LEDGER_TIMEOUT")
+            return super().spot_ledgers(params)
+
+    gateway = ToggleFailureGateway(start)
+    reconciler = PortfolioReconciler(gateway, db)
+    assert reconciler._sync_external_cash_flows(start + 10)[0] is True
+
+    gateway.fail = True
+    failed_at = start + 3611
+    assert reconciler._sync_external_cash_flows(failed_at)[0] is False
+    stored = db.one(
+        "SELECT value FROM metadata WHERE key='portfolio_cash_flow_sync_complete'"
+    )
+    assert stored["value"] == "0"
+
+    # Within the retry throttle, a prior success must not be reused as if it
+    # included the interval whose refresh failed.
+    calls_after_failure = len(gateway.calls)
+    assert reconciler._sync_external_cash_flows(failed_at + 1)[0] is False
+    assert len(gateway.calls) == calls_after_failure

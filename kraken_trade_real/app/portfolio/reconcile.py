@@ -275,13 +275,19 @@ class PortfolioReconciler:
             stored_complete = bool(complete_row and str(complete_row.get("value")) == "1")
             return stored_complete and not int(unresolved.get("n") or 0), series_start
 
-        self.db.execute(
-            "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_last_attempt_at',?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (str(now),),
-        )
         query_start = max(series_start, last_success - 1.0) if last_success > 0 else series_start
         try:
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_last_attempt_at',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(now),),
+            )
+            # A previous successful watermark remains useful, but never describe
+            # it as currently complete after a fresh sync has started and may fail.
+            self.db.execute(
+                "INSERT INTO metadata(key,value) VALUES('portfolio_cash_flow_sync_complete','0') "
+                "ON CONFLICT(key) DO UPDATE SET value='0'"
+            )
             ledger_reader = getattr(self.gateway, "spot_ledgers", None)
             if not callable(ledger_reader):
                 raise RuntimeError("KRAKEN_SPOT_LEDGERS_UNAVAILABLE")
