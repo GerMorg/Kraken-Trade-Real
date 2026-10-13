@@ -41,6 +41,7 @@ class PortfolioReconciler:
         self.instruments: list[Instrument] = []
         self.spot_tickers: dict[str, Any] = {}
         self.future_tickers: dict[str, Any] = {}
+        self._managed_spot_symbols_by_base: dict[str, set[str]] = {}
 
     def set_market_context(
         self,
@@ -205,6 +206,56 @@ class PortfolioReconciler:
             return quote_notional / contract_size
         return (quote_notional / price) / contract_size
 
+    def _refresh_managed_spot_inventory_symbols(self) -> None:
+        """Map active app-managed cash-Spot inventory to its original trading pairs.
+
+        Wallet balances are fungible by base asset, but strategy positions and
+        FIFO accounting are pair-specific. Prefer the original pair when one
+        unambiguous non-margin inventory book exists for a base asset.
+        """
+        mapped: dict[str, set[str]] = {}
+        try:
+            known = self._spot_instruments()
+            by_symbol = {item.symbol: item for item in known}
+            lots = self.db.query(
+                """SELECT symbol,direction,remaining_quantity,detail_json
+                   FROM core_inventory_lots
+                   WHERE CAST(remaining_quantity AS REAL)>0"""
+            )
+        except Exception as exc:
+            self.db.event(
+                "PORTFOLIO_INVENTORY_SYMBOL_MAP_FAILED", "WARNING",
+                {"error_type": type(exc).__name__, "action": "KEEP_UNMANAGED"},
+            )
+            self._managed_spot_symbols_by_base = {}
+            return
+        for lot in lots:
+            symbol = str(lot.get("symbol") or "")
+            instrument = by_symbol.get(symbol)
+            if instrument is None:
+                resolved = resolve_instrument_symbol(symbol, known)
+                instrument = resolved if isinstance(resolved, Instrument) else None
+            if instrument is None or instrument.venue != "spot":
+                continue
+            try:
+                detail = json.loads(lot.get("detail_json") or "{}")
+                if not isinstance(detail, dict):
+                    detail = {}
+                leverage = dec(detail.get("leverage") or "1")
+                is_margin = bool(detail.get("margin", False))
+                quantity = dec(lot.get("remaining_quantity"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                str(lot.get("direction") or "").upper() != "LONG"
+                or quantity <= 0
+                or is_margin
+                or leverage != D("1")
+            ):
+                continue
+            mapped.setdefault(canonical_asset(instrument.base), set()).add(instrument.symbol)
+        self._managed_spot_symbols_by_base = mapped
+
     def _choose_valuation_instrument(self, base: str) -> Instrument | None:
         target = canonical_asset(base)
         preference = {"EUR": 0, "USD": 1, "USDC": 2, "USDT": 3, "GBP": 4, "CHF": 5}
@@ -220,6 +271,16 @@ class PortfolioReconciler:
         ]
         if not candidates:
             return None
+        # If one app-managed cash-Spot pair owns the active inventory, value and
+        # manage it on that pair instead of silently switching Q/USD into Q/EUR.
+        managed_symbols = self._managed_spot_symbols_by_base.get(target, set())
+        if len(managed_symbols) == 1:
+            managed = [
+                candidate for candidate in candidates
+                if candidate.symbol in managed_symbols
+            ]
+            if managed:
+                return managed[0]
         return min(
             candidates,
             key=lambda instrument: (
@@ -547,6 +608,7 @@ class PortfolioReconciler:
         self.margin_account = None
         if not self.gateway.api_key:
             return PortfolioState()
+        self._refresh_managed_spot_inventory_symbols()
         try:
             balances: dict[str, Any]
             if self.available_balance_read_supported:
@@ -838,34 +900,45 @@ class PortfolioReconciler:
                     if symbol in instrument_by_symbol
                 }
                 for base_key, wallet_quantity in wallet_quantity_by_base.items():
-                    instrument = wallet_instrument_by_base.get(base_key)
+                    valuation_instrument = wallet_instrument_by_base.get(base_key)
                     if (
-                        instrument is None
+                        valuation_instrument is None
                         or wallet_quantity <= 0
                         or base_key in margin_bases
-                        or instrument.symbol in spot_margin_position_symbols
+                        or valuation_instrument.symbol in spot_margin_position_symbols
                     ):
                         continue
                     lots = lots_by_base.get(base_key, [])
-                    if not lots or any(
-                        str(lot.get("symbol") or "") != instrument.symbol
-                        for lot in lots
-                    ):
-                        # Do not use a price from one quote market to manage lots
-                        # opened on another market for the same base asset.
+                    if not lots:
                         continue
 
+                    # Match the whole base-asset balance against the FIFO ledger,
+                    # then split it by original symbol. Never expose a Q/USD lot
+                    # to Core as Q/EUR merely because EUR is the preferred quote.
+                    groups: dict[str, dict[str, Any]] = {}
                     managed_quantity = D("0")
-                    basis_eur = D("0")
-                    lot_order_ids: set[str] = set()
-                    lot_decision_ids: set[str] = set()
                     valid_lots = True
+                    invalid_reason = ""
                     for lot in lots:
                         try:
+                            lot_symbol = str(lot.get("symbol") or "")
+                            lot_instrument = instrument_by_symbol.get(lot_symbol)
+                            if lot_instrument is None:
+                                resolved = resolve_instrument_symbol(lot_symbol, known_spot)
+                                lot_instrument = (
+                                    resolved if isinstance(resolved, Instrument) else None
+                                )
+                            if (
+                                lot_instrument is None
+                                or lot_instrument.venue != "spot"
+                                or canonical_asset(lot_instrument.base) != base_key
+                            ):
+                                valid_lots, invalid_reason = False, "INSTRUMENT_UNRESOLVED"
+                                break
                             direction = str(lot.get("direction") or "").upper()
                             quantity = dec(lot.get("remaining_quantity"))
                             entry_price = dec(lot.get("entry_price"))
-                            quote_asset = str(lot.get("quote_asset") or "")
+                            quote_asset = str(lot.get("quote_asset") or lot_instrument.quote)
                             order_id = str(lot.get("entry_order_id") or "").strip()
                             decision_id = str(lot.get("opening_decision_id") or "").strip()
                             detail = json.loads(lot.get("detail_json") or "{}")
@@ -885,52 +958,128 @@ class PortfolioReconciler:
                                 or quote_rate is None
                                 or quote_rate <= 0
                             ):
-                                valid_lots = False
+                                valid_lots, invalid_reason = False, "LOT_PROVENANCE_OR_VALUATION_INVALID"
                                 break
+                            group = groups.setdefault(lot_instrument.symbol, {
+                                "instrument": lot_instrument,
+                                "quantity": D("0"),
+                                "basis_eur": D("0"),
+                                "order_ids": set(),
+                                "decision_ids": set(),
+                            })
+                            group["quantity"] += quantity
+                            group["basis_eur"] += quantity * entry_price * quote_rate
+                            group["order_ids"].add(order_id)
+                            group["decision_ids"].add(decision_id)
                             managed_quantity += quantity
-                            basis_eur += quantity * entry_price * quote_rate
-                            lot_order_ids.add(order_id)
-                            lot_decision_ids.add(decision_id)
                         except (ArithmeticError, TypeError, ValueError, json.JSONDecodeError):
-                            valid_lots = False
+                            valid_lots, invalid_reason = False, "LOT_DATA_INVALID"
                             break
-                    tolerance = max(D("0.00000001"), wallet_quantity.copy_abs() * D("0.000001"))
+
+                    tolerance = max(
+                        D("0.00000001"), wallet_quantity.copy_abs() * D("0.000001")
+                    )
                     if (
                         not valid_lots
                         or managed_quantity <= 0
-                        or basis_eur <= 0
                         or abs(wallet_quantity - managed_quantity) > tolerance
-                        or not lot_order_ids
-                        or not lot_decision_ids
+                        or not groups
+                        or any(
+                            group["basis_eur"] <= 0
+                            or not group["order_ids"]
+                            or not group["decision_ids"]
+                            for group in groups.values()
+                        )
                     ):
+                        self.db.event(
+                            "PORTFOLIO_CASH_SPOT_LEDGER_MISMATCH", "WARNING",
+                            {
+                                "base_asset": base_key,
+                                "wallet_quantity": str(wallet_quantity),
+                                "ledger_quantity": str(managed_quantity),
+                                "valid_lots": valid_lots,
+                                "reason": invalid_reason or "WALLET_QUANTITY_NOT_FULLY_RECONCILED",
+                                "action": "KEEP_POSITION_UNMANAGED",
+                            },
+                        )
                         continue
 
-                    price = self._spot_price(instrument)
-                    quote_rate = self.quote_to_eur_rate(instrument.quote)
-                    if price <= 0 or quote_rate is None or quote_rate <= 0:
+                    priced_groups: dict[str, dict[str, Any]] = {}
+                    pricing_ok = True
+                    for lot_symbol, group in groups.items():
+                        lot_instrument = group["instrument"]
+                        price = self._spot_price(lot_instrument)
+                        quote_rate = self.quote_to_eur_rate(lot_instrument.quote)
+                        if price <= 0 or quote_rate is None or quote_rate <= 0:
+                            pricing_ok = False
+                            break
+                        quantity = group["quantity"]
+                        basis_eur = group["basis_eur"]
+                        value_eur = quantity * price * quote_rate
+                        priced_groups[lot_symbol] = {
+                            **group,
+                            "value_eur": value_eur,
+                            "pnl_eur": value_eur - basis_eur,
+                        }
+                    if not pricing_ok or len(priced_groups) != len(groups):
+                        self.db.event(
+                            "PORTFOLIO_CASH_SPOT_LEDGER_MATCH_DEFERRED", "WARNING",
+                            {
+                                "base_asset": base_key,
+                                "symbols": sorted(groups),
+                                "reason": "ORIGINAL_PAIR_PRICE_OR_FX_UNAVAILABLE",
+                                "action": "KEEP_POSITION_UNMANAGED",
+                            },
+                        )
                         continue
-                    current_value_eur = wallet_quantity * price * quote_rate
-                    pnl_eur = current_value_eur - basis_eur
-                    position_basis_eur[instrument.symbol] = basis_eur
-                    position_quantity[instrument.symbol] = wallet_quantity
-                    position_pnl_eur[instrument.symbol] = pnl_eur
-                    position_pnl_pct[instrument.symbol] = pnl_eur / basis_eur * D("100")
-                    spot_cash_position_symbols.add(instrument.symbol)
-                    self.db.event(
-                        "PORTFOLIO_CASH_SPOT_LEDGER_MATCH",
-                        "INFO",
-                        {
-                            "symbol": instrument.symbol,
-                            "base_asset": base_key,
-                            "wallet_quantity": str(wallet_quantity),
-                            "ledger_quantity": str(managed_quantity),
-                            "basis_eur": str(basis_eur),
-                            "mark_to_market_pnl_eur": str(pnl_eur),
-                            "pnl_basis": "FIFO_ENTRY_COST_GROSS_MARK_TO_MARKET",
-                            "unique_open_orders": len(lot_order_ids),
-                            "unique_opening_decisions": len(lot_decision_ids),
-                        },
-                    )
+
+                    # Replace the generic wallet-only valuation with pair-specific
+                    # quantities. The sum still represents the same base asset;
+                    # each order and FIFO lot remain tied to the actual market.
+                    generic_value = positions.get(valuation_instrument.symbol)
+                    if generic_value is None:
+                        self.db.event(
+                            "PORTFOLIO_CASH_SPOT_LEDGER_MATCH_DEFERRED", "WARNING",
+                            {
+                                "base_asset": base_key,
+                                "symbols": sorted(groups),
+                                "reason": "GENERIC_WALLET_POSITION_MISSING",
+                                "action": "KEEP_POSITION_UNMANAGED",
+                            },
+                        )
+                        continue
+                    positions.pop(valuation_instrument.symbol, None)
+                    gross -= abs(generic_value)
+                    net -= generic_value
+                    for lot_symbol, group in priced_groups.items():
+                        value_eur = group["value_eur"]
+                        pnl_eur = group["pnl_eur"]
+                        basis_eur = group["basis_eur"]
+                        quantity = group["quantity"]
+                        positions[lot_symbol] = value_eur
+                        gross += abs(value_eur)
+                        net += value_eur
+                        position_basis_eur[lot_symbol] = basis_eur
+                        position_quantity[lot_symbol] = quantity
+                        position_pnl_eur[lot_symbol] = pnl_eur
+                        position_pnl_pct[lot_symbol] = pnl_eur / basis_eur * D("100")
+                        spot_cash_position_symbols.add(lot_symbol)
+                        self.db.event(
+                            "PORTFOLIO_CASH_SPOT_LEDGER_MATCH", "INFO",
+                            {
+                                "symbol": lot_symbol,
+                                "base_asset": base_key,
+                                "wallet_quantity": str(wallet_quantity),
+                                "ledger_quantity": str(quantity),
+                                "base_wallet_reconciled_quantity": str(managed_quantity),
+                                "basis_eur": str(basis_eur),
+                                "mark_to_market_pnl_eur": str(pnl_eur),
+                                "pnl_basis": "FIFO_ENTRY_COST_GROSS_MARK_TO_MARKET",
+                                "unique_open_orders": len(group["order_ids"]),
+                                "unique_opening_decisions": len(group["decision_ids"]),
+                                "quote_pair_identity_preserved": True,
+                            },
+                        )
             except Exception as exc:
                 # Provenance/learning is auxiliary; never fail portfolio reconciliation.
                 self.db.event(
