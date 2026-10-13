@@ -5,6 +5,7 @@ from typing import Any
 
 from app.domain.models import Decision, Instrument, PortfolioState, Signal, new_id
 from app.domain.states import Direction
+from app.domain.symbols import canonical_asset
 
 D = Decimal
 
@@ -25,7 +26,7 @@ class DecisionEngine:
         Core reductions are enabled only when the reconciler matched the whole
         base balance to app-managed FIFO inventory on the same pair.
         """
-        if current == 0 or instrument.venue != "spot":
+        if instrument.venue != "spot":
             return False
         product_type = str(
             getattr(instrument.product_type, "value", instrument.product_type)
@@ -35,13 +36,33 @@ class DecisionEngine:
         if product_type != "SPOT":
             return False
         symbol = instrument.symbol
-        cash_managed = symbol in set(
+        cash_managed_symbols = set(
             getattr(portfolio, "spot_cash_position_symbols", ()) or ()
         )
-        margin_managed = symbol in set(
+        margin_managed_symbols = set(
             getattr(portfolio, "spot_margin_position_symbols", ()) or ()
         )
-        return not cash_managed and not margin_managed
+        if current != 0 and symbol not in cash_managed_symbols:
+            return True
+
+        # Wallet balances are base-asset fungible, not quote-pair-specific.
+        # If an unverified XBT/EUR wallet lot exists, do not open a new XBT/USD
+        # position that would double-count or later liquidate the same units.
+        target_base = canonical_asset(instrument.base)
+        if target_base:
+            for held_symbol, held_value in (getattr(portfolio, "positions", {}) or {}).items():
+                try:
+                    if D(str(held_value or "0")) == 0 or "/" not in str(held_symbol):
+                        continue
+                    held_base = canonical_asset(str(held_symbol).split("/", 1)[0])
+                except (ArithmeticError, TypeError, ValueError):
+                    continue
+                if held_base != target_base:
+                    continue
+                if held_symbol in cash_managed_symbols or held_symbol in margin_managed_symbols:
+                    continue
+                return True
+        return False
 
     def _confidence_scale(
         self, model_parameters: dict[str, Any] | None, regime: str | None = None
