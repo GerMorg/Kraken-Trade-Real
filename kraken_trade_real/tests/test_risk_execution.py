@@ -414,3 +414,93 @@ def test_cost_model_impact_uses_quote_turnover_only_when_quote_is_eur():
     )
     assert model.estimate(eur_quote, Decimal("100"), Decimal("1")).impact_bps == Decimal("20")
     assert model.estimate(usd_quote_without_fx, Decimal("100"), Decimal("1")).impact_bps == Decimal("80")
+
+
+def test_drawdown_gate_blocks_new_exposure_but_allows_valid_reduce_only_exit(config, instrument):
+    from dataclasses import replace
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.domain.models import Decision, MarketSnapshot, PortfolioState, Signal
+    from app.domain.states import Direction
+
+    config = replace(config, risk_max_drawdown_pct=18.0)
+    signal = Signal(
+        instrument.symbol,
+        Direction.LONG,
+        Decimal("150"),
+        Decimal("130"),
+        Decimal("0.85"),
+        "TREND_UP",
+        Decimal("0"),
+        Decimal("0"),
+        {"volatility": Decimal("5")},
+    )
+    market = MarketSnapshot(
+        instrument.symbol,
+        Decimal("100"),
+        Decimal("99.9"),
+        Decimal("100.1"),
+        Decimal("100000"),
+        1.0,
+        tuple(Decimal("100") for _ in range(40)),
+    )
+    engine = RiskEngine(config, SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+
+    entry = Decision(
+        "drawdown-new-entry",
+        instrument,
+        signal,
+        Decimal("15"),
+        Decimal("1"),
+        {"risk_profile": "core", "edge_tier": "ADAPTIVE", "min_cost_eur": "0"},
+        "baseline-v2",
+        "test-config",
+        "test",
+        Decimal("0"),
+        Decimal("15"),
+        Direction.LONG,
+        False,
+    )
+    flat_portfolio = PortfolioState(
+        equity_eur=Decimal("100"),
+        cash_eur=Decimal("100"),
+        positions={},
+        gross_eur=Decimal("0"),
+        net_eur=Decimal("0"),
+        daily_pnl_eur=Decimal("0"),
+        drawdown_pct=Decimal("50"),
+    )
+    entry_result = engine.evaluate(entry, flat_portfolio, market, {})
+    assert entry_result.allowed is False
+    assert entry_result.reason == "drawdown"
+    assert entry_result.checks["drawdown"] is False
+
+    reduction = Decision(
+        "drawdown-reduce-only",
+        instrument,
+        signal,
+        Decimal("0"),
+        Decimal("1"),
+        {"risk_profile": "core", "min_cost_eur": "0"},
+        "baseline-v2",
+        "test-config",
+        "risk reduction",
+        Decimal("15"),
+        Decimal("0"),
+        Direction.SHORT,
+        True,
+    )
+    held_portfolio = PortfolioState(
+        equity_eur=Decimal("100"),
+        cash_eur=Decimal("85"),
+        positions={instrument.symbol: Decimal("15")},
+        gross_eur=Decimal("15"),
+        net_eur=Decimal("15"),
+        daily_pnl_eur=Decimal("0"),
+        drawdown_pct=Decimal("50"),
+    )
+    reduction_result = engine.evaluate(reduction, held_portfolio, market, {})
+    assert reduction_result.allowed is True
+    assert reduction_result.checks["drawdown"] is True
+    assert reduction_result.checks["reduce_only_semantics"] is True
