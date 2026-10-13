@@ -1216,7 +1216,7 @@ class PortfolioReconciler:
                 "daily_pnl_eur": str(daily_pnl),
                 "cash_flow_adjusted": bool(cash_flow_complete),
                 "daily_cash_flow_adjusted": bool(daily_flow_complete),
-                "cash_flow_scope_start_at": scope_start if "scope_start" in locals() else drawdown_reset_at,
+                "cash_flow_scope_start_at": drawdown_reset_at,
                 "method": (
                     "EXTERNAL_EUR_LEDGER_FLOW_ADJUSTED_HIGH_WATER_MARK"
                     if cash_flow_complete else "RAW_EQUITY_SNAPSHOT_HIGH_WATER_MARK"
