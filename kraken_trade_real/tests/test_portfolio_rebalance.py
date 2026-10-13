@@ -314,6 +314,7 @@ def test_portfolio_reconciliation_keeps_cash_spot_positions_on_their_opening_pai
         quote_asset="ZEUR", entry_price="54000",
     )
 
+    fake_gateway.spot_balance = lambda: {"XXBT": "0.03", "ZEUR": "500"}
     fake_gateway.spot_private = lambda method, params=None: (
         {"XXBT": "0.03", "ZEUR": "500"}
         if method == "Balance"
