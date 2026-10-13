@@ -335,7 +335,11 @@ class PortfolioReconciler:
             )
         except (TypeError, ValueError, OverflowError):
             completed_scope_start = 0.0
-        if last_attempt > 0 and now - last_attempt <= self.CASH_FLOW_SYNC_INTERVAL_SECONDS:
+        if (
+            last_attempt > 0
+            and now - last_attempt <= self.CASH_FLOW_SYNC_INTERVAL_SECONDS
+            and completed_scope_start >= scope_start
+        ):
             unresolved = self.db.one(
                 "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
                 "WHERE occurred_at>=? AND flow_eur IS NULL",
