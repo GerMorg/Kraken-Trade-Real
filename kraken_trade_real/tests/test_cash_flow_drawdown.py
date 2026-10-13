@@ -122,3 +122,39 @@ def test_failed_refresh_invalidates_previous_complete_cash_flow_sync(tmp_path):
     calls_after_failure = len(gateway.calls)
     assert reconciler._sync_external_cash_flows(failed_at + 1)[0] is False
     assert len(gateway.calls) == calls_after_failure
+
+
+def test_legacy_unvalued_flows_before_drawdown_epoch_do_not_poison_new_basis(tmp_path):
+    db, start = _portfolio_db(tmp_path)
+    db.execute(
+        """INSERT INTO portfolio_external_cash_flows(
+            ledger_id,occurred_at,asset,flow_type,amount_asset,fee_asset,flow_eur,source_json
+        ) VALUES(?,?,?,?,?,?,?,?)""",
+        ("LEGACY-USD-DEPOSIT", start + 2, "USD", "deposit", "100", "USD", None, "{}"),
+    )
+
+    class EmptyLedgerGateway:
+        api_key = "test-api-key"
+
+        def spot_ledgers(self, params):
+            return {"count": 0, "ledger": {}}
+
+    epoch = start + 10
+    reconciler = PortfolioReconciler(EmptyLedgerGateway(), db)
+    complete, series_start = reconciler._sync_external_cash_flows(
+        epoch + 20, since_at=epoch
+    )
+
+    assert complete is True
+    assert series_start == epoch
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
+        "WHERE occurred_at>=? AND flow_eur IS NULL",
+        (epoch,),
+    )["n"] == 0
+    # The legacy row remains available for audit, but it cannot make v87's
+    # normalized epoch look incomplete.
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
+        "WHERE ledger_id='LEGACY-USD-DEPOSIT'"
+    )["n"] == 1
