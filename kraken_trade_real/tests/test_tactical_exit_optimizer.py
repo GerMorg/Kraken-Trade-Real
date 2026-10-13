@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from app.config.adaptive import TACTICAL_DEFAULTS
 from app.learning.optimizer import AdaptiveParameterOptimizer
 from app.learning.registry import ModelRegistry
@@ -327,3 +328,65 @@ def test_exit_replay_uses_live_cost_aware_trailing_trigger_and_max_hold():
     assert result is not None
     assert result["reason"] == "TIME_STOP"
     assert result["exit_at"] == 1_301
+
+
+
+def test_exit_learning_uses_only_ledger_verified_live_rows():
+    detail = {
+        "mode": "LIVE",
+        "position_context": {"venue": "spot", "leverage": "2"},
+        "cost_snapshot": {
+            "entry_fee_bps": "80",
+            "exit_fee_bps": "80",
+            "max_spread_bps": "25",
+            "expected_slippage_bps": "25",
+            "safety_buffer_bps": "30",
+            "margin_open_fee_bps": "5",
+            "rollover_fee_bps": "4",
+        },
+    }
+    row = {
+        "trade_id": "estimated-only",
+        "symbol": "BTC/USD",
+        "direction": "LONG",
+        "entry_price": "100",
+        "exit_price": "99",
+        "quantity": "0.1",
+        "gross_pnl_eur": "-1",
+        "fees_eur": "1",
+        "net_pnl_eur": "-2",
+        "opened_at": 1000.0,
+        "closed_at": 1030.0,
+        "hold_seconds": 30.0,
+        "exit_reason": "STOP_LOSS",
+        "detail_json": json.dumps(detail),
+        "net_verified": 0,
+    }
+
+    class FakeTradePathDB:
+        def __init__(self):
+            self.trade_rows = [dict(row)]
+
+        def query(self, sql, params=()):
+            if "FROM tactical_trades" in sql:
+                return [dict(item) for item in self.trade_rows]
+            if "FROM tactical_positions" in sql:
+                return []
+            raise AssertionError(f"Unexpected SQL in exit learner: {sql}")
+
+        def tactical_price_path(self, symbol, opened_at, closed_at):
+            return [
+                {"observed_at": 1000.0, "price": "100", "state": "OPEN"},
+                {"observed_at": 1010.0, "price": "99.5", "state": "OPEN"},
+                {"observed_at": 1030.0, "price": "99", "state": "CLOSED"},
+            ]
+
+    optimizer = object.__new__(AdaptiveParameterOptimizer)
+    optimizer.db = FakeTradePathDB()
+
+    assert optimizer._prepare_exit_policy_trades(now=2000.0) == []
+
+    optimizer.db.trade_rows[0]["net_verified"] = 1
+    prepared = optimizer._prepare_exit_policy_trades(now=2000.0)
+    assert len(prepared) == 1
+    assert prepared[0]["trade_ids"] == ["estimated-only"]

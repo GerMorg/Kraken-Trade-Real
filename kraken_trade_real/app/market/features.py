@@ -23,7 +23,7 @@ class FeatureEngine:
         c = list(s.closes)
         if len(c) < 5:
             return {
-                "return_1": D(0), "return_5": D(0), "return_15": D(0), "return_60": D(0), "return_240": D(0), "volatility": D(999),
+                "return_1": D(0), "return_5": D(0), "return_15": D(0), "return_60": D(0), "return_240": D(0), "volatility": D(999), "history_sufficient": D(0), "volatility_periods": D(0),
                 "downside_volatility": D(999), "ema_slope": D(0), "sma_slope": D(0),
                 "atr_proxy": D(999), "trend": D(0), "liquidity": _liquidity_feature(s),
                 "spread_bps": s.spread_bps, "book_imbalance": D(0),
@@ -32,12 +32,15 @@ class FeatureEngine:
         def pct(a: D, b: D) -> D:
             return (a / b - 1) * 100 if b else D(0)
         rs = [pct(c[i], c[i - 1]) for i in range(1, len(c))]
-        mean = sum(rs, D(0)) / D(len(rs))
-        var = sum((x - mean) ** 2 for x in rs) / D(max(1, len(rs) - 1))
-        vol = D(str(sqrt(float(var)) * sqrt(len(rs))))
-        down = [x for x in rs if x < 0]
+        # A fixed 15-bar horizon prevents volatility from growing/shrinking
+        # merely because the API returned 30 versus 250 historical candles.
+        vol_window = rs[-15:]
+        mean = sum(vol_window, D(0)) / D(len(vol_window))
+        var = sum((x - mean) ** 2 for x in vol_window) / D(max(1, len(vol_window) - 1))
+        vol = D(str(sqrt(float(var)) * sqrt(15)))
+        down = [x for x in vol_window if x < 0]
         dv = sum((x - mean) ** 2 for x in down) / D(max(1, len(down) - 1)) if down else D(0)
-        downside = D(str(sqrt(float(dv)) * sqrt(len(rs))))
+        downside = D(str(sqrt(float(dv)) * sqrt(15)))
         ef = self._ema(c, min(12, len(c)))
         es = self._ema(c, min(26, len(c)))
         sf = sum(c[-min(12, len(c)):], D(0)) / D(min(12, len(c)))
@@ -54,6 +57,8 @@ class FeatureEngine:
             "return_240": pct(c[-1], c[-241]) if len(c) >= 241 else D(0),
             "volatility": vol,
             "downside_volatility": downside,
+            "history_sufficient": D(1) if len(c) >= 16 else D(0),
+            "volatility_periods": D(len(vol_window)),
             "ema_slope": pct(ef, es),
             "sma_slope": pct(sf, ss),
             "atr_proxy": sum((abs(x) for x in rs[-min(14, len(rs)):]), D(0)) / D(min(14, len(rs))),

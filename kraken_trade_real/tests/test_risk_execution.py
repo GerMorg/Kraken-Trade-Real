@@ -297,3 +297,120 @@ def test_core_calibrated_confidence_is_reused_by_final_risk_gate(config, instrum
     ).evaluate(decision, portfolio, market, {})
     assert result.checks["confidence"] is True
     assert result.allowed is True
+
+
+
+def test_cash_reserve_checks_projected_cash_for_long_and_short(config, instrument):
+    from app.domain.models import Decision, MarketSnapshot, PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.risk.margin import MarginEngine
+    from app.risk.leverage import LeverageEngine
+
+    def decision(target, direction):
+        signal = Signal(
+            instrument.symbol, direction, Decimal("300"), Decimal("100"),
+            Decimal("0.9"), "TREND", Decimal("0"), Decimal("0"),
+            {"volatility": Decimal("2")},
+        )
+        return Decision(
+            "cash-reserve-" + direction.value, instrument, signal,
+            abs(target), Decimal("1"), {"min_cost_eur": "0"},
+            "baseline-v2-rebalance", "test", "test",
+            current_position_eur=Decimal("0"), target_position_eur=target,
+            execution_direction=direction, reduce_only=False,
+        )
+
+    market = MarketSnapshot(
+        instrument.symbol, Decimal("100"), Decimal("99.9"), Decimal("100.1"),
+        Decimal("10000"), 1.0, tuple(Decimal("100") for _ in range(40)),
+    )
+    engine = RiskEngine(config, MarginEngine(), LeverageEngine(), CostModel())
+    # At 15 EUR notional, 30 EUR cash leaves 15 EUR, below the 20 EUR reserve.
+    for target, direction in ((Decimal("15"), Direction.LONG), (Decimal("-30"), Direction.SHORT)):
+        portfolio = PortfolioState(
+            equity_eur=Decimal("100"), cash_eur=Decimal("30"), positions={},
+            gross_eur=Decimal("0"), net_eur=Decimal("0"),
+        )
+        result = engine.evaluate(decision(target, direction), portfolio, market, None)
+        assert result.checks["cash_reserve"] is False
+
+    # The exact threshold is accepted: 35 - 15 = 20 EUR reserve remaining.
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("35"), positions={},
+        gross_eur=Decimal("0"), net_eur=Decimal("0"),
+    )
+    result = engine.evaluate(
+        decision(Decimal("15"), Direction.LONG), portfolio, market, None,
+    )
+    assert result.checks["cash_reserve"] is True
+
+
+def test_core_decision_does_not_flatten_held_position_when_history_is_insufficient(config, instrument):
+    from app.domain.models import PortfolioState, Signal
+    from app.domain.states import Direction
+    from app.trading.decision import DecisionEngine
+
+    features = {"volatility": Decimal("999"), "history_sufficient": Decimal("0")}
+    long_signal = Signal(
+        instrument.symbol, Direction.LONG, Decimal("0"), Decimal("200"),
+        Decimal("0.1"), "UNKNOWN", Decimal("0"), Decimal("0"), features,
+    )
+    short_signal = Signal(
+        instrument.symbol, Direction.SHORT, Decimal("0"), Decimal("200"),
+        Decimal("0.1"), "UNKNOWN", Decimal("0"), Decimal("0"), features,
+    )
+    portfolio = PortfolioState(
+        equity_eur=Decimal("100"), cash_eur=Decimal("80"),
+        positions={instrument.symbol: Decimal("20")}, gross_eur=Decimal("20"),
+        net_eur=Decimal("20"),
+    )
+    engine = DecisionEngine(config)
+    assert engine.choose(
+        instrument, long_signal, short_signal, portfolio, "model", "config",
+    ) is None
+    assert engine.rejection_reason(
+        instrument, long_signal, short_signal, portfolio,
+    ) == "INSUFFICIENT_HISTORY_KEEP_POSITION"
+
+
+
+def test_cost_model_impact_requires_eur_normalized_turnover():
+    model = CostModel()
+    # Huge/small raw base-volume values must not be mistaken for EUR turnover.
+    low_raw_volume = SimpleNamespace(
+        spread_bps=Decimal("10"), volume_24h=Decimal("0.01"), metadata={"volatility": Decimal("3")}
+    )
+    high_raw_volume = SimpleNamespace(
+        spread_bps=Decimal("10"), volume_24h=Decimal("1000000000"), metadata={"volatility": Decimal("3")}
+    )
+    assert model.estimate(low_raw_volume, Decimal("10"), Decimal("1")).impact_bps == Decimal("80")
+    assert model.estimate(high_raw_volume, Decimal("10"), Decimal("1")).impact_bps == Decimal("80")
+
+    normalized = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("0.01"),
+        liquidity_eur_24h=Decimal("100000"),
+        quote_asset="USD",
+        metadata={"volatility": Decimal("3")},
+    )
+    assert model.estimate(normalized, Decimal("100"), Decimal("1")).impact_bps == Decimal("10")
+
+
+def test_cost_model_impact_uses_quote_turnover_only_when_quote_is_eur():
+    model = CostModel()
+    eur_quote = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("100"),
+        volume_24h_quote=Decimal("50000"),
+        quote_asset="EUR",
+        metadata={"volatility": Decimal("3")},
+    )
+    usd_quote_without_fx = SimpleNamespace(
+        spread_bps=Decimal("10"),
+        volume_24h=Decimal("100"),
+        volume_24h_quote=Decimal("50000"),
+        quote_asset="USD",
+        metadata={"volatility": Decimal("3")},
+    )
+    assert model.estimate(eur_quote, Decimal("100"), Decimal("1")).impact_bps == Decimal("20")
+    assert model.estimate(usd_quote_without_fx, Decimal("100"), Decimal("1")).impact_bps == Decimal("80")

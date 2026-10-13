@@ -81,6 +81,10 @@ class PortfolioState:
     spot_margin_open_order_ids:dict[str,tuple[str,...]]=field(default_factory=dict)
     spot_margin_position_directions:dict[str,str]=field(default_factory=dict)
     spot_margin_open_lot_count:dict[str,int]=field(default_factory=dict)
+    # Futures identities are tracked separately so Spot-Margin exit-learning never
+    # mistakes a derivative position for an exchange OpenPositions lot.
+    futures_position_symbols:tuple[str,...]=()
+    futures_positions_read_ok:bool=False
 
 @dataclass(frozen=True)
 class Fill:

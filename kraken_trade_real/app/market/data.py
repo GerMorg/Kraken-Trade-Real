@@ -13,10 +13,12 @@ D = Decimal
 
 
 def d(v: Any) -> D:
+    """Parse exchange numerics to a finite Decimal; invalid values fail closed."""
     try:
-        return D(str(v if v not in (None, "") else "0"))
-    except (InvalidOperation, ValueError):
+        value = D(str(v if v not in (None, "") else "0"))
+    except (InvalidOperation, ValueError, TypeError, OverflowError):
         return D("0")
+    return value if value.is_finite() else D("0")
 
 
 class MarketData:
@@ -38,7 +40,11 @@ class MarketData:
         bid, ask, last = (
             self._spot_values(raw) if instrument.venue == "spot" else self._future_values(raw)
         )
-        if min(bid, ask, last) <= 0:
+        if (
+            not all(value.is_finite() for value in (bid, ask, last))
+            or min(bid, ask, last) <= 0
+            or bid > ask
+        ):
             return None
 
         volume = d(
@@ -180,16 +186,18 @@ class MarketData:
                 root = next((v for v in r.values() if isinstance(v, dict)), {})
             else:
                 root = r.get("orderBook", r)
-            bids = tuple(
-                (d(x[0]), d(x[1]))
-                for x in root.get("bids", [])
-                if isinstance(x, list) and len(x) > 1
-            )
-            asks = tuple(
-                (d(x[0]), d(x[1]))
-                for x in root.get("asks", [])
-                if isinstance(x, list) and len(x) > 1
-            )
+            def valid_levels(raw_levels: Any) -> tuple[tuple[D, D], ...]:
+                levels: list[tuple[D, D]] = []
+                for level in raw_levels if isinstance(raw_levels, list) else []:
+                    if not isinstance(level, (list, tuple)) or len(level) < 2:
+                        continue
+                    price, quantity = d(level[0]), d(level[1])
+                    if price > 0 and quantity > 0:
+                        levels.append((price, quantity))
+                return tuple(levels[:25])
+
+            bids = valid_levels(root.get("bids", []))
+            asks = valid_levels(root.get("asks", []))
             return bids[:25], asks[:25]
         except Exception:
             return (), ()

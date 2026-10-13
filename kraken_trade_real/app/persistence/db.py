@@ -2,6 +2,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -81,9 +82,21 @@ class Database:
             for name, definition in {
                 "entry_policy_json": "TEXT NOT NULL DEFAULT '{}'",
                 "entry_context_json": "TEXT NOT NULL DEFAULT '{}'",
+                "mode": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
             }.items():
                 if name not in tcols:
                     con.execute(f"ALTER TABLE tactical_positions ADD COLUMN {name} {definition}")
+            # Legacy shadow simulations already carry a SHADOW- client ID.
+            # Infer their mode deterministically; unknown legacy IDs default to
+            # LIVE so potentially real exposure is never silently dropped.
+            con.execute(
+                """UPDATE tactical_positions
+                   SET mode=CASE
+                       WHEN UPPER(entry_client_order_id) LIKE 'SHADOW-%' THEN 'SHADOW'
+                       ELSE 'LIVE'
+                   END
+                   WHERE mode IS NULL OR mode='' OR mode='UNKNOWN'"""
+            )
             # Verified-fee attribution columns are additive and nullable for old data.
             # Existing estimates remain intact; verified fields are populated only
             # when both entry and exit fees are independently traceable to quote asset.
@@ -115,7 +128,21 @@ class Database:
             }.items():
                 if name not in path_cols:
                     con.execute(f"ALTER TABLE tactical_price_path ADD COLUMN {name} {definition}")
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','13')")
+            tactical_trade_cols = {row[1] for row in con.execute("PRAGMA table_info(tactical_trades)")}
+            if "net_verified" not in tactical_trade_cols:
+                con.execute("ALTER TABLE tactical_trades ADD COLUMN net_verified INTEGER NOT NULL DEFAULT 0")
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS portfolio_external_cash_flows(
+                   ledger_id TEXT PRIMARY KEY, occurred_at REAL NOT NULL,
+                   asset TEXT NOT NULL, flow_type TEXT NOT NULL,
+                   amount_asset TEXT NOT NULL, fee_asset TEXT NOT NULL,
+                   flow_eur TEXT, source_json TEXT NOT NULL)"""
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_time "
+                "ON portfolio_external_cash_flows(occurred_at)"
+            )
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','16')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
@@ -669,20 +696,27 @@ class Database:
         state: str,
         entry_policy: dict[str, Any] | None = None,
         entry_context: dict[str, Any] | None = None,
+        mode: str | None = None,
     ) -> None:
-        """Persist Tactical position state without overwriting its entry snapshot.
+        """Persist Tactical state, immutable entry snapshots and execution mode.
 
-        Routine mark-to-market updates usually omit the optional JSON fields. In
-        that case, preserve the first immutable entry snapshot already stored.
+        Routine updates may omit the mode; keep the original per-position mode
+        rather than adopting the current HA option after a restart/config change.
         """
         policy_json = json.dumps(entry_policy or {}, sort_keys=True, default=str)
         context_json = json.dumps(entry_context or {}, sort_keys=True, default=str)
+        mode_override = str(mode or "").strip().upper()
+        if mode_override and mode_override not in {"LIVE", "SHADOW"}:
+            raise ValueError("INVALID_TACTICAL_POSITION_MODE")
+        mode_value = mode_override or (
+            "SHADOW" if str(entry_client_order_id).upper().startswith("SHADOW-") else "LIVE"
+        )
         self.execute(
             """INSERT INTO tactical_positions(
                symbol,venue,direction,quantity,entry_price,peak_price,trough_price,
                notional_eur,leverage,opened_at,last_update,entry_client_order_id,
-               setup_score,state,entry_policy_json,entry_context_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               setup_score,state,entry_policy_json,entry_context_json,mode
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(symbol) DO UPDATE SET
                venue=excluded.venue,direction=excluded.direction,quantity=excluded.quantity,
                entry_price=excluded.entry_price,peak_price=excluded.peak_price,
@@ -690,6 +724,7 @@ class Database:
                leverage=excluded.leverage,last_update=excluded.last_update,
                entry_client_order_id=excluded.entry_client_order_id,
                setup_score=excluded.setup_score,state=excluded.state,
+               mode=CASE WHEN ?='' THEN tactical_positions.mode ELSE excluded.mode END,
                entry_policy_json=CASE
                    WHEN excluded.entry_policy_json='{}'
                    THEN tactical_positions.entry_policy_json
@@ -702,6 +737,7 @@ class Database:
                 symbol, venue, direction, str(quantity), str(entry_price), str(peak_price),
                 str(trough_price), str(abs(Decimal(str(notional_eur)))), str(leverage), opened_at, time.time(),
                 entry_client_order_id, str(setup_score), state, policy_json, context_json,
+                mode_value, mode_override,
             ),
         )
 
@@ -779,8 +815,10 @@ class Database:
         return self.query(sql, params)
 
     def tactical_positions(self) -> list[dict[str, Any]]:
+        # TRAILING is still an open position state, not a completed trade.
+        # Restore both states on every process/container restart.
         return self.query(
-            "SELECT * FROM tactical_positions WHERE state='OPEN' ORDER BY opened_at"
+            "SELECT * FROM tactical_positions WHERE state IN ('OPEN','TRAILING') ORDER BY opened_at"
         )
 
     def delete_tactical_position(self, symbol: str) -> None:
@@ -803,37 +841,88 @@ class Database:
         exit_reason: str,
         setup_score: Any,
         detail: dict[str, Any],
+        net_verified: bool = False,
     ) -> None:
         self.execute(
             """INSERT OR REPLACE INTO tactical_trades(
                trade_id,symbol,direction,entry_price,exit_price,quantity,
                gross_pnl_eur,fees_eur,net_pnl_eur,opened_at,closed_at,
-               hold_seconds,exit_reason,setup_score,detail_json
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               hold_seconds,exit_reason,setup_score,detail_json,net_verified
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 trade_id, symbol, direction, str(entry_price), str(exit_price), str(quantity),
                 str(gross_pnl_eur), str(fees_eur), str(net_pnl_eur), opened_at, closed_at,
                 hold_seconds, exit_reason, str(setup_score),
-                json.dumps(detail, sort_keys=True, default=str),
+                json.dumps(detail, sort_keys=True, default=str), int(bool(net_verified)),
             ),
         )
 
     def tactical_trade_count(self, since_timestamp: float) -> int:
-        row = self.one(
-            "SELECT COUNT(*) AS n FROM tactical_trades WHERE closed_at>=?",
+        """Count LIVE entry episodes, not partial-close rows or SHADOW examples."""
+        rows = self.query(
+            "SELECT symbol,direction,opened_at,detail_json FROM tactical_trades WHERE opened_at>=?",
             (since_timestamp,),
         )
-        return int(row["n"]) if row else 0
+        episodes: set[tuple[str, str, float]] = set()
+        for row in rows:
+            try:
+                detail = json.loads(row.get("detail_json") or "{}")
+                opened_at = float(row.get("opened_at") or 0)
+            except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                continue
+            if (
+                not isinstance(detail, dict)
+                or str(detail.get("mode") or "").upper() != "LIVE"
+                or not math.isfinite(opened_at)
+                or opened_at <= 0
+            ):
+                continue
+            episodes.add((
+                str(row.get("symbol") or ""),
+                str(row.get("direction") or "").upper(),
+                opened_at,
+            ))
+        # Count positions against the rate limit even before the first exit fill.
+        active_rows = self.query(
+            "SELECT symbol,direction,opened_at FROM tactical_positions "
+            "WHERE opened_at>=? AND mode='LIVE'",
+            (since_timestamp,),
+        )
+        for row in active_rows:
+            try:
+                opened_at = float(row.get("opened_at") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(opened_at) and opened_at > 0:
+                episodes.add((
+                    str(row.get("symbol") or ""),
+                    str(row.get("direction") or "").upper(),
+                    opened_at,
+                ))
+        return len(episodes)
 
     def tactical_today_net_pnl(self) -> Decimal:
+        """Sum realized LIVE rows only; SHADOW results cannot move the live stop."""
         now = datetime.datetime.now(datetime.timezone.utc)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        row = self.one(
-            "SELECT COALESCE(SUM(CAST(net_pnl_eur AS REAL)),0) AS pnl "
-            "FROM tactical_trades WHERE closed_at>=?",
+        rows = self.query(
+            "SELECT net_pnl_eur,detail_json FROM tactical_trades WHERE closed_at>=?",
             (start,),
         )
-        return Decimal(str(row["pnl"])) if row else Decimal("0")
+        total = Decimal("0")
+        for row in rows:
+            try:
+                detail = json.loads(row.get("detail_json") or "{}")
+                pnl = Decimal(str(row.get("net_pnl_eur") or "0"))
+            except (TypeError, ValueError, ArithmeticError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(detail, dict)
+                and str(detail.get("mode") or "").upper() == "LIVE"
+                and pnl.is_finite()
+            ):
+                total += pnl
+        return total
 
     def tax_event_exists(self, event_id: str) -> bool:
         return self.one("SELECT event_id FROM tax_events WHERE event_id=?", (event_id,)) is not None

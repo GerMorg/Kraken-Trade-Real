@@ -61,6 +61,7 @@ class TacticalPosition:
     # Defaults keep older persisted rows and test fixtures backward compatible.
     entry_policy: dict[str, Any] = field(default_factory=dict)
     entry_context: dict[str, Any] = field(default_factory=dict)
+    mode: str = "LIVE"
 
 
 class TacticalTrader:
@@ -265,9 +266,38 @@ class TacticalTrader:
             self._reconcile_pending()
             self._manage_positions(now)
             with self._lock:
-                has_capacity = len(self._positions) < int(
-                    getattr(self.config, "tactical_max_positions", 1)
-                )
+                tracked_symbols = set(self._positions) | set(self._invalid_position_symbols)
+            max_positions = max(1, int(getattr(self.config, "tactical_max_positions", 1)))
+            pending_symbols: set[str] = set()
+            pending_query_ok = True
+            query = getattr(self.db, "query", None)
+            if callable(query):
+                try:
+                    rows = query(
+                        """SELECT DISTINCT o.symbol
+                           FROM orders o JOIN decisions d ON d.decision_id=o.decision_id
+                           WHERE d.strategy_version=?
+                             AND o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE',
+                                             'PARTIALLY_FILLED','UNKNOWN_RECONCILING')""",
+                        (self.STRATEGY_VERSION,),
+                    )
+                    pending_symbols = {
+                        str(row.get("symbol") or "") for row in rows if row.get("symbol")
+                    }
+                except Exception as exc:
+                    pending_query_ok = False
+                    self.audit.emit(
+                        "TACTICAL_PENDING_CAPACITY_READ_FAILED", "ERROR",
+                        error_type=type(exc).__name__, error=str(exc)[:240],
+                        action="BLOCK_NEW_ENTRIES_UNTIL_RECONCILED",
+                    )
+            # Open/partial exit orders on an already tracked symbol consume no
+            # additional slot; unresolved entries on another symbol do.
+            pending_symbols.difference_update(tracked_symbols)
+            has_capacity = (
+                pending_query_ok
+                and len(tracked_symbols) + len(pending_symbols) < max_positions
+            )
             if has_capacity and now >= self._cooldown_until:
                 self._evaluate_entries(now)
         except Exception as exc:
@@ -1057,6 +1087,7 @@ class TacticalTrader:
                 snapshot.price,
                 client_order_id,
                 now,
+                mode="SHADOW",
             )
             self.audit.emit(
                 "TACTICAL_SHADOW_ENTRY",
@@ -1116,7 +1147,7 @@ class TacticalTrader:
         )
         self._open_position(
             decision, signal, fill_qty, fill_price, intent.client_order_id, now,
-            requested_quantity=intent.quantity, notional_eur=actual_notional,
+            requested_quantity=intent.quantity, notional_eur=actual_notional, mode="LIVE",
         )
         self.audit.emit(
             "TACTICAL_LIVE_ENTRY_FILL_CONFIRMED",
@@ -1182,17 +1213,56 @@ class TacticalTrader:
                 continue
             state = self._fresh_position_state(position, now)
             if state is None:
+                holding_seconds = max(0.0, now - position.opened_at)
+                max_hold_seconds = max(
+                    1.0, float(getattr(self.config, "tactical_max_hold_seconds", 1800))
+                )
+                exit_due = holding_seconds >= max_hold_seconds
                 self.audit.emit(
                     "TACTICAL_POSITION_DATA_STALE",
                     "WARNING",
                     symbol=position.symbol,
                     direction=position.direction.value,
+                    holding_seconds=round(holding_seconds, 2),
+                    max_hold_seconds=max_hold_seconds,
+                    exit_due=exit_due,
+                )
+                if exit_due:
+                    # No safe executable quote means no market/limit order can be
+                    # constructed or risk-checked honestly. Keep the position tracked,
+                    # block replacement entries through the occupied slot, and raise
+                    # an explicit high-severity signal until valid data returns.
+                    self.audit.emit(
+                        "TACTICAL_EXIT_UNAVAILABLE_MARKET_DATA",
+                        "ERROR",
+                        symbol=position.symbol,
+                        direction=position.direction.value,
+                        exit_reason="TIME_STOP",
+                        action="RETRY_WITHOUT_OPENING_REPLACEMENT_POSITION",
+                    )
+                continue
+            try:
+                last_price = D(str(state.get("price", "0")))
+                bid = D(str(state.get("bid", "0") or "0"))
+                ask = D(str(state.get("ask", "0") or "0"))
+            except (ArithmeticError, TypeError, ValueError, OverflowError) as exc:
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID", "ERROR",
+                    symbol=position.symbol, reason="UNPARSABLE_EXIT_PRICE",
+                    error_type=type(exc).__name__,
                 )
                 continue
-            last_price = D(str(state.get("price", "0")))
-            bid = D(str(state.get("bid", "0") or "0"))
-            ask = D(str(state.get("ask", "0") or "0"))
-            if last_price <= 0:
+            if (
+                not all(value.is_finite() for value in (last_price, bid, ask))
+                or last_price <= 0
+                or bid < 0
+                or ask < 0
+            ):
+                self.audit.emit(
+                    "TACTICAL_POSITION_DATA_INVALID", "ERROR",
+                    symbol=position.symbol, reason="NONFINITE_OR_NONPOSITIVE_EXIT_PRICE",
+                    price=str(last_price), bid=str(bid), ask=str(ask),
+                )
                 continue
             if bid > 0 and ask > 0 and bid > ask:
                 self.audit.emit(
@@ -1469,7 +1539,7 @@ class TacticalTrader:
             )
             return
 
-        if self._shadow_mode():
+        if position.mode == "SHADOW":
             self._close_shadow(position, price, reason, now)
             self._last_action = "SHADOW_EXIT"
             return
@@ -1628,6 +1698,7 @@ class TacticalTrader:
         *,
         requested_quantity: D | None = None,
         notional_eur: D | None = None,
+        mode: str | None = None,
     ) -> None:
         actual_notional = (
             abs(notional_eur)
@@ -1656,6 +1727,11 @@ class TacticalTrader:
             signal.score,
             entry_policy=dict(entry_policy),
             entry_context=dict(entry_context),
+            mode=(
+                str(mode or "").upper()
+                if str(mode or "").upper() in {"LIVE", "SHADOW"}
+                else ("SHADOW" if client_order_id.upper().startswith("SHADOW-") else "LIVE")
+            ),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -1675,6 +1751,7 @@ class TacticalTrader:
             position.state,
             entry_policy=position.entry_policy,
             entry_context=position.entry_context,
+            mode=position.mode,
         )
         self._record_entry_price_point(position)
 
@@ -1809,6 +1886,8 @@ class TacticalTrader:
         return {
             "mode": mode,
             "client_order_id": client_order_id,
+            "net_pnl_verified": False,
+            "net_pnl_source": "CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED",
             "max_favourable_excursion_bps": str(mfe_bps),
             "max_adverse_excursion_bps": str(mae_bps),
             "observed_peak_price": str(position.peak_price),
@@ -1866,6 +1945,28 @@ class TacticalTrader:
             + D(str(getattr(self.config, "tactical_exit_fee_bps", 80)))
         ) / D("10000")
 
+    def _trade_financing_cost(
+        self, position: TacticalPosition, notional_eur: D, now: float
+    ) -> D:
+        """Conservative configured estimate for Kraken Spot-Margin rollovers.
+
+        The exchange ledger is authoritative. This estimate is deliberately marked
+        unverified and may be used for a conservative daily stop, never for learning.
+        """
+        if position.venue != "spot" or position.leverage <= D("1"):
+            return D("0")
+        elapsed = max(0.0, float(now) - float(position.opened_at))
+        rollovers = int(elapsed // 14400.0)
+        if rollovers <= 0:
+            return D("0")
+        try:
+            rollover_bps = D(str(getattr(self.config, "execution_margin_rollover_fee_bps", 4.0)))
+        except (TypeError, ValueError, ArithmeticError):
+            rollover_bps = D("4")
+        if not rollover_bps.is_finite() or rollover_bps < 0:
+            rollover_bps = D("4")
+        return abs(notional_eur) * D(rollovers) * rollover_bps / D("10000")
+
     def _close_shadow(
         self,
         position: TacticalPosition,
@@ -1876,9 +1977,17 @@ class TacticalTrader:
         gross = self._trade_gross_pnl(
             position.direction, position.notional_eur, position.entry_price, price
         )
-        fees = self._trade_fees(position.notional_eur)
+        trading_fees = self._trade_fees(position.notional_eur)
+        financing = self._trade_financing_cost(position, position.notional_eur, now)
+        fees = trading_fees + financing
         net = gross - fees
         trade_id = new_id("tactical_trade")
+        context = self._trade_learning_context(position, "SHADOW")
+        context.update({
+            "estimated_trading_fees_eur": str(trading_fees),
+            "estimated_financing_eur": str(financing),
+            "financing_rate_source": "CONFIG_FALLBACK_NOT_EXCHANGE_CONFIRMED",
+        })
         self.db.save_tactical_trade(
             trade_id,
             position.symbol,
@@ -1894,7 +2003,7 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            self._trade_learning_context(position, "SHADOW"),
+            context,
         )
         self.db.delete_tactical_position(position.symbol)
         with self._lock:
@@ -1928,9 +2037,17 @@ class TacticalTrader:
         gross = self._trade_gross_pnl(
             position.direction, closed_notional, position.entry_price, fill_price
         )
-        fees = self._trade_fees(closed_notional)
+        trading_fees = self._trade_fees(closed_notional)
+        financing = self._trade_financing_cost(position, closed_notional, now)
+        fees = trading_fees + financing
         net = gross - fees
         trade_id = new_id("tactical_trade")
+        context = self._trade_learning_context(position, "LIVE", client_order_id)
+        context.update({
+            "estimated_trading_fees_eur": str(trading_fees),
+            "estimated_financing_eur": str(financing),
+            "financing_rate_source": "CONFIG_FALLBACK_NOT_EXCHANGE_CONFIRMED",
+        })
         self.db.save_tactical_trade(
             trade_id,
             position.symbol,
@@ -1946,7 +2063,7 @@ class TacticalTrader:
             now - position.opened_at,
             reason,
             position.setup_score,
-            self._trade_learning_context(position, "LIVE", client_order_id),
+            context,
         )
         if ratio >= D("0.999999"):
             self.db.delete_tactical_position(position.symbol)
@@ -1998,11 +2115,13 @@ class TacticalTrader:
     ) -> dict[str, Any] | None:
         state = self.websocket.market_snapshot(position.symbol)
         max_age = float(getattr(self.config, "tactical_market_max_age_seconds", 5))
-        if state is not None:
+        if isinstance(state, dict):
             try:
-                if now - float(state.get("timestamp") or 0) <= max_age:
+                timestamp = float(state.get("timestamp") or 0)
+                age = now - timestamp
+                if math.isfinite(timestamp) and 0.0 <= age <= max_age:
                     return state
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass
         instrument = self._candidates.get(position.symbol) or self._instrument_from_db(position.symbol)
         if instrument is None:
@@ -2170,6 +2289,10 @@ class TacticalTrader:
                     str(row.get("state") or "OPEN"),
                     self._json_dict(row.get("entry_policy_json")),
                     self._json_dict(row.get("entry_context_json")),
+                    str(row.get("mode") or (
+                        "SHADOW" if str(row.get("entry_client_order_id") or "").upper().startswith("SHADOW-")
+                        else "LIVE"
+                    )).upper(),
                 )
                 numeric_values = (
                     position.quantity, position.entry_price, position.peak_price,
@@ -2187,6 +2310,16 @@ class TacticalTrader:
                     or position.opened_at <= 0
                 ):
                     raise ValueError("INVALID_STORED_POSITION_NUMERICS")
+                if position.mode not in {"LIVE", "SHADOW"}:
+                    position.mode = (
+                        "SHADOW" if position.entry_client_order_id.upper().startswith("SHADOW-")
+                        else "LIVE"
+                    )
+                    self.audit.emit(
+                        "TACTICAL_POSITION_MODE_RECOVERED", "WARNING",
+                        symbol=position.symbol, mode=position.mode,
+                        reason="LEGACY_MODE_INFERRED_FROM_ENTRY_ORDER_ID",
+                    )
                 if position.state not in {"OPEN", "TRAILING"}:
                     position.state = "OPEN"
                     self.audit.emit(
@@ -2202,7 +2335,7 @@ class TacticalTrader:
                     position.quantity, position.entry_price, position.peak_price,
                     position.trough_price, position.notional_eur, position.leverage,
                     position.opened_at, position.entry_client_order_id,
-                    position.setup_score, position.state,
+                    position.setup_score, position.state, mode=position.mode,
                 )
             except Exception as exc:
                 symbol = str(row.get("symbol", "") or "")
@@ -2378,7 +2511,7 @@ class TacticalTrader:
         self, *, instrument: Instrument, direction: Direction, quantity: D, price: D,
         notional_eur: D, leverage: D, opened_at: float, client_order_id: str,
         setup_score: D, entry_policy: dict[str, Any] | None = None,
-        entry_context: dict[str, Any] | None = None,
+        entry_context: dict[str, Any] | None = None, mode: str | None = None,
     ) -> None:
         if quantity <= 0 or price <= 0:
             return
@@ -2387,6 +2520,11 @@ class TacticalTrader:
             abs(notional_eur), leverage, opened_at, client_order_id, setup_score,
             entry_policy=dict(entry_policy or {}),
             entry_context=dict(entry_context or {}),
+            mode=(
+                str(mode or "").upper()
+                if str(mode or "").upper() in {"LIVE", "SHADOW"}
+                else ("SHADOW" if client_order_id.upper().startswith("SHADOW-") else "LIVE")
+            ),
         )
         with self._lock:
             self._positions[position.symbol] = position
@@ -2397,6 +2535,7 @@ class TacticalTrader:
             position.entry_client_order_id, position.setup_score, position.state,
             entry_policy=position.entry_policy,
             entry_context=position.entry_context,
+            mode=position.mode,
         )
 
     def _signal_reject(self, symbol: str, reason: str) -> TacticalSignal | None:

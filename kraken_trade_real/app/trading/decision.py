@@ -89,6 +89,10 @@ class DecisionEngine:
     ) -> list[tuple[Signal, D, str]]:
         result: list[tuple[Signal, D, str]] = []
         for signal in (long_signal, short_signal):
+            # No new position may be opened on a truncated history window.
+            # Test-created/external signals without this feature keep legacy behaviour.
+            if D(str(signal.features.get("history_sufficient", "1"))) <= 0:
+                continue
             scale = self._confidence_scale(model_parameters, signal.regime)
             calibrated = max(D("0"), min(D("1"), signal.confidence * scale))
             if calibrated < D(str(self.config.strategy_min_confidence)):
@@ -177,6 +181,8 @@ class DecisionEngine:
         current = portfolio.positions.get(instrument.symbol, D("0"))
         if current != 0:
             held_signal = long_signal if current > 0 else short_signal
+            if D(str(held_signal.features.get("history_sufficient", "1"))) <= 0:
+                return "INSUFFICIENT_HISTORY_KEEP_POSITION"
             held_scale = self._confidence_scale(model_parameters, held_signal.regime)
             if self._held_position_needs_exit(held_signal, held_scale):
                 return "REBALANCE_EXIT"
@@ -267,6 +273,10 @@ class DecisionEngine:
         edge_tier = "STANDARD"
         edge_threshold = D(str(self.config.strategy_min_edge_bps))
         held_signal = long_signal if current > 0 else short_signal
+        if current != 0 and D(str(held_signal.features.get("history_sufficient", "1"))) <= 0:
+            # Missing/truncated history is not a negative trading signal. Keep the
+            # position under independent risk/profit protection and wait for data.
+            return None
         held_scale = self._confidence_scale(model_parameters, held_signal.regime)
         held_needs_exit = current != 0 and self._held_position_needs_exit(
             held_signal, held_scale

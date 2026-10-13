@@ -382,3 +382,72 @@ def test_scanner_uses_promoted_market_filter_thresholds_without_restart(instrume
     assert selected == []
     assert diagnostics["excluded_by_reason"]["LIQUIDITY_TOO_LOW"] == 1
     assert diagnostics["active_thresholds"]["market_min_liquidity_eur"] == "7000000.0"
+
+
+
+def test_market_data_rejects_nonfinite_and_crossed_quotes(instrument):
+    from app.market.data import MarketData, d
+
+    assert d("NaN") == Decimal("0")
+    assert d("Infinity") == Decimal("0")
+    assert d("-Infinity") == Decimal("0")
+
+    crossed = MarketData(object()).snapshot(
+        instrument,
+        {instrument.instrument_id: {
+            "b": ["101"], "a": ["100"], "c": ["100.5"], "v": ["0", "100"]
+        }},
+        include_history=False,
+        include_orderbook=False,
+    )
+    nonfinite = MarketData(object()).snapshot(
+        instrument,
+        {instrument.instrument_id: {
+            "b": ["99"], "a": ["101"], "c": ["NaN"], "v": ["0", "100"]
+        }},
+        include_history=False,
+        include_orderbook=False,
+    )
+    assert crossed is None
+    assert nonfinite is None
+
+
+def test_market_orderbook_filters_nonfinite_and_nonpositive_levels(instrument):
+    from app.market.data import MarketData
+
+    class Gateway:
+        def spot_public(self, method, params=None):
+            assert method == "Depth"
+            return {instrument.instrument_id: {
+                "bids": [["100", "1"], ["NaN", "2"], ["99", "-1"], ["98", "2"]],
+                "asks": [["101", "1"], ["102", "0"]],
+            }}
+
+    bids, asks = MarketData(Gateway())._orderbook(instrument)
+    assert bids == ((Decimal("100"), Decimal("1")), (Decimal("98"), Decimal("2")))
+    assert asks == ((Decimal("101"), Decimal("1")),)
+
+
+def test_core_volatility_uses_fixed_last_fifteen_bar_horizon():
+    from app.domain.models import MarketSnapshot
+    from time import time
+
+    last_prices = tuple(Decimal(str(100 + i * (0.2 if i % 2 else -0.1))) for i in range(16))
+    older_prices = tuple(Decimal(str(50 + i * 0.1)) for i in range(200))
+    now = time()
+    short = MarketSnapshot(
+        "XBT/EUR", last_prices[-1], last_prices[-1] - Decimal("0.01"),
+        last_prices[-1] + Decimal("0.01"), Decimal("1000"), now,
+        last_prices,
+    )
+    long = MarketSnapshot(
+        "XBT/EUR", last_prices[-1], last_prices[-1] - Decimal("0.01"),
+        last_prices[-1] + Decimal("0.01"), Decimal("1000"), now,
+        older_prices + last_prices,
+    )
+    short_features = FeatureEngine().calculate(short)
+    long_features = FeatureEngine().calculate(long)
+    assert short_features["history_sufficient"] == Decimal("1")
+    assert long_features["history_sufficient"] == Decimal("1")
+    assert short_features["volatility"] == long_features["volatility"]
+    assert short_features["volatility_periods"] == Decimal("15")

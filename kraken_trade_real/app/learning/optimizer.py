@@ -37,20 +37,19 @@ class AdaptiveParameterOptimizer:
             return 0.0
 
     TACTICAL_ENTRY_OUTCOME_BASIS = (
-        "LIVE_POSITION_EPISODES_WITH_CONFIGURED_COST_ESTIMATES_NOT_LEDGER_VERIFIED"
+        "LIVE_POSITION_EPISODES_LEDGER_VERIFIED_NET_PNL_ONLY"
     )
 
     def _load_live_tactical_episodes(self, now: float) -> tuple[list[dict[str, Any]], int]:
-        """Aggregate complete LIVE position episodes; never mix in SHADOW samples.
+        """Aggregate complete LIVE position episodes with ledger-verified net PnL.
 
-        A position may have several partial-close rows. Those rows form one
-        learning outcome, and an episode is excluded while its position remains
-        open. Fees/net values are the configured-cost estimates stored by the
-        Tactical engine, not ledger-verified exchange net PnL.
+        A position may have several partial-close rows; those form one episode,
+        which is excluded while the position remains open. SHADOW rows and LIVE
+        rows without explicit exchange-ledger verification are not learning labels.
         """
         raw_rows = self.db.query(
             """SELECT trade_id,symbol,direction,opened_at,closed_at,
-                      gross_pnl_eur,fees_eur,net_pnl_eur,exit_reason,detail_json
+                      gross_pnl_eur,fees_eur,net_pnl_eur,exit_reason,detail_json,net_verified
                FROM tactical_trades
                WHERE closed_at >= ?
                ORDER BY closed_at ASC,trade_id ASC LIMIT 1800""",
@@ -69,6 +68,15 @@ class AdaptiveParameterOptimizer:
             except (TypeError, ValueError, json.JSONDecodeError):
                 detail = {}
             if not isinstance(detail, dict) or str(detail.get("mode") or "").upper() != "LIVE":
+                non_live_rows += 1
+                continue
+            # Modeled PnL is not a valid learning label until exchange-ledger
+            # attribution explicitly verifies realized PnL and fees.
+            try:
+                net_verified = int(row.get("net_verified") or 0) == 1
+            except (TypeError, ValueError, OverflowError):
+                net_verified = False
+            if not net_verified:
                 non_live_rows += 1
                 continue
 
@@ -409,7 +417,7 @@ class AdaptiveParameterOptimizer:
 
     EXIT_POLICY_BOUNDS = {
         "tactical_stop_loss_pct": (0.35, 2.0),
-        "tactical_take_profit_pct": (1.0, 5.0),
+        "tactical_take_profit_pct": (1.0, 8.0),
         "tactical_trailing_trigger_bps": (50.0, 500.0),
         "tactical_trailing_stop_pct": (0.2, 1.5),
         "tactical_max_hold_seconds": (300, 7200),
@@ -768,14 +776,14 @@ class AdaptiveParameterOptimizer:
         rows = self.db.query(
             """SELECT trade_id,symbol,direction,entry_price,exit_price,quantity,
                       gross_pnl_eur,fees_eur,net_pnl_eur,opened_at,closed_at,
-                      hold_seconds,exit_reason,detail_json
+                      hold_seconds,exit_reason,detail_json,net_verified
                FROM tactical_trades
-               WHERE closed_at >= ?
+               WHERE closed_at >= ? AND net_verified=1
                ORDER BY closed_at ASC LIMIT 2400""",
             (now - 180 * 86400,),
         )
         active_rows = self.db.query(
-            "SELECT symbol,opened_at FROM tactical_positions WHERE state='OPEN'"
+            "SELECT symbol,opened_at FROM tactical_positions WHERE state IN ('OPEN','TRAILING')"
         )
         active = {(str(row["symbol"]), float(row["opened_at"])) for row in active_rows}
         grouped: dict[tuple[str, float, str], dict[str, Any]] = {}
@@ -786,7 +794,8 @@ class AdaptiveParameterOptimizer:
                 direction = str(row["direction"]).upper()
                 closed_at = float(row["closed_at"])
                 detail = json.loads(row.get("detail_json") or "{}")
-                if not isinstance(detail, dict) or detail.get("mode") != "LIVE":
+                net_verified = int(row.get("net_verified") or 0) == 1
+                if not isinstance(detail, dict) or detail.get("mode") != "LIVE" or not net_verified:
                     continue
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
@@ -1025,7 +1034,7 @@ class AdaptiveParameterOptimizer:
             # Count position episodes, not partial-close rows. Do this cheap
             # preflight before reconstructing thousands of price-path records.
             fresh_episodes = self.db.query(
-                "SELECT symbol,opened_at FROM tactical_trades WHERE closed_at>? "
+                "SELECT symbol,opened_at FROM tactical_trades WHERE closed_at>? AND net_verified=1 "
                 "GROUP BY symbol,opened_at",
                 (last_at,),
             )
@@ -1038,7 +1047,7 @@ class AdaptiveParameterOptimizer:
                 }
 
         watermark_row = self.db.one(
-            "SELECT MAX(closed_at) AS closed_at FROM tactical_trades WHERE closed_at>=?",
+            "SELECT MAX(closed_at) AS closed_at FROM tactical_trades WHERE closed_at>=? AND net_verified=1",
             (now - 180 * 86400,),
         )
         watermark = (

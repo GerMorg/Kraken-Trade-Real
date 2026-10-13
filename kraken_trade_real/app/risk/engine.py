@@ -55,7 +55,6 @@ class RiskEngine:
         )
         gross_after = p.gross_eur - current_abs + desired_abs
         net_after = p.net_eur - current + desired
-        delta = desired - current
         eq = p.equity_eur
 
         if eq <= 0:
@@ -131,6 +130,13 @@ class RiskEngine:
                 getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)
             ))
 
+        same_side = current == 0 or desired == 0 or current * desired > 0
+        incremental_notional = max(D("0"), desired_abs - current_abs) if same_side else desired_abs
+        increases_exposure = incremental_notional > 0
+        incremental_capital = incremental_notional / leverage if leverage > 1 else incremental_notional
+        cash_reserve_min = eq * D(str(self.config.risk_cash_reserve_pct)) / 100
+        projected_cash = p.cash_eur - incremental_capital
+
         checks = {
             "instrument_direction": (
                 valid_reduction
@@ -152,10 +158,7 @@ class RiskEngine:
                 or len(p.positions) < self.config.risk_max_open_positions
             ),
             "cash_reserve": (
-                valid_reduction
-                or p.cash_eur >= eq * D(str(self.config.risk_cash_reserve_pct)) / 100
-                if delta > 0
-                else True
+                valid_reduction or not increases_exposure or projected_cash >= cash_reserve_min
             ),
             "leverage_bound": (
                 valid_reduction
@@ -194,7 +197,7 @@ class RiskEngine:
         if leverage > 1 and not valid_reduction:
             checks["margin_available"] = margin_account is not None
             if margin_account is not None:
-                requested_margin = desired_abs / leverage
+                requested_margin = incremental_notional / leverage
                 ok, _ = self.margin_engine.available(
                     margin_account,
                     requested_margin,

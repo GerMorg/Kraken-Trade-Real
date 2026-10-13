@@ -1,3 +1,18 @@
+## 0.1.86
+
+- Reserve projected exposure, open-position slots, cash and free margin across accepted, partially filled, and exchange-ambiguous Core orders in a trading cycle.
+- Check Core cash reserve against post-order cash for both long and short increases; only a strictly valid reduce-only action is exempt.
+- Restore Tactical TRAILING positions after restart, reserve capacity for unresolved entries, reject malformed/non-finite exit prices, and reject future-dated websocket snapshots as fresh data.
+- Persist each Tactical position's LIVE/SHADOW mode independently of current HA options. Legacy SHADOW- client IDs migrate to Shadow mode; restored simulations never trigger live exits or count against LIVE trade-rate limits. DB schema advances to 16.
+- Separate Tactical LIVE risk-limit PnL and entry-episode counts from SHADOW rows and partial-close rows. Include a conservative, explicitly unverified Spot-Margin rollover estimate in Tactical net outcomes; never treat modeled net PnL as ledger-verified training data.
+- Reject non-finite/crossed Core quotes and invalid order-book levels. Normalize Core volatility over a fixed 15-return horizon and retain existing positions when history is insufficient rather than interpreting missing data as a negative signal.
+- Align Tactical take-profit optimizer bounds with adaptive configuration (1–8%). Correct the global Core/Tactical net-limit diagnostic so it reports the same global cap used by RiskEngine.
+- Correct the latent execution CostModel impact estimate: compare EUR order notional only with EUR-normalized turnover, and use a conservative bounded fallback when turnover units are missing/incompatible rather than dividing EUR by raw base-asset volume.
+- Escalate a Tactical maximum-hold position whose price feed is still unavailable; retain the tracked position and occupied slot instead of manufacturing an exit price or opening a replacement position.
+- Add cash-flow-aware daily PnL/drawdown normalization from the Kraken Spot ledger. It is enabled only when history is complete and all external cash flows can be valued in EUR; otherwise the raw basis is retained and the incomplete basis is logged.
+- Correct Futures long/short side normalization and add cycle-managed reduce-only stop/profit protection for identified derivative positions using validated executable close-side quotes, without mixing Futures observations into the Spot-specific exit-learning dataset.
+- Bump add-on/package/build/User-Agent version metadata to 0.1.86. Add regression coverage for cycle-wide reservations, exact cash reserve thresholds, order-book integrity, restart recovery, cash-flow normalization, parameter bounds, and Futures protection.
+
 # Changelog
 
 ## 0.1.85

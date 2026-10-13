@@ -336,7 +336,11 @@ class PositionProfitProtection:
 
     def observe(self, portfolio: PortfolioState, cycle_id: str = "") -> None:
         """Persist PnL high-water marks and reconcile outstanding partial exits."""
-        if not (portfolio.spot_open_positions_read_ok or portfolio.spot_wallet_read_ok):
+        if not (
+            portfolio.spot_open_positions_read_ok
+            or portfolio.spot_wallet_read_ok
+            or portfolio.futures_positions_read_ok
+        ):
             # With both source reads unavailable, neither exits nor episode closure
             # may be inferred from missing data.
             return
@@ -404,9 +408,10 @@ class PositionProfitProtection:
         # the wallet and margin position feeds successfully confirm the snapshot.
         if portfolio.spot_wallet_read_ok and portfolio.spot_open_positions_read_ok:
             rows = self.db.query("SELECT symbol FROM position_profit_state")
+            protected_symbols = active_symbols | set(portfolio.futures_position_symbols)
             for row in rows:
                 symbol = str(row.get("symbol") or "")
-                if symbol and symbol not in active_symbols:
+                if symbol and symbol not in protected_symbols:
                     self.db.execute(
                         "DELETE FROM position_profit_state WHERE symbol=?",
                         (symbol,),
@@ -599,6 +604,41 @@ class PositionProfitProtection:
                         error=str(exc)[:240],
                     )
 
+        # Futures high-water marks are tracked separately from Spot Margin exit
+        # episodes. Futures PnL is a price-return percentage derived from Kraken's
+        # entry price and the executable close-side quote; do not mix it into the
+        # Spot-specific counterfactual learning ledger.
+        if portfolio.futures_positions_read_ok:
+            for symbol in sorted(set(portfolio.futures_position_symbols)):
+                if symbol not in portfolio.position_pnl_pct:
+                    continue
+                current_pct = _d(portfolio.position_pnl_pct.get(symbol))
+                if not current_pct.is_finite():
+                    continue
+                row = self._state(symbol)
+                previous_peak = _d(row.get("peak_profit_pct")) if row else D("0")
+                peak = max(previous_peak, current_pct)
+                if row is None:
+                    self.db.execute(
+                        """INSERT INTO position_profit_state
+                           (symbol,peak_profit_pct,partial_taken,pending_order_id,
+                            pending_start_position_eur,updated_at)
+                           VALUES(?,?,0,'','0',strftime('%s','now'))""",
+                        (symbol, str(max(D("0"), peak))),
+                    )
+                else:
+                    self.db.execute(
+                        """UPDATE position_profit_state SET peak_profit_pct=?,
+                           updated_at=strftime('%s','now') WHERE symbol=?""",
+                        (str(max(D("0"), peak)), symbol),
+                    )
+                if current_pct > previous_peak and peak > D("0"):
+                    self.audit.emit(
+                        "FUTURES_POSITION_PROFIT_PEAK_UPDATED", "INFO",
+                        cycle_id=cycle_id, symbol=symbol,
+                        peak_profit_pct=str(peak), current_price_return_pct=str(current_pct),
+                    )
+
     def apply(
         self,
         *,
@@ -613,13 +653,26 @@ class PositionProfitProtection:
         min_cost_eur: D,
     ) -> Decision | None:
         """Apply a profit-management override or forbid increasing a partly taken position."""
-        if instrument.venue != "spot" or instrument.product_type not in {
-            ProductType.SPOT, ProductType.SPOT_MARGIN,
-        }:
+        is_spot_position = (
+            instrument.venue == "spot"
+            and instrument.product_type in {ProductType.SPOT, ProductType.SPOT_MARGIN}
+        )
+        is_futures_position = (
+            instrument.venue == "futures"
+            and instrument.product_type == ProductType.DERIVATIVE
+            and portfolio.futures_positions_read_ok
+            and instrument.symbol in set(portfolio.futures_position_symbols)
+        )
+        if not (is_spot_position or is_futures_position):
             return decision
 
         symbol = instrument.symbol
-        if instrument.product_type == ProductType.SPOT:
+        if is_futures_position:
+            # A derivative position may be stopped/reduced only with a fresh
+            # reconciled open-position identity and a valid close-side price return.
+            if symbol not in portfolio.position_pnl_pct:
+                return decision
+        elif instrument.product_type == ProductType.SPOT:
             # Cash-Spot protection is enabled only for fully matched app-managed
             # FIFO inventory. Manual assets or any quantity discrepancy are excluded.
             if not (
