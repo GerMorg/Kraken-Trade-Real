@@ -433,3 +433,113 @@ def test_futures_position_receives_reduce_only_stop_loss_without_spot_learning(d
     assert decision.execution_direction == Direction.LONG
     assert decision.reduce_only is True
     assert db.one("SELECT episode_id FROM core_exit_episodes WHERE symbol='PF_XBTUSD'") is None
+
+
+def test_signal_driven_full_exit_requires_two_consecutive_cycles(db, config, instrument):
+    manager = PositionProfitProtection(config, db, FakeAudit())
+    portfolio = portfolio_for(instrument, "20", "0.0")
+    manager.observe(portfolio, "cycle-signal-bad-1")
+    held_signal = signal_for(instrument, Direction.LONG)
+    exit_decision = Decision(
+        "decision-signal-exit",
+        instrument,
+        held_signal,
+        D("20"),
+        D("1"),
+        {
+            "rebalance_action": "FLATTEN_STALE_EDGE",
+            "target_position_eur": "0",
+            "risk_profile": "core",
+        },
+        "baseline-v2-rebalance",
+        "baseline-v1",
+        "test-hash",
+        D("20"),
+        D("0"),
+        Direction.SHORT,
+        True,
+    )
+
+    first = manager.apply(
+        cycle_id="cycle-signal-bad-1",
+        instrument=instrument,
+        portfolio=portfolio,
+        decision=exit_decision,
+        long_signal=held_signal,
+        short_signal=signal_for(instrument, Direction.SHORT),
+        model_version="baseline-v1",
+        config_hash="test-hash",
+        min_cost_eur=D("0.5"),
+    )
+    second = manager.apply(
+        cycle_id="cycle-signal-bad-2",
+        instrument=instrument,
+        portfolio=portfolio,
+        decision=exit_decision,
+        long_signal=held_signal,
+        short_signal=signal_for(instrument, Direction.SHORT),
+        model_version="baseline-v1",
+        config_hash="test-hash",
+        min_cost_eur=D("0.5"),
+    )
+
+    assert first is None
+    assert second is exit_decision
+
+
+def test_filled_full_close_blocks_immediate_reentry(db, config, instrument):
+    import time
+
+    closed_at = time.time() - 30
+    db.execute(
+        """INSERT INTO decisions(
+             decision_id,created_at,symbol,direction,target_notional_eur,leverage,
+             expected_return_bps,expected_cost_bps,confidence,regime,news_effect_bps,
+             gemini_effect_bps,strategy_version,model_version,config_hash,rationale_json
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "decision-recent-full-close", closed_at, instrument.symbol, "SHORT", "20", "1",
+            "0", "20", "0.5", "TREND_DOWN", "0", "0", "baseline-v2-rebalance",
+            "baseline-v1", "test-hash",
+            '{"target_position_eur":"0","rebalance_action":"FLATTEN_STALE_EDGE"}',
+        ),
+    )
+    db.execute(
+        """INSERT INTO orders(
+             intent_id,client_order_id,created_at,decision_id,symbol,direction,side,
+             order_type,quantity,limit_price,leverage,margin,reduce_only,post_only,
+             state,submitted_at,kraken_order_id,expected_edge_bps,max_slippage_bps,
+             expires_seconds
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "intent-recent-full-close", "client-recent-full-close", closed_at,
+            "decision-recent-full-close", instrument.symbol, "SHORT", "sell", "market",
+            "1", None, "1", 0, 1, 0, "FILLED", closed_at, "EXCHANGE-CLOSE-1",
+            "0", "30", 60,
+        ),
+    )
+    manager = PositionProfitProtection(config, db, FakeAudit())
+    flat = PortfolioState(
+        equity_eur=D("100"), cash_eur=D("100"), positions={},
+        spot_margin_position_symbols=(),
+    )
+    entry_signal = signal_for(instrument, Direction.LONG)
+    entry_decision = Decision(
+        "decision-new-entry", instrument, entry_signal, D("15"), D("1"),
+        {"risk_profile": "core"}, "baseline-v2-rebalance", "baseline-v1",
+        "test-hash", D("0"), D("15"), Direction.LONG, False,
+    )
+
+    result = manager.apply(
+        cycle_id="cycle-immediate-reentry",
+        instrument=instrument,
+        portfolio=flat,
+        decision=entry_decision,
+        long_signal=entry_signal,
+        short_signal=signal_for(instrument, Direction.SHORT),
+        model_version="baseline-v1",
+        config_hash="test-hash",
+        min_cost_eur=D("0.5"),
+    )
+
+    assert result is None
