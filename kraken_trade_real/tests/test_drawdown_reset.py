@@ -11,7 +11,7 @@ class FakeDB:
         self.events: list[tuple[str, str, dict[str, Any]]] = []
 
     def one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
-        if "portfolio_drawdown_tracking_reset_at" in sql:
+        if params and str(params[0]) == "portfolio_drawdown_tracking_reset_at":
             value = self.metadata.get("portfolio_drawdown_tracking_reset_at")
             return {"value": value} if value is not None else None
         return None
