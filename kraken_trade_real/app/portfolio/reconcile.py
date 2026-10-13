@@ -338,7 +338,7 @@ class PortfolioReconciler:
         if (
             last_attempt > 0
             and now - last_attempt <= self.CASH_FLOW_SYNC_INTERVAL_SECONDS
-            and completed_scope_start >= scope_start
+            and completed_scope_start == scope_start
         ):
             unresolved = self.db.one(
                 "SELECT COUNT(*) AS n FROM portfolio_external_cash_flows "
@@ -348,7 +348,7 @@ class PortfolioReconciler:
             stored_complete = bool(
                 complete_row
                 and str(complete_row.get("value")) == "1"
-                and completed_series_start >= series_start
+                and completed_series_start == series_start
                 and completed_scope_start >= scope_start
             )
             return stored_complete and not int(unresolved.get("n") or 0), series_start
