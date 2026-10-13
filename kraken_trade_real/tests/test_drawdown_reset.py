@@ -46,3 +46,14 @@ def test_drawdown_epoch_preserves_existing_valid_reset_timestamp() -> None:
 
     assert result == 1_790_000_000.0
     assert db.events == []
+
+
+def test_invalid_future_drawdown_epoch_is_reinitialized_and_audited() -> None:
+    db = FakeDB({"portfolio_drawdown_tracking_reset_at": "1800000300.0"})
+    reconciler = PortfolioReconciler(gateway=object(), db=db)
+
+    result = reconciler._drawdown_tracking_reset_at(1_800_000_000.0)
+
+    assert result == 1_800_000_000.0
+    assert db.metadata["portfolio_drawdown_tracking_reset_at"] == "1800000000.0"
+    assert [event[0] for event in db.events] == ["PORTFOLIO_DRAWDOWN_TRACKING_RESET"]
