@@ -228,6 +228,41 @@ class PortfolioReconciler:
             ),
         )
 
+    DRAWDOWN_RESET_METADATA_KEY = "portfolio_drawdown_tracking_reset_at"
+
+    def _drawdown_tracking_reset_at(self, now: float) -> float:
+        """Return the persistent v87 drawdown epoch, initializing it once.
+
+        Historical snapshots are retained for audit, but snapshots before this
+        epoch must never be used as the new high-water mark. This deliberately
+        resets only drawdown tracking, not wallet equity or open positions.
+        """
+        row = self.db.one(
+            "SELECT value FROM metadata WHERE key=?",
+            (self.DRAWDOWN_RESET_METADATA_KEY,),
+        )
+        try:
+            stored = float(row.get("value")) if row else 0.0
+        except (TypeError, ValueError, OverflowError):
+            stored = 0.0
+        if D(str(stored)).is_finite() and stored > 0:
+            return stored
+        self.db.execute(
+            "INSERT INTO metadata(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (self.DRAWDOWN_RESET_METADATA_KEY, str(now)),
+        )
+        self.db.event(
+            "PORTFOLIO_DRAWDOWN_TRACKING_RESET", "WARNING",
+            {
+                "reset_at": now,
+                "reason": "V87_EXPLICIT_BASELINE_RESET_IGNORE_LEGACY_EQUITY_PEAK",
+                "historical_snapshots_deleted": False,
+                "historical_snapshots_used_for_drawdown": False,
+            },
+        )
+        return now
+
     CASH_FLOW_SYNC_INTERVAL_SECONDS = 3600.0
 
     def _sync_external_cash_flows(self, now: float) -> tuple[bool, float]:
@@ -955,6 +990,7 @@ class PortfolioReconciler:
 
         equity = equity if equity > 0 else cash + max(D(0), unreal)
         now = time.time()
+        drawdown_reset_at = self._drawdown_tracking_reset_at(now)
         cash_flow_complete, flow_series_start = self._sync_external_cash_flows(now)
 
         # Daily P/L is normalized by independently recorded external transfers when
@@ -985,14 +1021,20 @@ class PortfolioReconciler:
                 daily_pnl = daily_pnl_raw
 
         snapshot_count_row = self.db.one(
-            "SELECT COUNT(*) AS n FROM portfolio_snapshots"
+            "SELECT COUNT(*) AS n FROM portfolio_snapshots WHERE captured_at>=?",
+            (drawdown_reset_at,),
         )
+        legacy_snapshot_count_row = self.db.one(
+            "SELECT COUNT(*) AS n FROM portfolio_snapshots WHERE captured_at<?",
+            (drawdown_reset_at,),
+        )
+        drawdown_series_start = max(flow_series_start, drawdown_reset_at)
         peak_captured_at = None
         if cash_flow_complete:
             snapshots = self.db.query(
                 "SELECT equity_eur,captured_at FROM portfolio_snapshots "
                 "WHERE captured_at>=? AND captured_at<=? ORDER BY captured_at ASC",
-                (flow_series_start, now),
+                (drawdown_series_start, now),
             )
             adjusted_snapshots: list[tuple[D, float]] = []
             try:
@@ -1002,7 +1044,7 @@ class PortfolioReconciler:
                     """SELECT occurred_at,flow_eur FROM portfolio_external_cash_flows
                        WHERE occurred_at>? AND occurred_at<=? AND flow_eur IS NOT NULL
                        ORDER BY occurred_at ASC""",
-                    (flow_series_start, now),
+                    (drawdown_series_start, now),
                 )
                 flow_points: list[tuple[float, D]] = []
                 for flow_row in flow_rows:
@@ -1065,7 +1107,9 @@ class PortfolioReconciler:
             # event discloses when normalization is unavailable or incomplete.
             peak_row = self.db.one(
                 "SELECT equity_eur,captured_at FROM portfolio_snapshots "
-                "ORDER BY CAST(equity_eur AS REAL) DESC, captured_at DESC LIMIT 1"
+                "WHERE captured_at>=? "
+                "ORDER BY CAST(equity_eur AS REAL) DESC, captured_at DESC LIMIT 1",
+                (drawdown_reset_at,),
             )
             peak = dec(peak_row.get("equity_eur") if peak_row else equity)
             peak_captured_at = peak_row.get("captured_at") if peak_row else None
@@ -1086,6 +1130,9 @@ class PortfolioReconciler:
                 "peak_equity_eur": str(peak),
                 "peak_captured_at": peak_captured_at,
                 "snapshot_count": int(snapshot_count_row.get("n") or 0) if snapshot_count_row else 0,
+                "legacy_snapshot_count_ignored": int(legacy_snapshot_count_row.get("n") or 0) if legacy_snapshot_count_row else 0,
+                "drawdown_tracking_reset_at": drawdown_reset_at,
+                "drawdown_series_start_at": drawdown_series_start,
                 "external_cash_flow_entries": int(flow_count_row.get("n") or 0) if flow_count_row else 0,
                 "flow_series_start_at": flow_series_start,
                 "drawdown_pct": str(drawdown),
