@@ -142,7 +142,18 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_time "
                 "ON portfolio_external_cash_flows(occurred_at)"
             )
-            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','16')")
+            calibration_cols = {
+                row[1] for row in con.execute("PRAGMA table_info(calibrations)")
+            }
+            if "log_loss" not in calibration_cols:
+                # Legacy rows cannot be retroactively recalculated without their
+                # original probability/outcome pairs; DEFAULT is a neutral baseline
+                # marker, not a verified measurement for those historical records.
+                con.execute(
+                    "ALTER TABLE calibrations ADD COLUMN log_loss REAL NOT NULL "
+                    "DEFAULT 0.6931471805599453"
+                )
+            con.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('schema_version','17')")
 
     def execute(self,sql:str,params:tuple[Any,...]=())->None:
         with self.connect() as con: con.execute(sql,params)
