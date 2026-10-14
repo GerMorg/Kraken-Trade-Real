@@ -179,11 +179,11 @@ def test_live_preflight_blocks_stale_market_before_exchange_lookup(
     from dataclasses import replace
 
     authority, intent, market, audit, cancel_calls = setup_stale_order(
-        db, config, fake_gateway, instrument,
+        db, instrument, config, fake_gateway,
         [{"status": "open", "vol": "0.01", "vol_exec": "0"}],
     )
     authority.config = replace(config, live_enabled=True, kill_switch=False)
-    market.timestamp = time.time() - config.market_max_data_age_seconds - 10
+    market.timestamp = time.time() - float(getattr(config, 'market_max_data_age_seconds', 30)) - 10
     result = authority._preflight(intent, market)
     assert result["allowed"] is False
     assert result["reason"] == "MARKET_DATA_STALE"
@@ -196,7 +196,7 @@ def test_live_preflight_blocks_missing_market_timestamp(
     from dataclasses import replace
 
     authority, intent, market, audit, cancel_calls = setup_stale_order(
-        db, config, fake_gateway, instrument,
+        db, instrument, config, fake_gateway,
         [{"status": "open", "vol": "0.01", "vol_exec": "0"}],
     )
     authority.config = replace(config, live_enabled=True, kill_switch=False)
