@@ -760,6 +760,41 @@ class PositionProfitProtection:
                         peak_profit_pct=str(peak), current_price_return_pct=str(current_pct),
                     )
 
+    def observe_live_price_mark(self, symbol: str, current_profit_pct: D) -> None:
+        """Update only the position high-water mark from the short-interval price watcher.
+
+        This intentionally does not create exit-learning samples or episode transitions;
+        those remain owned by the reconciled main cycle.
+        """
+        current = _d(current_profit_pct)
+        if not current.is_finite():
+            return
+        row = self._state(symbol)
+        if row is None:
+            self.db.execute(
+                """INSERT INTO position_profit_state
+                   (symbol, peak_profit_pct, partial_taken, pending_order_id,
+                    pending_start_position_eur, updated_at)
+                   VALUES(?,?,?,?,?,strftime('%s','now'))""",
+                (symbol, str(max(D("0"), current)), 0, "", "0"),
+            )
+            return
+        peak = _d(row.get("peak_profit_pct"))
+        if current <= peak:
+            return
+        self.db.execute(
+            """UPDATE position_profit_state
+               SET peak_profit_pct=?, updated_at=strftime('%s','now')
+               WHERE symbol=?""",
+            (str(current), symbol),
+        )
+        self.audit.emit(
+            "POSITION_PROFIT_PEAK_UPDATED", "INFO",
+            symbol=symbol, peak_profit_pct=str(current),
+            current_profit_pct=str(current),
+            source="CORE_FAST_PROTECTION_WATCH",
+        )
+
     def apply(
         self,
         *,
