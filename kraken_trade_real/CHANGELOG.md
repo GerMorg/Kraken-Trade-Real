@@ -7,6 +7,7 @@
 - Reworked expanding-window research evaluation to use disjoint chronological test windows, explicit frozen-vs-train/test evaluation mode, data hashes, and no automatic model promotion.
 - Added richer return/drawdown/risk metrics and an offline execution simulator that models bid/ask, taker fees, slippage/impact, order-book depth caps, partial fills, minima, and financing. The simulator never places live orders or promotes strategies.
 - Added regression tests for stale/missing quotes, calibration inputs, chronology invariants and backtest cost/execution behavior.
+- Connected the offline simulator to persisted historical `market_snapshots` using a past-only signal callback and next-quote execution; added a follow-up implementation matrix separating tested code changes from still-unverified release gates.
 
 ### Important limits
 - A simulator and walk-forward split do not prove that the assumed fill model matches Kraken or that a strategy is profitable.
