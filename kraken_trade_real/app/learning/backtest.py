@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal as D
 from typing import Any, Callable
 
 
@@ -14,6 +15,141 @@ class BacktestEngine:
     Fees, spread, slippage, depth caps, minimum order rules and financing are
     explicit inputs. This simulator is a research baseline, not proof of fills.
     """
+
+    def run_core_long_only_from_database(
+        self,
+        db: Any,
+        instrument: Any,
+        config: Any,
+        *,
+        since: float,
+        until: float,
+        min_order_qty: float,
+        min_order_cost_quote: float = 0.0,
+        **run_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Replay the existing Core signal formula on stored, timestamped features.
+
+        Raw News/Gemini effects are deliberately zeroed because their incremental
+        net predictive value is not validated. This replay chooses only LONG or
+        FLAT and uses the database adapter's next historical bid/ask for execution.
+        Current instrument metadata/minima are supplied by the caller and must be
+        checked against historical metadata before interpreting this as a release
+        gate. It is not a Spot-Margin/Futures or combined Core+Tactical simulator.
+        """
+        from app.domain.models import MarketSnapshot
+        from app.market.regime import RegimeEngine
+        from app.trading.signals import SignalEngine
+
+        signal_engine = SignalEngine(config)
+        regime_engine = RegimeEngine()
+        min_confidence = D(str(getattr(config, "strategy_min_confidence", 0.55)))
+        min_edge_bps = D(str(getattr(config, "strategy_min_edge_bps", 25)))
+        cost_ratio = max(
+            D("1"),
+            D(str(getattr(config, "strategy_adaptive_cost_ratio", 1.10))),
+        )
+
+        def provider(history: list[dict[str, Any]]) -> int:
+            if not history or not bool(getattr(instrument, "tradeable", False)):
+                return 0
+            if not bool(getattr(instrument, "long_available", False)):
+                return 0
+            row = history[-1]
+            try:
+                raw_features = row.get("features") or {}
+                if not isinstance(raw_features, dict):
+                    return 0
+                features = {str(key): D(str(value)) for key, value in raw_features.items()}
+                if any(not value.is_finite() for value in features.values()):
+                    return 0
+                raw_bid = json.loads(row.get("depths_bid_json") or "[]")
+                raw_ask = json.loads(row.get("depths_ask_json") or "[]")
+                bid_levels = tuple(
+                    (D(str(level[0])), D(str(level[1])))
+                    for level in raw_bid
+                    if isinstance(level, (list, tuple)) and len(level) >= 2
+                )
+                ask_levels = tuple(
+                    (D(str(level[0])), D(str(level[1])))
+                    for level in raw_ask
+                    if isinstance(level, (list, tuple)) and len(level) >= 2
+                )
+                closes = tuple(D(str(value)) for value in row.get("closes", []))
+                snapshot = MarketSnapshot(
+                    symbol=str(instrument.symbol),
+                    price=D(str(row["price"])),
+                    bid=D(str(row["bid"])),
+                    ask=D(str(row["ask"])),
+                    volume_24h=D(str(row.get("volume_24h") or 0)),
+                    timestamp=float(row["captured_at"]),
+                    closes=closes,
+                    depths_bid=bid_levels,
+                    depths_ask=ask_levels,
+                    funding_rate=(
+                        D(str(row["funding_rate"]))
+                        if row.get("funding_rate") is not None else None
+                    ),
+                    open_interest=(
+                        D(str(row["open_interest"]))
+                        if row.get("open_interest") is not None else None
+                    ),
+                    basis_bps=(
+                        D(str(row["basis_bps"]))
+                        if row.get("basis_bps") is not None else None
+                    ),
+                    liquidation_pressure=(
+                        D(str(row["liquidation_pressure"]))
+                        if row.get("liquidation_pressure") is not None else None
+                    ),
+                    quote_asset=str(getattr(instrument, "quote", "") or ""),
+                    liquidity_eur_24h=features.get("liquidity"),
+                )
+                regime = regime_engine.detect(features)
+                long_signal, _short_signal = signal_engine.evaluate(
+                    instrument, snapshot, features, regime, D("0"), D("0")
+                )
+            except (
+                KeyError, TypeError, ValueError, ArithmeticError, json.JSONDecodeError,
+                OverflowError,
+            ):
+                return 0
+
+            if D(str(features.get("history_sufficient", "0"))) <= 0:
+                return 0
+            return int(
+                long_signal.confidence >= min_confidence
+                and long_signal.net_edge_bps >= min_edge_bps
+                and long_signal.expected_return_bps
+                >= long_signal.expected_cost_bps * cost_ratio
+                and long_signal.net_edge_bps > 0
+            )
+
+        result = self.run_from_database(
+            db,
+            str(instrument.symbol),
+            since=since,
+            until=until,
+            signal_provider=provider,
+            min_order_qty=min_order_qty,
+            min_order_cost_quote=min_order_cost_quote,
+            **run_kwargs,
+        )
+        result["strategy"] = "CORE_LONG_ONLY_NEWS_GEMINI_ZEROED"
+        result["strategy_version"] = "CURRENT_CODE_REPLAY_NOT_HISTORICALLY_VERSIONED"
+        result["signal_policy"] = {
+            "engine": "SignalEngine",
+            "news_effect_bps": "0",
+            "gemini_effect_bps": "0",
+            "directions": ["LONG", "FLAT"],
+            "promotion": False,
+        }
+        result["limitations"] = [
+            "Requires historical features, instrument rules and strategy version to be verified.",
+            "Does not model short/margin/futures or combined Core/Tactical portfolio execution.",
+            "Does not prove historical order-book queue priority or exact fills.",
+        ]
+        return result
 
     def compare_standard_baselines_from_database(
         self,
