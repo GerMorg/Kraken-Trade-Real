@@ -543,3 +543,23 @@ def test_filled_full_close_blocks_immediate_reentry(db, config, instrument):
     )
 
     assert result is None
+
+
+def test_live_price_watch_updates_peak_without_creating_exit_learning_episode(
+    db, config, instrument
+):
+    manager = PositionProfitProtection(config, db, FakeAudit())
+
+    manager.observe_live_price_mark(instrument.symbol, D("3.2"))
+    manager.observe_live_price_mark(instrument.symbol, D("1.1"))
+
+    row = db.one(
+        "SELECT peak_profit_pct FROM position_profit_state WHERE symbol=?",
+        (instrument.symbol,),
+    )
+    assert row is not None
+    assert D(row["peak_profit_pct"]) == D("3.2")
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM core_exit_episodes WHERE symbol=?",
+        (instrument.symbol,),
+    )["n"] == 0

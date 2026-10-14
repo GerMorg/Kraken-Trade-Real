@@ -356,7 +356,13 @@ class KrakenGateway:
         if asset_class == "tokenized_asset":
             body["asset_class"] = "tokenized_asset"
         if margin and leverage > Decimal("1"):
-            body["leverage"] = str(leverage)
+            # Kraken AddOrder accepts leverage as an integer choice (e.g. "2",
+            # "3", "4", "5"), not Decimal string variants such as "4.0".
+            if leverage != leverage.to_integral_value() or leverage not in {
+                Decimal("2"), Decimal("3"), Decimal("4"), Decimal("5")
+            }:
+                raise KrakenError(f"INVALID_MARGIN_LEVERAGE:{leverage}")
+            body["leverage"] = str(int(leverage))
         elif not margin and leverage > Decimal("1"):
             raise KrakenError(
                 "INVALID_MARGIN_ARGUMENT: leverage requires a margin order"

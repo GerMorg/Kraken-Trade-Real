@@ -42,13 +42,20 @@ class DecisionEngine:
         margin_managed_symbols = set(
             getattr(portfolio, "spot_margin_position_symbols", ()) or ()
         )
+        target_base = canonical_asset(instrument.base)
+        unreconciled_bases = {
+            canonical_asset(str(base))
+            for base in (getattr(portfolio, "unreconciled_spot_inventory_bases", ()) or ())
+            if str(base).strip()
+        }
+        if target_base and target_base in unreconciled_bases:
+            return True
         if current != 0 and symbol not in cash_managed_symbols:
             return True
 
         # Wallet balances are base-asset fungible, not quote-pair-specific.
         # If an unverified XBT/EUR wallet lot exists, do not open a new XBT/USD
         # position that would double-count or later liquidate the same units.
-        target_base = canonical_asset(instrument.base)
         if target_base:
             for held_symbol, held_value in (getattr(portfolio, "positions", {}) or {}).items():
                 try:

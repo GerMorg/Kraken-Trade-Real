@@ -10,6 +10,25 @@ import os
 # These mode switches are application-owned. Adaptive entry evaluation must stay
 # enabled so the learner can compare candidates and the same policy used to train
 # decisions is used in live execution. They are intentionally not HA options.
+# Immutable runtime safety envelope. Persisted Home Assistant options may outlive
+# their original defaults, so values above these ceilings are clamped on every
+# startup and again by RiskEngine. User settings can always be more conservative.
+IMMUTABLE_RISK_ENVELOPE_CAPS: dict[str, float | int] = {
+    "risk_max_position_pct": 15.0,
+    "risk_max_gross_pct": 80.0,
+    "risk_max_net_pct": 50.0,
+    "risk_max_margin_pct": 35.0,
+    "risk_max_leverage": 3.0,
+    "risk_max_open_positions": 3,
+    "risk_daily_loss_pct": 3.0,
+    "risk_max_drawdown_pct": 8.0,
+    "tactical_max_capital_eur": 15.0,
+    "tactical_max_positions": 1,
+    "tactical_max_trades_per_hour": 2,
+    "tactical_max_trades_per_day": 6,
+    "tactical_max_daily_loss_pct": 1.5,
+}
+
 APP_CONTROLLED_MODE_KEYS = {
     "strategy_adaptive_edge_enabled",
     "tactical_adaptive_entry_enabled",
@@ -169,6 +188,8 @@ class Config:
     tactical_seed_history: bool
     tactical_diagnostics_interval_seconds: int
     tactical_position_limit_legacy_default_overridden: bool = False
+    risk_envelope_clamped: bool = False
+    risk_envelope_corrections: str = ""
 
     @classmethod
     def load(cls, path: str = "/data/options.json") -> "Config":
@@ -353,6 +374,44 @@ class Config:
             tactical_seed_history=b("tactical_seed_history", True),
             tactical_diagnostics_interval_seconds=i("tactical_diagnostics_interval_seconds", 60, 10),
             tactical_position_limit_legacy_default_overridden=legacy_tactical_position_limit,
+        )
+        # Validate malformed/internally contradictory settings before clamping,
+        # then clamp legacy options to the immutable safety envelope. This avoids
+        # silently accepting a contradictory persisted configuration while also
+        # preventing an old high-risk options.json from widening live exposure.
+        cls.validate(cfg)
+        corrections: dict[str, dict[str, str]] = {}
+        for name, cap in IMMUTABLE_RISK_ENVELOPE_CAPS.items():
+            configured = getattr(cfg, name)
+            effective = min(configured, cap)
+            if effective != configured:
+                corrections[name] = {
+                    "configured": str(configured),
+                    "effective": str(effective),
+                    "hard_cap": str(cap),
+                }
+                object.__setattr__(cfg, name, effective)
+        # Cash reserve is a floor, not a risk ceiling: never accept legacy options
+        # that remove the default minimum uncommitted cash buffer.
+        if cfg.risk_cash_reserve_pct < 20.0:
+            corrections["risk_cash_reserve_pct"] = {
+                "configured": str(cfg.risk_cash_reserve_pct),
+                "effective": "20.0",
+                "hard_floor": "20.0",
+            }
+            object.__setattr__(cfg, "risk_cash_reserve_pct", 20.0)
+        if cfg.tactical_short_leverage > cfg.risk_max_leverage:
+            corrections["tactical_short_leverage"] = {
+                "configured": str(cfg.tactical_short_leverage),
+                "effective": str(cfg.risk_max_leverage),
+                "hard_cap": str(cfg.risk_max_leverage),
+            }
+            object.__setattr__(cfg, "tactical_short_leverage", cfg.risk_max_leverage)
+        object.__setattr__(cfg, "risk_envelope_clamped", bool(corrections))
+        object.__setattr__(
+            cfg,
+            "risk_envelope_corrections",
+            json.dumps(corrections, sort_keys=True, separators=(",", ":")),
         )
         cls.validate(cfg)
         return cfg
