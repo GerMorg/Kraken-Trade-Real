@@ -366,6 +366,7 @@ def test_zero_wallet_balance_with_stale_cash_spot_fifo_lot_blocks_reentry(db, fa
         if method == "TradeBalance"
         else {}
     )
+    fake_gateway.spot_open_positions = lambda: {}
     fake_gateway.spot_ledgers = lambda params: {"count": 0, "ledger": {}}
 
     reconciler = PortfolioReconciler(fake_gateway, db)
