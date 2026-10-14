@@ -1,3 +1,4 @@
+from app.learning.backtest import BacktestEngine
 from .engine import LearningEngine
 from .calibration import CalibrationEngine
 from .registry import ModelRegistry
