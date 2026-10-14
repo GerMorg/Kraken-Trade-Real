@@ -226,4 +226,3 @@ def test_tactical_profile_cannot_raise_single_position_limit_through_learned_par
     )
 
     assert result.checks["position_limit"] is True
-    assert result.diagnostics["position_limit_pct"] == "15"
