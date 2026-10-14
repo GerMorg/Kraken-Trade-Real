@@ -88,17 +88,23 @@ class ResearchEngine:
             row.get("timestamp", row.get("captured_at")) for row in data
         ]
         present_timestamps = [value for value in timestamp_rows if value is not None]
+        parsed_timestamps: list[float] = []
         if present_timestamps and len(present_timestamps) != len(data):
             return {"status": "MIXED_TIMESTAMP_PROVENANCE", "windows": []}
         if present_timestamps:
             try:
-                parsed = [float(value) for value in timestamp_rows]
+                parsed_timestamps = [float(value) for value in present_timestamps]
             except (TypeError, ValueError):
                 return {"status": "INVALID_TIMESTAMPS", "windows": []}
-            if any(not math.isfinite(value) for value in parsed):
+            if any(not math.isfinite(value) for value in parsed_timestamps):
                 return {"status": "INVALID_TIMESTAMPS", "windows": []}
-            if any(parsed[i] > parsed[i + 1] for i in range(len(parsed) - 1)):
-                return {"status": "NON_CHRONOLOGICAL_DATA", "windows": []}
+            if any(
+                parsed_timestamps[i] > parsed_timestamps[i + 1]
+                for i in range(len(parsed_timestamps) - 1)
+            ):
+                return {"status": "NON_CHRONOLOGICAL_DATA", "windows": []
+            }
+
 
         initial_train = max(20, len(data) // (windows + 1))
         remaining = len(data) - initial_train
@@ -114,10 +120,8 @@ class ResearchEngine:
             test = data[test_start:test_end]
             if not train or not test:
                 return {"status": "INSUFFICIENT_DATA", "windows": results}
-            if present_timestamps and float(train[-1].get("timestamp", train[-1].get("captured_at"))) > float(
-                test[0].get("timestamp", test[0].get("captured_at"))
-            ):
-                return {"status": "TEMPORAL_OVERLAP", "windows": results}
+            if present_timestamps and parsed_timestamps[test_start - 1] > parsed_timestamps[test_start]:
+                return {"status": "TEMPORAL_OVERLAP", "windows": []}
             train_hash = hashlib.sha256(
                 json.dumps(train, sort_keys=True, default=str).encode()
             ).hexdigest()
