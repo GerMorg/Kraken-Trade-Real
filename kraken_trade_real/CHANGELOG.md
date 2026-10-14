@@ -1,3 +1,12 @@
+## 0.1.89
+
+- Clamp legacy Home Assistant risk options to an immutable portfolio and daily-risk envelope (15% single position, 80% gross, 50% net, 35% margin, 3x leverage, 3 open positions, 3% daily loss, 8% drawdown, and a 20% cash reserve); report every startup correction.
+- Enforce the same safety ceiling inside the final RiskEngine so stale options or a direct caller cannot widen exposure. Hard stop/drawdown/loss gates still allow valid reduce-only exits.
+- Normalize Kraken Spot Margin leverage to the supported integer-string values and reject fractional/unsupported leverage locally instead of sending malformed `"4.0"`.
+- Add an independent 5–15 second cash-Spot protection watcher that marks fully reconciled managed inventory at the executable bid, updates the persisted profit peak, and sends only validated, order-aware reduce-only stop/profit orders through TradingAuthority.
+- Require Core's positive expected net edge to clear at least half the configured stop distance, independent of adaptive learning. This blocks entries whose forecast edge is negligible compared with stop risk.
+- Add regression coverage for legacy risk-option clamps, immutable live risk gates, Kraken leverage serialization, Core entry reward/risk and fast-watch high-water tracking.
+
 ## 0.1.88
 
 - Preserve each app-managed cash-Spot position's original quote pair during portfolio reconciliation. Reconcile fungible base-asset wallet quantity to the full FIFO inventory, and split reconciled holdings by opening pair instead of silently mapping (for example) Q/USD inventory to Q/EUR.
