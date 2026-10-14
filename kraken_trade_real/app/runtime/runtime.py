@@ -22,6 +22,7 @@ from app.domain.states import Direction, ProductType, RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
 from app.trading.cash_budget import spot_cash_required_quote
+from app.trading.signals import gate_unvalidated_external_effects
 from app.trading.fx import FXConversionManager
 from app.trading.profit_protection import PositionProfitProtection
 
@@ -1014,7 +1015,9 @@ class TradingRuntime:
                 {"markets":gemini_context},
             ) if selected else {"status":"SKIPPED","effect_bps":0}
             gemini_duration=round(time.monotonic()-gemini_started,2)
-            gemini_bps=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
+            gemini_bps_raw=D(str(gemini.get("expected_impact_bps",gemini.get("effect_bps",0)) or 0))
+            gemini_gate=gate_unvalidated_external_effects(self.config, D("0"), gemini_bps_raw)
+            gemini_bps=gemini_gate["gemini_bps"]
             gemini_status=str(gemini.get("status","UNKNOWN"))
             gemini_model=str(gemini.get("model",""))
             attempted_models=list(gemini.get("attempted_models",[]))
@@ -1062,9 +1065,22 @@ class TradingRuntime:
                 attempted_models=attempted_models,
                 fallback_used=fallback_used,
                 reason=gemini_reason,
-                expected_impact_bps=str(gemini_bps),
+                expected_impact_bps_raw=str(gemini_bps_raw),
+                applied_impact_bps=str(gemini_bps),
+                external_effects_shadow_only=bool(gemini_gate["shadow_only"]),
+                external_effects_policy=str(gemini_gate["reason"]),
                 duration_seconds=gemini_duration,
             )
+            if gemini_gate["shadow_only"]:
+                self.audit.emit(
+                    "LIVE_EXTERNAL_EFFECTS_SHADOW_ONLY",
+                    "WARNING",
+                    cycle_id=cycle_id,
+                    reason=str(gemini_gate["reason"]),
+                    gemini_impact_raw_bps=str(gemini_bps_raw),
+                    gemini_impact_applied_bps=str(gemini_bps),
+                    mode="RAW_EFFECTS_RETAINED_FOR_AUDIT_ZEROED_FOR_LIVE_SIGNALS",
+                )
 
             if self.tactical is not None:
                 try:
@@ -1090,10 +1106,34 @@ class TradingRuntime:
                             if instrument is not None:
                                 tactical_seed.append(instrument)
                                 seed_symbols.add(symbol)
-                    tactical_news = {
+                    tactical_news_raw = {
                         instrument.symbol: self.news.effect_for(instrument.symbol, news)
                         for instrument in tactical_seed
                     }
+                    tactical_news = {
+                        symbol: gate_unvalidated_external_effects(
+                            self.config, effect_bps, gemini_bps_raw
+                        )["news_bps"]
+                        for symbol, effect_bps in tactical_news_raw.items()
+                    }
+                    if gemini_gate["shadow_only"]:
+                        self.audit.emit(
+                            "TACTICAL_EXTERNAL_EFFECTS_SHADOW_ONLY",
+                            "WARNING",
+                            cycle_id=cycle_id,
+                            symbols=len(tactical_news_raw),
+                            raw_news_effects_bps={
+                                symbol: str(value)
+                                for symbol, value in list(tactical_news_raw.items())[:60]
+                            },
+                            applied_news_effects_bps={
+                                symbol: str(value)
+                                for symbol, value in list(tactical_news.items())[:60]
+                            },
+                            raw_gemini_effect_bps=str(gemini_bps_raw),
+                            applied_gemini_effect_bps=str(gemini_bps),
+                            reason=str(gemini_gate["reason"]),
+                        )
                     self.tactical.update_portfolio(portfolio)
                     self.tactical.update_context(
                         tactical_seed,
@@ -1141,11 +1181,21 @@ class TradingRuntime:
                 cash_budget_quote: D | None = None
                 cash_budget_asset = ""
                 snap=snapshots[instrument.symbol]
-                f=feature_map[instrument.symbol]
+                f=dict(feature_map[instrument.symbol])
                 regime=self.regimes.detect(f)
-                news_bps=self.news.effect_for(instrument.symbol,news)
+                news_bps_raw=self.news.effect_for(instrument.symbol,news)
+                external_gate=gate_unvalidated_external_effects(
+                    self.config, news_bps_raw, gemini_bps_raw
+                )
+                news_bps=external_gate["news_bps"]
+                gemini_bps_applied=external_gate["gemini_bps"]
+                # Preserve raw third-party effects on each decision snapshot while
+                # passing zero contribution to live signals until OOS alpha is proven.
+                f["news_effect_raw_bps"]=news_bps_raw
+                f["gemini_effect_raw_bps"]=gemini_bps_raw
+                f["external_effects_applied"]=D("0") if external_gate["shadow_only"] else D("1")
                 long_signal,short_signal=self.signals.evaluate(
-                    instrument,snap,f,regime,news_bps,gemini_bps
+                    instrument,snap,f,regime,news_bps,gemini_bps_applied
                 )
                 # Apply opening/rollover financing only to Kraken Spot Margin.
                 # Use the same direction-specific leverage selection as execution and
