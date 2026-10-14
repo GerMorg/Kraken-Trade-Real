@@ -1,4 +1,14 @@
-## 0.1.89
+## 0.1.90 — 2026-10-14
+
+### Safety hotfix
+- Bound cash-Spot reductions to verified, pair-specific managed inventory as well as currently available base balance. An account-wide fungible wallet balance is no longer a valid substitute for the selected quote pair's FIFO-backed quantity.
+- Fail closed when the selected pair is not in the reconciled cash-Spot position set, managed quantity is absent/invalid, the base balance is unavailable, or exchange minimum metadata is invalid.
+- Added regression coverage for a base asset held across multiple quote pairs and missing pair-inventory provenance.
+
+### Validation scope
+- This release addresses the identified cash-Spot exit-quantity defect. It does not establish profitability, calibrated probabilities, or complete safety for every Kraken product type; see `docs/AUDIT_2026-10-14.md`.
+
+## 0.1.90
 
 - Clamp legacy Home Assistant risk options to an immutable portfolio and daily-risk envelope (15% single position, 80% gross, 50% net, 35% margin, 3x leverage, 3 open positions, 3% daily loss, 8% drawdown, and a 20% cash reserve); report every startup correction.
 - Enforce the same safety ceiling inside the final RiskEngine so stale options or a direct caller cannot widen exposure. Hard stop/drawdown/loss gates still allow valid reduce-only exits.

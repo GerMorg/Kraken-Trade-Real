@@ -1609,19 +1609,48 @@ class TradingRuntime:
                 )
                 reduction_quantity_status = ""
                 requested_quantity = quantity
-                if (
-                    spot_cash_reduction
-                    and self.portfolio.quote_to_eur_rate(instrument.quote) is not None
-                ):
+                if spot_cash_reduction:
+                    # Cash-Spot inventory belongs to a reconciled strategy/pair lot,
+                    # not to every fungible unit of this base asset in the wallet.
+                    managed_symbols = set(
+                        getattr(portfolio, "spot_cash_position_symbols", ()) or ()
+                    )
+                    managed_pair_quantity = portfolio.position_quantity.get(instrument.symbol)
+                    wallet_available_quantity = available_spot_balance(instrument.base)
+                    try:
+                        managed_quantity_valid = (
+                            managed_pair_quantity is not None
+                            and D(str(managed_pair_quantity)).is_finite()
+                            and D(str(managed_pair_quantity)) > 0
+                        )
+                    except (ArithmeticError, TypeError, ValueError):
+                        managed_quantity_valid = False
+                    if instrument.symbol not in managed_symbols or not managed_quantity_valid:
+                        reason = "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED"
+                        blockers.append(f"{instrument.symbol}:{reason}")
+                        no_action_reasons[reason] = no_action_reasons.get(reason, 0) + 1
+                        self.audit.emit(
+                            "CYCLE_SPOT_REDUCTION_BLOCKED",
+                            "WARNING",
+                            cycle_id=cycle_id,
+                            symbol=instrument.symbol,
+                            reason=reason,
+                            managed_pair_quantity=str(managed_pair_quantity),
+                            wallet_available_base_quantity=str(wallet_available_quantity),
+                            action="NO_ORDER_UNTIL_PAIR_INVENTORY_RECONCILED",
+                        )
+                        continue
+
                     quantity, reduction_quantity_status = resolve_spot_cash_reduction_quantity(
                         instrument,
                         snap.price,
                         quantity,
-                        available_spot_balance(instrument.base),
+                        wallet_available_quantity,
                         flattening=decision.target_position_eur == 0,
+                        managed_position_quantity=D(str(managed_pair_quantity)),
                     )
                     if reduction_quantity_status in {
-                        "FULL_EXIT_BALANCE_RECOVERY", "BALANCE_CLAMPED"
+                        "FULL_EXIT_PAIR_INVENTORY_CAP", "BALANCE_CLAMPED"
                     }:
                         self.audit.emit(
                             "CYCLE_SPOT_REDUCTION_QUANTITY_RECONCILED",
@@ -1630,36 +1659,49 @@ class TradingRuntime:
                             symbol=instrument.symbol,
                             requested_quantity=str(requested_quantity),
                             order_quantity=str(quantity),
-                            available_base_quantity=str(
-                                available_spot_balance(instrument.base)
-                            ),
+                            managed_pair_quantity=str(managed_pair_quantity),
+                            wallet_available_base_quantity=str(wallet_available_quantity),
                             current_position_eur=str(decision.current_position_eur),
                             target_position_eur=str(decision.target_position_eur),
                             reason=reduction_quantity_status,
                         )
                     elif reduction_quantity_status in {
-                        "REBALANCE_DELTA_BELOW_MINIMUM", "DUST_POSITION"
+                        "REBALANCE_DELTA_BELOW_MINIMUM",
+                        "DUST_POSITION",
+                        "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED",
+                        "SPOT_BASE_BALANCE_NOT_AVAILABLE",
+                        "SPOT_BASE_BALANCE_BELOW_MINIMUM_OR_HELD",
+                        "ORDER_MINIMUM_METADATA_INVALID",
+                        "INVALID_REDUCTION_QUANTITY",
                     }:
                         reason = reduction_quantity_status
                         blockers.append(f"{instrument.symbol}:{reason}")
                         no_action_reasons[reason] = no_action_reasons.get(reason, 0) + 1
+                        critical_reason = reason in {
+                            "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED",
+                            "SPOT_BASE_BALANCE_NOT_AVAILABLE",
+                            "SPOT_BASE_BALANCE_BELOW_MINIMUM_OR_HELD",
+                            "ORDER_MINIMUM_METADATA_INVALID",
+                            "INVALID_REDUCTION_QUANTITY",
+                        }
                         self.audit.emit(
-                            "CYCLE_REBALANCE_BELOW_MINIMUM",
-                            "INFO",
+                            "CYCLE_SPOT_REDUCTION_BLOCKED" if critical_reason
+                            else "CYCLE_REBALANCE_BELOW_MINIMUM",
+                            "WARNING" if critical_reason else "INFO",
                             cycle_id=cycle_id,
                             symbol=instrument.symbol,
                             reason=reason,
                             requested_quantity=str(requested_quantity),
+                            order_quantity=str(quantity),
+                            managed_pair_quantity=str(managed_pair_quantity),
+                            wallet_available_base_quantity=str(wallet_available_quantity),
                             minimum_orderable_quantity=str(
                                 minimum_orderable_spot_quantity(instrument, snap.price)
-                            ),
-                            available_base_quantity=str(
-                                available_spot_balance(instrument.base)
                             ),
                             current_position_eur=str(decision.current_position_eur),
                             target_position_eur=str(decision.target_position_eur),
                             target_delta_eur=str(decision.target_notional_eur),
-                            action="NO_ORDER_UNTIL_DELTA_IS_ORDERABLE",
+                            action="NO_ORDER_UNTIL_REDUCTION_IS_VERIFIED_AND_ORDERABLE",
                         )
                         continue
                 if quantity is None or (quantity <= 0 and not full_margin_settlement):

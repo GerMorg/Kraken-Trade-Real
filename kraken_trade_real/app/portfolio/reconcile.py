@@ -1518,27 +1518,65 @@ def resolve_spot_cash_reduction_quantity(
     available_base_quantity: D,
     *,
     flattening: bool,
+    managed_position_quantity: D | None,
 ) -> tuple[D | None, str]:
-    """Keep cash-Spot reductions inside holdings and distinguish small deltas from dust.
+    """Bound a cash-Spot exit by both free wallet units and verified pair inventory.
 
-    A partial rebalance smaller than Kraken's minimum is not a dust holding. A full
-    flatten uses the available base-wallet quantity, but only when orderable.
+    Wallet balances are fungible across quote pairs, but app-managed lots are
+    strategy- and pair-specific. A full exit must therefore never substitute the
+    entire wallet balance for the requested pair's reconciled inventory.
+    Missing/malformed inventory, balance, or minimum-order metadata fails closed.
     """
-    minimum = minimum_orderable_spot_quantity(instrument, price)
-    if minimum is None:
-        return requested_quantity, ""
-    available = quantize_order_quantity(
-        instrument, max(D("0"), dec(available_base_quantity))
-    )
-    requested = (
-        quantize_order_quantity(instrument, max(D("0"), requested_quantity))
-        if requested_quantity is not None
-        else None
-    )
+    if managed_position_quantity is None:
+        return None, "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED"
+    try:
+        managed_raw = D(str(managed_position_quantity))
+        wallet_raw = D(str(available_base_quantity))
+    except (InvalidOperation, TypeError, ValueError):
+        return None, "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED"
+    if not managed_raw.is_finite() or managed_raw <= 0:
+        return None, "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED"
+    if not wallet_raw.is_finite() or wallet_raw < 0:
+        return None, "SPOT_BASE_BALANCE_NOT_AVAILABLE"
 
-    if flattening and available >= minimum:
+    minimum = minimum_orderable_spot_quantity(instrument, price)
+    if minimum is None or not minimum.is_finite() or minimum <= 0:
+        return None, "ORDER_MINIMUM_METADATA_INVALID"
+
+    managed = quantize_order_quantity(instrument, managed_raw)
+    wallet_available = quantize_order_quantity(instrument, max(D("0"), wallet_raw))
+    if managed <= 0:
+        return None, "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED"
+    if wallet_available <= 0:
+        return None, "SPOT_BASE_BALANCE_NOT_AVAILABLE"
+
+    # Pair-specific managed lots are the hard cap; the account-wide free wallet
+    # is only an additional ceiling, never a substitute for the managed quantity.
+    available = quantize_order_quantity(instrument, min(managed, wallet_available))
+    if available <= 0:
+        return None, "SPOT_BASE_BALANCE_NOT_AVAILABLE"
+    if available < minimum:
+        if managed >= minimum:
+            return None, "SPOT_BASE_BALANCE_BELOW_MINIMUM_OR_HELD"
+        # This is a dust diagnostic, not an executable whole-position quantity.
+        # Preserve the requested delta for the caller's log while keeping the
+        # non-empty DUST_POSITION status as a hard no-order outcome.
+        return requested_quantity, "DUST_POSITION"
+
+    if requested_quantity is None:
+        requested = None
+    else:
+        try:
+            requested_raw = D(str(requested_quantity))
+        except (InvalidOperation, TypeError, ValueError):
+            return None, "INVALID_REDUCTION_QUANTITY"
+        if not requested_raw.is_finite() or requested_raw < 0:
+            return None, "INVALID_REDUCTION_QUANTITY"
+        requested = quantize_order_quantity(instrument, requested_raw)
+
+    if flattening:
         if requested is None or requested != available:
-            return available, "FULL_EXIT_BALANCE_RECOVERY"
+            return available, "FULL_EXIT_PAIR_INVENTORY_CAP"
         return available, ""
 
     status = ""
@@ -1546,8 +1584,5 @@ def resolve_spot_cash_reduction_quantity(
         requested = available
         status = "BALANCE_CLAMPED"
     if requested is None or requested <= 0 or requested < minimum:
-        if available >= minimum:
-            return requested, "REBALANCE_DELTA_BELOW_MINIMUM"
-        return requested, "DUST_POSITION"
+        return requested, "REBALANCE_DELTA_BELOW_MINIMUM"
     return requested, status
-
