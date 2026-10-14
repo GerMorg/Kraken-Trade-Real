@@ -230,3 +230,70 @@ def test_standard_baseline_comparison_uses_same_database_quote_window():
     assert result["comparison_contract"]["same_symbol_and_time_range"] is True
     assert result["comparison_contract"]["automatic_promotion"] is False
     assert result["comparison_contract"]["automatic_winner_selection"] is False
+
+
+def test_core_long_only_replay_uses_stored_features_and_zeroes_external_effects(
+    db, instrument, config
+):
+    import json
+
+    class FakeDB:
+        def query(self, sql, params):
+            assert "FROM market_snapshots" in sql
+            assert params[0] == instrument.symbol
+            features = {
+                "trend": "10",
+                "return_1": "1",
+                "return_5": "10",
+                "return_15": "10",
+                "return_60": "10",
+                "return_240": "10",
+                "volatility": "1",
+                "history_sufficient": "1",
+                "liquidity": "10000",
+                "spread_bps": "20",
+                "book_depth": "100000",
+                "impact_bps": "1",
+            }
+            rows = []
+            for i in range(25):
+                mid = 100.0 + i
+                rows.append({
+                    "id": i,
+                    "captured_at": 1000.0 + 60.0 * i,
+                    "symbol": instrument.symbol,
+                    "price": str(mid),
+                    "bid": str(mid - 0.1),
+                    "ask": str(mid + 0.1),
+                    "volume_24h": "1000",
+                    "age_seconds": 0,
+                    "spread_bps": "20",
+                    "closes_json": json.dumps([str(80 + j) for j in range(30)]),
+                    "depths_bid_json": json.dumps([[str(mid - 0.1), "100"]]),
+                    "depths_ask_json": json.dumps([[str(mid + 0.1), "100"]]),
+                    "funding_rate": None,
+                    "open_interest": None,
+                    "basis_bps": None,
+                    "liquidation_pressure": None,
+                    "features_json": json.dumps(features),
+                })
+            return rows
+
+    result = BacktestEngine().run_core_long_only_from_database(
+        FakeDB(),
+        instrument,
+        config,
+        since=900,
+        until=3000,
+        min_order_qty=float(instrument.min_order_qty),
+        min_order_cost_quote=float(instrument.min_cost),
+        initial_equity_quote=1000,
+        target_notional_quote=100,
+        max_depth_fraction=0.5,
+    )
+    assert result["status"] == "OK"
+    assert result["strategy"] == "CORE_LONG_ONLY_NEWS_GEMINI_ZEROED"
+    assert result["signal_policy"]["news_effect_bps"] == "0"
+    assert result["signal_policy"]["gemini_effect_bps"] == "0"
+    assert result["metrics"]["fill_count"] > 0
+    assert result["assumptions"]["automatic_promotion"] is False
