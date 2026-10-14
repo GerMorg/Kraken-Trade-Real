@@ -57,7 +57,7 @@ def _risk_diagnostic_context(
     position_limit_pct = min(D(str(config.risk_max_position_pct)), D("15"))
     if risk_profile == "tactical":
         position_limit_pct = min(
-            D("100"),
+            D("15"),
             max(D("0.1"), D(str(decision.rationale.get("risk_position_limit_pct", "25")))),
         )
     # Tactical sizing limits are subordinate to the immutable global net cap.
