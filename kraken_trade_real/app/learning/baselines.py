@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Callable
 
 
 def _prices(history: list[dict[str, Any]]) -> list[float] | None:
@@ -58,3 +58,21 @@ def trend_signal(
     fast_mean = sum(prices[-fast_observations:]) / fast_observations
     slow_mean = sum(prices[-slow_observations:]) / slow_observations
     return 1 if fast_mean > slow_mean else 0
+
+
+def standard_baselines() -> dict[str, Callable[[list[dict[str, Any]]], int]]:
+    """Return fixed, long/flat baselines for predeclared comparisons.
+
+    These are reference strategies, not tuned winners. Parameter selection should
+    occur on training/validation data only, never on the final test window.
+    """
+    return {
+        "CASH": cash_signal,
+        "BUY_AND_HOLD": buy_and_hold_signal,
+        "MOMENTUM_12_OBS_25_BPS": lambda rows: momentum_signal(
+            rows, lookback_observations=12, threshold_bps=25.0
+        ),
+        "TREND_FAST5_SLOW20": lambda rows: trend_signal(
+            rows, fast_observations=5, slow_observations=20
+        ),
+    }
