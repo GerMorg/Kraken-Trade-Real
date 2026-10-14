@@ -209,7 +209,7 @@ def test_tactical_volatility_guard_still_blocks_extreme_market():
         "tactical-v1",
         "",
         D("0"),
-        D("10"),
+        D("7.5"),
         Direction.LONG,
         False,
     )
@@ -240,7 +240,7 @@ def test_high_conviction_tactical_exposure_respects_global_risk_gates():
         "decision-high-conviction",
         instrument,
         signal,
-        D("37.5"),
+        D("7.5"),
         D("3"),
         {
             "risk_profile": "tactical",
@@ -252,13 +252,13 @@ def test_high_conviction_tactical_exposure_respects_global_risk_gates():
         "tactical-v1",
         "",
         D("0"),
-        D("37.5"),
+        D("7.5"),
         Direction.LONG,
         False,
     )
     portfolio = PortfolioState(
-        equity_eur=D("50"), cash_eur=D("50"), positions={},
-        gross_eur=D("0"), net_eur=D("0"), margin_used_eur=D("0"),
+        equity_eur=D("50"), cash_eur=D("50"), positions={"OTHER/EUR": D("30")},
+        gross_eur=D("30"), net_eur=D("30"), margin_used_eur=D("0"),
         unrealized_pnl_eur=D("0"), realized_pnl_eur=D("0"), daily_pnl_eur=D("0"),
         drawdown_pct=D("0"), open_orders=0, source_timestamp=1.0,
     )
@@ -266,8 +266,8 @@ def test_high_conviction_tactical_exposure_respects_global_risk_gates():
         decision, portfolio, make_snapshot(),
         {"free_margin": "20", "margin_level_pct": "500"},
     )
-    # The tactical position limit (80%) is not permission to exceed the
-    # portfolio-wide net cap (50%). This entry would create 75% net exposure.
+    # The immutable 15% single-position cap is met, but existing exposure plus
+    # this entry would create 75% net exposure, above the immutable 50% limit.
     assert result.allowed is False
     assert result.reason == "net_limit"
     assert result.checks["position_limit"] is True
