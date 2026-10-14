@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import math
 import time
@@ -796,6 +796,43 @@ class TradingAuthority:
         return {"error_class": error_class, "suggested_action": suggested_action, **context}
 
     def _submit_locked(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
+        # A client order id is a durable idempotency key. Never submit it a
+        # second time merely because a caller retried after a lost response.
+        existing = self.db.one(
+            "SELECT intent_id,state,kraken_order_id,last_error FROM orders WHERE client_order_id=?",
+            (intent.client_order_id,),
+        )
+        if existing is not None:
+            persisted_intent_id = str(existing.get("intent_id") or "")
+            persisted_state = str(existing.get("state") or OrderState.UNKNOWN_RECONCILING.value)
+            same_intent = persisted_intent_id == intent.intent_id
+            reason = (
+                "IDEMPOTENT_REPLAY_NO_RESUBMIT"
+                if same_intent else "CLIENT_ORDER_ID_REUSED"
+            )
+            self.audit.emit(
+                "ORDER_DUPLICATE_SUBMISSION_BLOCKED",
+                "WARNING",
+                client_order_id=intent.client_order_id,
+                intent_id=intent.intent_id,
+                persisted_intent_id=persisted_intent_id,
+                persisted_state=persisted_state,
+                reason=reason,
+                exchange_order_id=str(existing.get("kraken_order_id") or ""),
+            )
+            return {
+                "state": persisted_state if same_intent else OrderState.REJECTED.value,
+                "reason": reason,
+                "idempotent_replay": same_intent,
+                "reconciled": persisted_state not in {
+                    OrderState.SUBMITTING.value,
+                    OrderState.UNKNOWN_RECONCILING.value,
+                    OrderState.ACKNOWLEDGED.value,
+                    OrderState.LIVE.value,
+                    OrderState.PARTIALLY_FILLED.value,
+                },
+                "kraken_order_id": str(existing.get("kraken_order_id") or "") or None,
+            }
         self.db.save_order_intent(intent)
         if not is_valid_kraken_client_order_id(intent.client_order_id):
             self.db.update_order_state(
@@ -1268,7 +1305,13 @@ class TradingAuthority:
         }
         if intent.limit_price is not None:
             numeric_values["limit_price"] = intent.limit_price
-        if any(not D(str(value)).is_finite() for value in numeric_values.values()):
+        try:
+            parsed_values = {
+                key: D(str(value)) for key, value in numeric_values.items()
+            }
+        except (InvalidOperation, TypeError, ValueError):
+            return {"allowed": False, "reason": "INVALID_ORDER_VALUE"}
+        if any(not value.is_finite() for value in parsed_values.values()):
             return {"allowed": False, "reason": "NON_FINITE_ORDER_VALUE"}
         if intent.leverage < D("1"):
             return {"allowed": False, "reason": "LEVERAGE_BELOW_ONE"}
