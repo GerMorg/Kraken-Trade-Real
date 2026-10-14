@@ -617,3 +617,54 @@ def test_closed_zero_fill_order_is_not_misreported_as_filled():
     assert ExecutionReconciler().state_from_exchange({
         "status": "closed", "vol": "2.0", "vol_exec": "0",
     }) == OrderState.CANCELED
+
+
+def test_cash_spot_open_order_blocks_same_base_asset_on_other_quote_pair(config, db, instrument):
+    from dataclasses import replace
+    from app.domain.models import MarketSnapshot
+    from app.domain.states import ProductType
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    cash_eur = replace(instrument, product_type=ProductType.SPOT, leverage_levels=(Decimal("1"),))
+    cash_usd = replace(
+        cash_eur,
+        symbol="XBT/USD",
+        instrument_id="XXBTZUSD",
+        altname="XBTUSD",
+        quote="ZUSD",
+    )
+    db.upsert_instruments([cash_eur, cash_usd])
+    open_order = OrderIntent(
+        "intent_open_xbt_usd", "client_open_xbt_usd", "decision_open_xbt_usd",
+        cash_usd, Direction.LONG, "buy", "limit", Decimal("0.001"),
+        Decimal("60000"), Decimal("1"), False, False, Decimal("30"),
+        Decimal("40"), 45, state=OrderState.INTENT_CREATED,
+    )
+    db.save_order_intent(open_order)
+    db.update_order_state(
+        open_order.client_order_id, OrderState.LIVE.value,
+        submitted_at=time.time(), kraken_order_id="exchange-open-xbt-usd",
+    )
+
+    authority = TradingAuthority(
+        config, object(), db, AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    market = MarketSnapshot(
+        "XBT/EUR", Decimal("60005"), Decimal("60000"), Decimal("60010"),
+        Decimal("1000"), time.time(), tuple(Decimal("60000") for _ in range(40)),
+    )
+    candidate = OrderIntent(
+        "intent_candidate_xbt_eur", "client_candidate_xbt_eur", "decision_candidate_xbt_eur",
+        cash_eur, Direction.SHORT, "sell", "limit", Decimal("0.001"),
+        Decimal("60000"), Decimal("1"), False, True, Decimal("30"),
+        Decimal("40"), 45, state=OrderState.INTENT_CREATED,
+    )
+    check = authority._preflight(candidate, market)
+    assert check["allowed"] is False
+    assert check["reason"] == "CASH_SPOT_BASE_ASSET_ORDER_CONFLICT"
+    assert check["detail"]["base_asset"] == "XBT"
+    assert check["detail"]["conflicting_orders"][0]["symbol"] == "XBT/USD"
