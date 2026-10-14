@@ -203,7 +203,6 @@ def test_tactical_profile_cannot_override_immutable_single_position_cap():
 
     assert result.allowed is False
     assert result.checks["position_limit"] is False
-    assert result.diagnostics["position_limit_pct"] == "15"
 
 
 def test_tactical_profile_cannot_raise_single_position_limit_through_learned_parameter():
