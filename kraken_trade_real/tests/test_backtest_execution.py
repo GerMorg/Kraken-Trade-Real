@@ -84,3 +84,90 @@ def test_backtest_rejects_out_of_order_execution_observations():
 def test_backtest_rejects_nonfinite_parameters():
     result = BacktestEngine().run([observation(0, 1)], taker_fee_bps=float("nan"))
     assert result["status"] == "INVALID_PARAMETERS"
+
+
+def test_backtest_reads_persisted_quotes_and_only_passes_past_to_signal_provider():
+    import json
+
+    class FakeDB:
+        def query(self, sql, params):
+            assert "FROM market_snapshots" in sql
+            assert params[0] == "BTC/USD"
+            rows = []
+            for timestamp, bid, ask in (
+                (100.0, 99.9, 100.1),
+                (130.0, 100.9, 101.1),
+                (160.0, 101.9, 102.1),
+            ):
+                rows.append({
+                    "captured_at": timestamp,
+                    "symbol": "BTC/USD",
+                    "price": (bid + ask) / 2,
+                    "bid": bid,
+                    "ask": ask,
+                    "volume_24h": "1000",
+                    "age_seconds": 0,
+                    "spread_bps": "20",
+                    "closes_json": json.dumps(["99", "100"]),
+                    "depths_bid_json": json.dumps([[bid, "100"]]),
+                    "depths_ask_json": json.dumps([[ask, "100"]]),
+                    "funding_rate": None,
+                    "open_interest": None,
+                    "basis_bps": None,
+                    "liquidation_pressure": None,
+                    "features_json": json.dumps({"history_sufficient": "1"}),
+                })
+            return rows
+
+    observed_histories = []
+
+    def signal_provider(history):
+        observed_histories.append([row["captured_at"] for row in history])
+        assert history
+        assert history[-1]["captured_at"] == max(row["captured_at"] for row in history)
+        return 1 if len(history) == 1 else 0
+
+    result = BacktestEngine().run_from_database(
+        FakeDB(),
+        "BTC/USD",
+        since=90,
+        until=170,
+        signal_provider=signal_provider,
+        min_order_qty=0.001,
+        min_order_cost_quote=1,
+        initial_equity_quote=1000,
+        target_notional_quote=100,
+    )
+
+    assert result["status"] == "OK"
+    assert result["dataset"]["source"] == "market_snapshots"
+    assert result["snapshot_count"] == 3
+    assert result["decision_count"] == 2
+    assert [len(items) for items in observed_histories] == [1, 2]
+    assert result["fills"][0]["execution_timestamp"] == 130.0
+    assert result["fills"][1]["execution_timestamp"] == 160.0
+    assert result["assumptions"]["automatic_promotion"] is False
+
+
+def test_backtest_database_adapter_fails_closed_on_invalid_historical_book():
+    class FakeDB:
+        def query(self, sql, params):
+            return [
+                {
+                    "captured_at": 100.0, "symbol": "BTC/USD", "price": "100",
+                    "bid": "99.9", "ask": "100.1", "depths_bid_json": "not-json",
+                    "depths_ask_json": "[]", "features_json": "{}", "closes_json": "[]",
+                },
+                {
+                    "captured_at": 130.0, "symbol": "BTC/USD", "price": "101",
+                    "bid": "100.9", "ask": "101.1", "depths_bid_json": "[]",
+                    "depths_ask_json": "[]", "features_json": "{}", "closes_json": "[]",
+                },
+            ]
+
+    result = BacktestEngine().run_from_database(
+        FakeDB(), "BTC/USD", since=90, until=140,
+        signal_provider=lambda history: 0, min_order_qty=0.001,
+    )
+    assert result["status"] == "INVALID_HISTORICAL_SNAPSHOT"
+    assert result["fills"] == []
