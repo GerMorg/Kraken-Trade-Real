@@ -163,7 +163,7 @@ class BacktestEngine:
         *,
         initial_equity_quote: float = 10_000.0,
         target_notional_quote: float = 1_000.0,
-        taker_fee_bps: float = 8.0,
+        taker_fee_bps: float = 80.0,
         slippage_bps: float = 3.0,
         impact_coefficient_bps: float = 15.0,
         max_depth_fraction: float = 0.10,
@@ -215,7 +215,18 @@ class BacktestEngine:
 
         for index, row in enumerate(rows):
             signal = row.get("signal")
-            if isinstance(signal, bool) or signal not in (-1, 0, 1):
+            # This simulator currently represents cash-Spot inventory only. A
+            # signed short position without Kraken margin/futures funding,
+            # collateral, liquidation and exchange reduce-only semantics would
+            # overstate what is executable, so refuse it rather than estimate it.
+            if signal == -1:
+                return {
+                    "status": "UNSUPPORTED_SHORT_OR_MARGIN_PRODUCT",
+                    "fills": fills,
+                    "metrics": {},
+                    "skipped": skipped,
+                }
+            if isinstance(signal, bool) or signal not in (0, 1):
                 skip("INVALID_SIGNAL")
                 continue
             try:
