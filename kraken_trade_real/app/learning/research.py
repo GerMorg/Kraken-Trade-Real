@@ -45,6 +45,18 @@ class ResearchEngine:
             if trade.get("net_verified") is not True:
                 excluded += 1
                 continue
+            # Explicitly estimated/incomplete cost ledgers override a mistaken
+            # caller-supplied boolean; verification must cover all cost legs.
+            incomplete_cost = any(
+                str(trade.get(key, "")).upper() in {
+                    "ESTIMATED", "UNKNOWN", "UNVERIFIED", "QUOTE_ESTIMATE_ONLY",
+                    "MISSING", "INCOMPLETE",
+                }
+                for key in ("fee_status", "fx_status", "funding_status")
+            )
+            if incomplete_cost:
+                excluded += 1
+                continue
             try:
                 value = float(trade["net_return_fraction"])
             except (KeyError, TypeError, ValueError, OverflowError):
