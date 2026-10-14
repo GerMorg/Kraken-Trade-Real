@@ -176,3 +176,41 @@ def test_core_exit_optimizer_result_is_returned_by_learning_feedback(db):
     assert result["adaptive_core_exit_policy"]["status"] == "CORE_EXIT_TEST"
     assert result["adaptive_policy"]["status"] == "TACTICAL_ENTRY_TEST"
     assert result["adaptive_exit_policy"]["status"] == "TACTICAL_EXIT_TEST"
+
+
+def test_verified_trade_metrics_excludes_prediction_labels_and_estimates(db):
+    from app.learning.research import ResearchEngine
+
+    result = ResearchEngine(db).verified_trade_metrics([
+        {"net_verified": True, "net_return_fraction": 0.02},
+        {"net_verified": False, "net_return_fraction": 0.90},
+        {"net_verified": True, "net_return_fraction": 0.01, "fee_status": "ESTIMATED"},
+        {"net_verified": True, "net_return_fraction": float("nan")},
+    ])
+    assert result["status"] == "OK"
+    assert result["verified_samples"] == 2
+    assert result["excluded_unverified_samples"] == 2
+    assert result["promotion_eligible"] is False
+    assert result["limitation"] == "REALIZED_OUTCOME_SCORER_NOT_EXECUTION_BACKTEST"
+
+
+def test_verified_trade_metrics_never_promotes_when_all_labels_unverified(db):
+    from app.learning.research import ResearchEngine
+
+    result = ResearchEngine(db).verified_trade_metrics([
+        {"net_verified": False, "net_return_fraction": 0.50},
+        {"net_verified": False, "net_return_fraction": -0.10},
+    ])
+    assert result["status"] == "NO_VERIFIED_NET_OUTCOMES"
+    assert result["verified_samples"] == 0
+    assert result["promotion_eligible"] is False
+
+
+def test_research_metrics_rejects_invalid_fractional_returns():
+    import pytest
+    from app.learning.research import ResearchEngine
+
+    with pytest.raises(ValueError):
+        ResearchEngine.metrics([0.01, float("inf")])
+    with pytest.raises(ValueError):
+        ResearchEngine.metrics([0.01, -1.0])
