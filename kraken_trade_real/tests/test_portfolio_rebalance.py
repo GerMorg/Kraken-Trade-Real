@@ -214,7 +214,7 @@ def test_spot_rebalance_delta_is_not_called_dust_when_wallet_holds_orderable_bal
     )
     quantity, reason = resolve_spot_cash_reduction_quantity(
         instrument, Decimal("0.01"), Decimal("0.05"), Decimal("4000"),
-        flattening=False,
+        flattening=False, managed_position_quantity=Decimal("4000"),
     )
     assert quantity == Decimal("0.05")
     assert reason == "REBALANCE_DELTA_BELOW_MINIMUM"
@@ -234,10 +234,53 @@ def test_spot_full_exit_uses_orderable_wallet_balance_instead_of_tiny_eur_delta(
     )
     quantity, reason = resolve_spot_cash_reduction_quantity(
         instrument, Decimal("0.01"), Decimal("0.05"), Decimal("4000"),
-        flattening=True,
+        flattening=True, managed_position_quantity=Decimal("4000"),
     )
     assert quantity == Decimal("4000.00")
-    assert reason == "FULL_EXIT_BALANCE_RECOVERY"
+    assert reason == "FULL_EXIT_PAIR_INVENTORY_CAP"
+
+
+def test_spot_full_exit_is_capped_to_pair_inventory_when_base_is_shared_by_quote_pairs():
+    from app.portfolio.reconcile import resolve_spot_cash_reduction_quantity
+
+    # The wallet has 0.03 XBT, but this pair owns only its reconciled 0.01 XBT lot.
+    usd_quantity, usd_reason = resolve_spot_cash_reduction_quantity(
+        usd_instrument(),
+        Decimal("60000"),
+        Decimal("0.03"),
+        Decimal("0.03"),
+        flattening=True,
+        managed_position_quantity=Decimal("0.01"),
+    )
+    assert usd_quantity == Decimal("0.01")
+    assert usd_reason == "FULL_EXIT_PAIR_INVENTORY_CAP"
+
+    # The second quote pair may close only its own separate 0.02 XBT lot.
+    eur_quantity, eur_reason = resolve_spot_cash_reduction_quantity(
+        xbt_eur_instrument(),
+        Decimal("55000"),
+        Decimal("0.03"),
+        Decimal("0.03"),
+        flattening=True,
+        managed_position_quantity=Decimal("0.02"),
+    )
+    assert eur_quantity == Decimal("0.02")
+    assert eur_reason == "FULL_EXIT_PAIR_INVENTORY_CAP"
+
+
+def test_spot_full_exit_fails_closed_without_verified_pair_inventory():
+    from app.portfolio.reconcile import resolve_spot_cash_reduction_quantity
+
+    quantity, reason = resolve_spot_cash_reduction_quantity(
+        usd_instrument(),
+        Decimal("60000"),
+        Decimal("0.01"),
+        Decimal("0.03"),
+        flattening=True,
+        managed_position_quantity=None,
+    )
+    assert quantity is None
+    assert reason == "CASH_SPOT_PAIR_INVENTORY_UNVERIFIED"
 
 
 def test_spot_balance_smaller_than_exchange_minimum_is_real_dust():
@@ -254,7 +297,7 @@ def test_spot_balance_smaller_than_exchange_minimum_is_real_dust():
     )
     quantity, reason = resolve_spot_cash_reduction_quantity(
         instrument, Decimal("0.01"), Decimal("0.05"), Decimal("20"),
-        flattening=False,
+        flattening=False, managed_position_quantity=Decimal("20"),
     )
     assert quantity == Decimal("0.05")
     assert reason == "DUST_POSITION"
