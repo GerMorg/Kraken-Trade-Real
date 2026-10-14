@@ -1362,6 +1362,50 @@ class TradingAuthority:
                 },
             }
 
+        # Cash-Spot base inventory is fungible across quote pairs. A pair-local
+        # duplicate check is insufficient: two processes/restarts can otherwise
+        # submit sells against the same XBT wallet inventory through XBT/EUR and
+        # XBT/USD. Fail closed while any cash-Spot order for the same canonical
+        # base asset is unresolved. Margin and derivative positions use their own
+        # exchange position semantics and are intentionally not conflated here.
+        is_cash_spot = (
+            intent.instrument.venue == "spot"
+            and str(getattr(intent.instrument.product_type, "value", "")).upper() == "SPOT"
+            and D(str(intent.leverage)) <= D("1")
+            and not bool(getattr(intent, "margin", False))
+        )
+        if is_cash_spot:
+            active_base_orders = self.db.query(
+                "SELECT o.client_order_id,o.symbol,o.state,i.base "
+                "FROM orders AS o JOIN instruments AS i "
+                "ON i.symbol=o.symbol AND lower(i.venue)='spot' "
+                "WHERE lower(i.product_type)='spot' AND o.symbol<>? "
+                "AND o.state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",
+                (intent.instrument.symbol,),
+            )
+            target_base = canonical_asset(intent.instrument.base)
+            conflicts = [
+                row for row in active_base_orders
+                if canonical_asset(str(row.get("base") or "")) == target_base
+            ]
+            if conflicts:
+                return {
+                    "allowed": False,
+                    "reason": "CASH_SPOT_BASE_ASSET_ORDER_CONFLICT",
+                    "detail": {
+                        "base_asset": target_base,
+                        "conflicting_orders": [
+                            {
+                                "symbol": str(row.get("symbol") or ""),
+                                "client_order_id": str(row.get("client_order_id") or ""),
+                                "state": str(row.get("state") or ""),
+                            }
+                            for row in conflicts
+                        ],
+                        "policy": "FAIL_CLOSED_ACROSS_CASH_SPOT_QUOTE_PAIRS",
+                    },
+                }
+
         if stale_reduce_order_resolved:
             return {
                 "allowed": False,
