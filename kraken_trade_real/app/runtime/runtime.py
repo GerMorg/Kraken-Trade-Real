@@ -57,7 +57,7 @@ def _risk_diagnostic_context(
     position_limit_pct = min(D(str(config.risk_max_position_pct)), D("15"))
     if risk_profile == "tactical":
         position_limit_pct = min(
-            D("15"),
+            D("100"),
             max(D("0.1"), D(str(decision.rationale.get("risk_position_limit_pct", "25")))),
         )
     # Tactical sizing limits are subordinate to the immutable global net cap.
@@ -258,15 +258,15 @@ class TradingRuntime:
             immutable=True,
             configured_risk_envelope_clamped=bool(getattr(self.config, "risk_envelope_clamped", False)),
             corrections=str(getattr(self.config, "risk_envelope_corrections", "")),
-            position_limit_pct=str(min(D(str(self.config.risk_max_position_pct)), D("15"))),
-            gross_limit_pct=str(min(D(str(self.config.risk_max_gross_pct)), D("80"))),
-            net_limit_pct=str(min(D(str(self.config.risk_max_net_pct)), D("50"))),
-            margin_limit_pct=str(min(D(str(self.config.risk_max_margin_pct)), D("35"))),
-            max_leverage=str(min(D(str(self.config.risk_max_leverage)), D("3"))),
-            open_positions_limit=min(int(self.config.risk_max_open_positions), 3),
-            daily_loss_limit_pct=str(min(D(str(self.config.risk_daily_loss_pct)), D("3"))),
-            drawdown_limit_pct=str(min(D(str(self.config.risk_max_drawdown_pct)), D("8"))),
-            minimum_cash_reserve_pct=str(max(D(str(self.config.risk_cash_reserve_pct)), D("20"))),
+            position_limit_pct=str(min(D(str(getattr(self.config, "risk_max_position_pct", 15))), D("15"))),
+            gross_limit_pct=str(min(D(str(getattr(self.config, "risk_max_gross_pct", 80))), D("80"))),
+            net_limit_pct=str(min(D(str(getattr(self.config, "risk_max_net_pct", 50))), D("50"))),
+            margin_limit_pct=str(min(D(str(getattr(self.config, "risk_max_margin_pct", 35))), D("35"))),
+            max_leverage=str(min(D(str(getattr(self.config, "risk_max_leverage", 3))), D("3"))),
+            open_positions_limit=min(int(getattr(self.config, "risk_max_open_positions", 3)), 3),
+            daily_loss_limit_pct=str(min(D(str(getattr(self.config, "risk_daily_loss_pct", 3))), D("3"))),
+            drawdown_limit_pct=str(min(D(str(getattr(self.config, "risk_max_drawdown_pct", 8))), D("8"))),
+            minimum_cash_reserve_pct=str(max(D(str(getattr(self.config, "risk_cash_reserve_pct", 20))), D("20"))),
         )
         self._publish_runtime_status()
         try:
