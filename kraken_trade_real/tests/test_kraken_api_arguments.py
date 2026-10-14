@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import time
 from app.domain.models import Instrument, MarketSnapshot, OrderIntent
 from app.domain.states import Direction, OrderState, ProductType
 from app.kraken.client import KrakenGateway
@@ -723,7 +724,7 @@ def test_futures_rejected_send_status_is_not_recorded_as_acknowledged(config, db
     )
     market = MarketSnapshot(
         derivative.symbol, Decimal("60000"), Decimal("59999.9"),
-        Decimal("60000.1"), Decimal("1000000"), 1.0,
+        Decimal("60000.1"), Decimal("1000000"), time.time(),
         tuple(Decimal("60000") for _ in range(40)),
     )
     result = authority.submit(intent, market)

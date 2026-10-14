@@ -88,6 +88,10 @@ class PortfolioState:
     # mistakes a derivative position for an exchange OpenPositions lot.
     futures_position_symbols:tuple[str,...]=()
     futures_positions_read_ok:bool=False
+    # Production reconciliation sets these explicitly from full interval/flow coverage.
+    # Defaults retain backwards-compatible semantics for synthetic unit-test snapshots.
+    daily_pnl_verified:bool=True
+    drawdown_verified:bool=True
 
 @dataclass(frozen=True)
 class Fill:

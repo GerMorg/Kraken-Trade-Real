@@ -176,3 +176,103 @@ def test_core_exit_optimizer_result_is_returned_by_learning_feedback(db):
     assert result["adaptive_core_exit_policy"]["status"] == "CORE_EXIT_TEST"
     assert result["adaptive_policy"]["status"] == "TACTICAL_ENTRY_TEST"
     assert result["adaptive_exit_policy"]["status"] == "TACTICAL_EXIT_TEST"
+
+
+
+def test_calibration_reports_log_loss_and_reliability_bins():
+    metrics = CalibrationEngine().evaluate([
+        (0.9, True), (0.8, True), (0.2, False), (0.1, False),
+    ])
+    assert metrics["status"] == "OK"
+    assert metrics["sample_count"] == 4
+    assert 0 <= metrics["brier"] <= 1
+    assert metrics["log_loss"] >= 0
+    assert 0 <= metrics["ece"] <= 1
+    assert sum(row["count"] for row in metrics["bins"]) == 4
+
+
+def test_calibration_rejects_nonfinite_or_out_of_range_probabilities():
+    import math
+    import pytest
+
+    for invalid in (float("nan"), float("inf"), -0.1, 1.1):
+        with pytest.raises(ValueError):
+            CalibrationEngine().evaluate([(invalid, True)])
+    assert math.isclose(
+        CalibrationEngine().evaluate([(0.5, True)])["log_loss"],
+        math.log(2.0),
+    )
+
+
+def test_walk_forward_uses_disjoint_future_test_windows_and_frozen_scorer():
+    engine = __import__(
+        "app.learning.research", fromlist=["ResearchEngine"]
+    ).ResearchEngine(None)
+    data = [{"timestamp": float(i), "value": i} for i in range(100)]
+    seen = []
+
+    def scorer(test_rows):
+        seen.append((test_rows[0]["timestamp"], test_rows[-1]["timestamp"]))
+        return [0.01 if row["value"] % 2 else -0.005 for row in test_rows]
+
+    result = engine.walk_forward(data, scorer, windows=3)
+    assert result["status"] == "OK"
+    assert result["method"] == "EXPANDING_WINDOW_DISJOINT_TEST"
+    assert result["parameters_promoted"] is False
+    assert result["windows"][0]["train_samples"] >= 20
+    assert result["windows"][0]["test_start_index"] >= result["windows"][0]["train_samples"]
+    assert len({(row["test_start_index"], row["test_end_index_exclusive"]) for row in result["windows"]}) == 3
+    assert all(seen[i][1] < seen[i + 1][0] for i in range(len(seen) - 1))
+
+
+def test_walk_forward_rejects_nonchronological_data():
+    engine = __import__(
+        "app.learning.research", fromlist=["ResearchEngine"]
+    ).ResearchEngine(None)
+    data = [{"timestamp": float(i)} for i in range(80)]
+    data[50], data[51] = data[51], data[50]
+    result = engine.walk_forward(data, lambda rows: [0.0 for _ in rows], windows=3)
+    assert result["status"] == "NON_CHRONOLOGICAL_DATA"
+
+
+def test_research_metrics_include_sortino_expectancy_win_rate_and_tail_loss():
+    engine = __import__(
+        "app.learning.research", fromlist=["ResearchEngine"]
+    ).ResearchEngine(None)
+    metrics = engine.metrics([0.02, -0.01, 0.01, -0.03], periods_per_year=12)
+    assert metrics["samples"] == 4
+    assert metrics["expectancy"] < 0
+    assert metrics["win_rate"] == 0.5
+    assert metrics["sortino"] < 0
+    assert metrics["tail_loss_5pct"] == -0.03
+    assert metrics["max_drawdown"] < 0
+
+
+def test_calibration_persists_log_loss_metric(db):
+    from app.learning import LearningEngine, CalibrationEngine, ModelRegistry, ResearchEngine
+
+    engine = LearningEngine(
+        db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db),
+        enabled=True, auto_promotion_enabled=False,
+    )
+    metrics = engine.calibrate([(0.8, True), (0.2, False)], "calibration-test")
+    row = db.one(
+        "SELECT sample_count,brier_score,ece,log_loss,bins_json FROM calibrations "
+        "WHERE model_version=? ORDER BY id DESC LIMIT 1",
+        ("calibration-test",),
+    )
+    assert row is not None
+    assert row["sample_count"] == 2
+    assert abs(row["log_loss"] - metrics["log_loss"]) < 1e-12
+
+
+def test_calibration_log_loss_column_migration_is_idempotent(db):
+    columns = {
+        row["name"] for row in db.query("PRAGMA table_info(calibrations)")
+    }
+    assert "log_loss" in columns
+    db._init_schema()
+    columns_after = {
+        row["name"] for row in db.query("PRAGMA table_info(calibrations)")
+    }
+    assert "log_loss" in columns_after

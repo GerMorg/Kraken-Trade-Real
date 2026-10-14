@@ -177,3 +177,102 @@ def test_core_entry_with_positive_but_weak_net_edge_is_rejected():
     assert result.allowed is False
     assert result.reason == "edge_positive"
     assert result.checks["edge_positive"] is False
+
+
+
+def test_tactical_profile_cannot_override_immutable_single_position_cap():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("100"),
+        positions={},
+        gross_eur=D("0"),
+        net_eur=D("0"),
+        daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"),
+    )
+    decision = _decision(instrument, target=D("20"))
+    decision.rationale.update({
+        "risk_profile": "tactical",
+        "risk_position_limit_pct": "75",
+        "risk_max_leverage": "5",
+    })
+    engine = RiskEngine(_config(), _Margin(), object(), object())
+
+    result = engine.evaluate(decision, portfolio, None)
+
+    assert result.allowed is False
+    assert result.checks["position_limit"] is False
+
+
+def test_tactical_profile_cannot_raise_single_position_limit_through_learned_parameter():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("100"),
+        positions={},
+        gross_eur=D("0"),
+        net_eur=D("0"),
+        daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"),
+    )
+    decision = _decision(instrument, target=D("14"))
+    decision.rationale.update({
+        "risk_profile": "tactical",
+        "risk_position_limit_pct": "99",
+    })
+    result = RiskEngine(_config(), _Margin(), object(), object()).evaluate(
+        decision, portfolio, None
+    )
+
+    assert result.checks["position_limit"] is True
+
+
+
+def test_unverified_daily_pnl_and_drawdown_block_new_risk():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("100"),
+        positions={},
+        gross_eur=D("0"),
+        net_eur=D("0"),
+        daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"),
+        daily_pnl_verified=False,
+        drawdown_verified=False,
+    )
+    result = RiskEngine(_config(), _Margin(), object(), object()).evaluate(
+        _decision(instrument, target=D("10")), portfolio, None
+    )
+    assert result.allowed is False
+    assert result.checks["daily_loss_data_valid"] is False
+    assert result.checks["drawdown_data_valid"] is False
+    assert result.checks["daily_loss"] is False
+    assert result.checks["drawdown"] is False
+
+
+def test_unverified_daily_pnl_still_allows_confirmed_risk_reduction():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("90"),
+        positions={instrument.symbol: D("10")},
+        gross_eur=D("10"),
+        net_eur=D("10"),
+        daily_pnl_eur=D("-50"),
+        drawdown_pct=D("25"),
+        daily_pnl_verified=False,
+        drawdown_verified=False,
+    )
+    decision = _decision(
+        instrument, current=D("10"), target=D("0"), reduce_only=True
+    )
+    result = RiskEngine(_config(), _Margin(), object(), object()).evaluate(
+        decision, portfolio, None
+    )
+    assert result.allowed is True
+    assert result.checks["daily_loss_data_valid"] is True
+    assert result.checks["drawdown_data_valid"] is True
+    assert result.checks["daily_loss"] is True
+    assert result.checks["drawdown"] is True

@@ -102,8 +102,10 @@ class RiskEngine:
         if risk_profile == "tactical":
             # Tactical has its own absolute capital cap and tighter trade-count gates;
             # retain its configured percentage sizing while global gross/net caps remain immutable.
+            # Tactical-specific sizing is subordinate to the immutable global
+            # single-position cap; profiles/config must never relax the safety envelope.
             position_limit_pct = min(
-                D("100"),
+                self.IMMUTABLE_MAX_POSITION_PCT,
                 max(D("0.1"), D(str(d.rationale.get("risk_position_limit_pct", "25")))),
             )
             volatility_limit = min(
@@ -175,11 +177,23 @@ class RiskEngine:
                     else d.instrument.short_available
                 )
             ),
-            "daily_loss": valid_reduction or p.daily_pnl_eur >= -(
-                eq * min(D(str(self.config.risk_daily_loss_pct)), self.IMMUTABLE_MAX_DAILY_LOSS_PCT) / 100
+            "daily_loss_data_valid": valid_reduction or bool(
+                getattr(p, "daily_pnl_verified", False)
             ),
-            "drawdown": valid_reduction or p.drawdown_pct <= min(
-                D(str(self.config.risk_max_drawdown_pct)), self.IMMUTABLE_MAX_DRAWDOWN_PCT
+            "drawdown_data_valid": valid_reduction or bool(
+                getattr(p, "drawdown_verified", False)
+            ),
+            "daily_loss": valid_reduction or (
+                bool(getattr(p, "daily_pnl_verified", False))
+                and p.daily_pnl_eur >= -(
+                    eq * min(D(str(self.config.risk_daily_loss_pct)), self.IMMUTABLE_MAX_DAILY_LOSS_PCT) / 100
+                )
+            ),
+            "drawdown": valid_reduction or (
+                bool(getattr(p, "drawdown_verified", False))
+                and p.drawdown_pct <= min(
+                    D(str(self.config.risk_max_drawdown_pct)), self.IMMUTABLE_MAX_DRAWDOWN_PCT
+                )
             ),
             "position_limit": valid_reduction or pos_pct <= position_limit_pct,
             "gross_limit": valid_reduction or gross_pct <= min(

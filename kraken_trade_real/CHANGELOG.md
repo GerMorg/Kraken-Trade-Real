@@ -1,3 +1,19 @@
+## 0.1.91 — 2026-10-14
+
+### Audit follow-up hardening
+- Added final TradingAuthority checks for finite order values, positive quantities/prices, valid instrument minimum/tick/leverage metadata, and side/direction consistency.
+- Live submissions require a matching, timestamped, fresh executable quote; missing, stale or invalid market snapshots fail closed.
+- Added Log Loss and stricter validation to the forecast calibration metrics.
+- Reworked expanding-window research evaluation to use disjoint chronological test windows, explicit frozen-vs-train/test evaluation mode, data hashes, and no automatic model promotion.
+- Added richer return/drawdown/risk metrics and an offline execution simulator that models bid/ask, taker fees, slippage/impact, order-book depth caps, partial fills, minima, and financing. The simulator never places live orders or promotes strategies.
+- Added regression tests for stale/missing quotes, calibration inputs, chronology invariants and backtest cost/execution behavior.
+- Connected the offline simulator to persisted historical `market_snapshots` using a past-only signal callback and next-quote execution; added a follow-up implementation matrix separating tested code changes from still-unverified release gates.
+- Added same-window cash, buy-and-hold, momentum and trend baselines. The current simulator uses a conservative 80 bps taker-fee default and explicitly refuses short/margin signals until a product-aware collateral/liquidation model exists.
+
+### Important limits
+- A simulator and walk-forward split do not prove that the assumed fill model matches Kraken or that a strategy is profitable.
+- Historical unresolved fill mismatches, unverified fees/FX/financing and exchange-side leveraged-position protection remain separate release gates. See `docs/AUDIT_2026-10-14.md`.
+
 ## 0.1.90 — 2026-10-14
 
 ### Safety hotfix

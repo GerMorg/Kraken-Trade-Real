@@ -10,6 +10,49 @@ from app.domain.states import Direction
 D = Decimal
 
 
+def gate_unvalidated_external_effects(
+    config: Any, news_bps: Any, gemini_bps: Any
+) -> dict[str, Any]:
+    """Prevent unvalidated News/LLM impacts from justifying live entries.
+
+    During active live execution, third-party text-derived effects are retained
+    as raw diagnostics but return zero signal contribution until an independent,
+    cost-adjusted out-of-sample evaluation explicitly supports enabling them.
+    In non-live/shadow mode, valid effects remain available for research.
+    """
+    parsed: dict[str, D] = {}
+    invalid: list[str] = []
+    for name, value in (("news_bps", news_bps), ("gemini_bps", gemini_bps)):
+        try:
+            candidate = D(str(value))
+        except (ArithmeticError, TypeError, ValueError):
+            candidate = D("NaN")
+        if not candidate.is_finite():
+            invalid.append(name)
+            candidate = D("0")
+        parsed[name] = candidate
+
+    live_execution_active = (
+        bool(getattr(config, "live_enabled", False))
+        and not bool(getattr(config, "kill_switch", True))
+    )
+    if live_execution_active:
+        return {
+            "news_bps": D("0"),
+            "gemini_bps": D("0"),
+            "shadow_only": True,
+            "reason": "LIVE_EXTERNAL_EFFECTS_NOT_OUT_OF_SAMPLE_VALIDATED",
+            "invalid_inputs": invalid,
+        }
+    return {
+        "news_bps": parsed["news_bps"],
+        "gemini_bps": parsed["gemini_bps"],
+        "shadow_only": False,
+        "reason": "SHADOW_OR_DISABLED_LIVE",
+        "invalid_inputs": invalid,
+    }
+
+
 class SignalEngine:
     """Cost-aware core signal model using multiple market horizons."""
 

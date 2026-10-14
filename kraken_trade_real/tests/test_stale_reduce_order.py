@@ -104,6 +104,11 @@ def setup_stale_order(db, instrument, config, fake_gateway, states):
         FakeReconciler(),
     )
     market = SimpleNamespace(
+        symbol=instrument.symbol,
+        timestamp=time.time(),
+        price=D("100"),
+        bid=D("99.9"),
+        ask=D("100.1"),
         spread_bps=D("5"),
         closes=tuple(D("100") for _ in range(40)),
         volume_24h=D("100000"),
@@ -165,3 +170,37 @@ def test_stale_reduce_only_order_remains_blocking_when_cancel_is_not_confirmed(
     )
     assert row["state"] == OrderState.LIVE.value
     assert any(event[0] == "ORDER_STALE_REDUCE_CANCEL_FAILED" for event in audit.events)
+
+
+
+def test_live_preflight_blocks_stale_market_before_exchange_lookup(
+    db, config, fake_gateway, instrument
+):
+    from dataclasses import replace
+
+    authority, intent, market, audit, cancel_calls = setup_stale_order(
+        db, instrument, config, fake_gateway,
+        [{"status": "open", "vol": "0.01", "vol_exec": "0"}],
+    )
+    authority.config = replace(config, live_enabled=True, kill_switch=False)
+    market.timestamp = time.time() - float(getattr(config, 'market_max_data_age_seconds', 30)) - 10
+    result = authority._preflight(intent, market)
+    assert result["allowed"] is False
+    assert result["reason"] == "MARKET_DATA_STALE"
+    assert cancel_calls == []
+
+
+def test_live_preflight_blocks_missing_market_timestamp(
+    db, config, fake_gateway, instrument
+):
+    from dataclasses import replace
+
+    authority, intent, market, audit, cancel_calls = setup_stale_order(
+        db, instrument, config, fake_gateway,
+        [{"status": "open", "vol": "0.01", "vol_exec": "0"}],
+    )
+    authority.config = replace(config, live_enabled=True, kill_switch=False)
+    del market.timestamp
+    result = authority._preflight(intent, market)
+    assert result["allowed"] is False
+    assert result["reason"] == "MARKET_SNAPSHOT_INVALID"

@@ -50,12 +50,13 @@ class LearningEngine:
     def calibrate(self, pairs: list[tuple[float, bool]], model_version: str) -> dict:
         metrics = self.calibration.evaluate(pairs)
         self.db.execute(
-            "INSERT INTO calibrations(created_at,model_version,sample_count,brier_score,ece,bins_json) VALUES(strftime('%s','now'),?,?,?,?,?)",
+            "INSERT INTO calibrations(created_at,model_version,sample_count,brier_score,ece,log_loss,bins_json) VALUES(strftime('%s','now'),?,?,?,?,?,?)",
             (
                 model_version,
                 metrics["sample_count"],
                 metrics["brier"],
                 metrics["ece"],
+                metrics["log_loss"],
                 __import__("json").dumps(metrics["bins"]),
             ),
         )
@@ -244,6 +245,8 @@ class LearningEngine:
                 and regime_improvement >= 0.005
                 and float(regime_validation_candidate["ece"])
                 <= float(regime_validation_base["ece"]) + 0.005
+                and float(regime_validation_candidate["log_loss"])
+                <= float(regime_validation_base["log_loss"]) + 0.01
             ):
                 regime_scales[regime] = regime_best_scale
 
@@ -267,6 +270,8 @@ class LearningEngine:
             and len(validation) >= minimum_validation
             and improvement >= 0.01
             and candidate_ece <= base_ece + 0.005
+            and float(validation_candidate["log_loss"])
+            <= float(validation_base["log_loss"]) + 0.01
             and candidate_brier <= 0.25
             and candidate_ece <= 0.15
             and self.auto_calibration_enabled
@@ -290,6 +295,8 @@ class LearningEngine:
             metrics = {
                 "samples": len(validation), "training_samples": len(training),
                 "brier": candidate_brier, "ece": candidate_ece,
+                "log_loss": float(validation_candidate["log_loss"]),
+                "baseline_log_loss": float(validation_base["log_loss"]),
                 "improvement": improvement, "parent_brier": base_brier,
                 "parent_ece": base_ece, "ece_degradation": ece_degradation,
                 "selected_scale": best_scale,

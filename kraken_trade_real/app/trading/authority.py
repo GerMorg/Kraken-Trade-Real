@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
+import math
 import time
 import threading
 from typing import Any, Iterable
@@ -795,6 +796,43 @@ class TradingAuthority:
         return {"error_class": error_class, "suggested_action": suggested_action, **context}
 
     def _submit_locked(self, intent: OrderIntent, market: Any) -> dict[str, Any]:
+        # A client order id is a durable idempotency key. Never submit it a
+        # second time merely because a caller retried after a lost response.
+        existing = self.db.one(
+            "SELECT intent_id,state,kraken_order_id,last_error FROM orders WHERE client_order_id=?",
+            (intent.client_order_id,),
+        )
+        if existing is not None:
+            persisted_intent_id = str(existing.get("intent_id") or "")
+            persisted_state = str(existing.get("state") or OrderState.UNKNOWN_RECONCILING.value)
+            same_intent = persisted_intent_id == intent.intent_id
+            reason = (
+                "IDEMPOTENT_REPLAY_NO_RESUBMIT"
+                if same_intent else "CLIENT_ORDER_ID_REUSED"
+            )
+            self.audit.emit(
+                "ORDER_DUPLICATE_SUBMISSION_BLOCKED",
+                "WARNING",
+                client_order_id=intent.client_order_id,
+                intent_id=intent.intent_id,
+                persisted_intent_id=persisted_intent_id,
+                persisted_state=persisted_state,
+                reason=reason,
+                exchange_order_id=str(existing.get("kraken_order_id") or ""),
+            )
+            return {
+                "state": persisted_state if same_intent else OrderState.REJECTED.value,
+                "reason": reason,
+                "idempotent_replay": same_intent,
+                "reconciled": persisted_state not in {
+                    OrderState.SUBMITTING.value,
+                    OrderState.UNKNOWN_RECONCILING.value,
+                    OrderState.ACKNOWLEDGED.value,
+                    OrderState.LIVE.value,
+                    OrderState.PARTIALLY_FILLED.value,
+                },
+                "kraken_order_id": str(existing.get("kraken_order_id") or "") or None,
+            }
         self.db.save_order_intent(intent)
         if not is_valid_kraken_client_order_id(intent.client_order_id):
             self.db.update_order_state(
@@ -1253,6 +1291,99 @@ class TradingAuthority:
             return {"allowed": False, "reason": "KRAKEN_DISABLED"}
         if not intent.instrument.tradeable:
             return {"allowed": False, "reason": "INSTRUMENT_NOT_TRADEABLE"}
+
+        # Final local integrity gate. Do not trust a strategy-created intent to
+        # carry finite, exchange-valid values merely because an upstream gate ran.
+        is_settle_position = (
+            str(intent.order_type).strip().lower().replace("_", "-") == "settle-position"
+        )
+        numeric_values = {
+            "quantity": intent.quantity,
+            "leverage": intent.leverage,
+            "expected_edge_bps": intent.expected_edge_bps,
+            "max_slippage_bps": intent.max_slippage_bps,
+        }
+        if intent.limit_price is not None:
+            numeric_values["limit_price"] = intent.limit_price
+        try:
+            parsed_values = {
+                key: D(str(value)) for key, value in numeric_values.items()
+            }
+        except (InvalidOperation, TypeError, ValueError):
+            return {"allowed": False, "reason": "INVALID_ORDER_VALUE"}
+        if any(not value.is_finite() for value in parsed_values.values()):
+            return {"allowed": False, "reason": "NON_FINITE_ORDER_VALUE"}
+        if intent.leverage < D("1"):
+            return {"allowed": False, "reason": "LEVERAGE_BELOW_ONE"}
+        if not is_settle_position and intent.quantity <= 0:
+            return {"allowed": False, "reason": "ORDER_QUANTITY_NOT_POSITIVE"}
+        if is_settle_position and intent.quantity != 0:
+            return {"allowed": False, "reason": "INVALID_SETTLE_POSITION_INTENT"}
+        if intent.limit_price is not None and intent.limit_price <= 0:
+            return {"allowed": False, "reason": "LIMIT_PRICE_NOT_POSITIVE"}
+        if intent.side.lower() not in {"buy", "sell"}:
+            return {"allowed": False, "reason": "INVALID_ORDER_SIDE"}
+        if not is_settle_position:
+            expected_side = "buy" if intent.direction.value == "LONG" else "sell"
+            if intent.side.lower() != expected_side:
+                return {"allowed": False, "reason": "ORDER_SIDE_DIRECTION_MISMATCH"}
+        instrument = intent.instrument
+        try:
+            lot_minimum = D(str(instrument.min_order_qty))
+            cost_minimum = D(str(instrument.min_cost))
+            tick = D(str(instrument.tick_size))
+            max_leverage = D(str(instrument.max_leverage))
+        except Exception:
+            return {"allowed": False, "reason": "INSTRUMENT_METADATA_INVALID"}
+        if (
+            not lot_minimum.is_finite() or lot_minimum <= 0
+            or not cost_minimum.is_finite() or cost_minimum < 0
+            or not tick.is_finite() or tick <= 0
+            or not max_leverage.is_finite() or max_leverage < 1
+        ):
+            return {"allowed": False, "reason": "INSTRUMENT_METADATA_INVALID"}
+
+        # Live submission requires a fresh, matching executable quote. Historic
+        # fixtures and disabled-live diagnostics may still exercise other gates,
+        # but missing timestamps can never authorize a live exchange request.
+        if bool(getattr(self.config, "live_enabled", False)) and not bool(
+            getattr(self.config, "kill_switch", True)
+        ):
+            market_symbol = str(getattr(market, "symbol", "") or "")
+            if not market_symbol or market_symbol != instrument.symbol:
+                return {"allowed": False, "reason": "MARKET_SYMBOL_MISMATCH"}
+            try:
+                market_timestamp = float(getattr(market, "timestamp"))
+                age_seconds = time.time() - market_timestamp
+                max_age_seconds = max(
+                    5.0, float(getattr(self.config, "market_max_data_age_seconds", 30))
+                )
+                bid = D(str(getattr(market, "bid")))
+                ask = D(str(getattr(market, "ask")))
+                price = D(str(getattr(market, "price")))
+                quote_valid = (
+                    bid.is_finite() and ask.is_finite() and price.is_finite()
+                    and bid > 0 and ask >= bid and price > 0
+                )
+            except (AttributeError, TypeError, ValueError, ArithmeticError):
+                return {"allowed": False, "reason": "MARKET_SNAPSHOT_INVALID"}
+            if not quote_valid:
+                return {"allowed": False, "reason": "MARKET_SNAPSHOT_INVALID"}
+            if (
+                not math.isfinite(market_timestamp)
+                or not math.isfinite(age_seconds)
+                or market_timestamp <= 0
+                or age_seconds < -5.0
+                or age_seconds > max_age_seconds
+            ):
+                return {
+                    "allowed": False,
+                    "reason": "MARKET_DATA_STALE",
+                    "detail": {
+                        "age_seconds": round(age_seconds, 3) if math.isfinite(age_seconds) else None,
+                        "maximum_age_seconds": max_age_seconds,
+                    },
+                }
         if (
             intent.direction.value == "SHORT"
             and intent.instrument.product_type.value == "SPOT_MARGIN"

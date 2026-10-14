@@ -1482,6 +1482,8 @@ class PortfolioReconciler:
             spot_margin_open_lot_count=spot_margin_open_lot_count,
             futures_position_symbols=tuple(sorted(futures_position_symbols)),
             futures_positions_read_ok=futures_positions_read_ok,
+            daily_pnl_verified=bool(daily_flow_complete),
+            drawdown_verified=bool(cash_flow_complete),
         )
 
 def minimum_orderable_spot_quantity(instrument: Instrument, price: D) -> D | None:

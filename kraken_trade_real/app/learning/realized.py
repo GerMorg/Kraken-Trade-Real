@@ -487,11 +487,20 @@ class CoreSpotRealizedOutcomeLedger:
                     lot["remaining_entry_fee_verified_quote"] -= allocated_verified_entry_fee
                 remaining_close_qty -= matched_qty
             if remaining_close_qty > 0:
+                # Even the apparently matched slice is not an eligible training
+                # outcome when this exchange close proves local FIFO inventory is
+                # incomplete. Quarantine every decision represented at fill time;
+                # do not let the partial match hide the account/ledger mismatch.
+                unscorable_opening_decisions.update(
+                    decision_id for decision_id in opening_decisions_at_fill if decision_id
+                )
                 anomaly(row, "REDUCE_ONLY_EXCEEDS_LOCAL_INVENTORY", {
                     "close_direction": closing_direction,
                     "fill_quantity": str(quantity),
                     "matched_quantity": str(quantity - remaining_close_qty),
                     "unmatched_quantity": str(remaining_close_qty),
+                    "quarantined_opening_decisions": sorted(opening_decisions_at_fill),
+                    "reason": "FILL_EXCEEDS_RECONCILED_FIFO_INVENTORY",
                 })
             for source_key in set(source_key_by_lot.values()):
                 lots_by_key[source_key] = [
