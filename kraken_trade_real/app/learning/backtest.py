@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
-from typing import Any
+from typing import Any, Callable
 
 
 class BacktestEngine:
@@ -13,6 +14,148 @@ class BacktestEngine:
     Fees, spread, slippage, depth caps, minimum order rules and financing are
     explicit inputs. This simulator is a research baseline, not proof of fills.
     """
+
+    def run_from_database(
+        self,
+        db: Any,
+        symbol: str,
+        *,
+        since: float,
+        until: float,
+        signal_provider: Callable[[list[dict[str, Any]]], int],
+        min_order_qty: float,
+        min_order_cost_quote: float = 0.0,
+        **run_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Backtest one symbol from persisted market_snapshots with next-quote fills.
+
+        The signal callback receives only snapshots at or before decision time.
+        Execution uses the next stored bid/ask and recorded book-depth levels.
+        Instrument minima must be supplied from the instrument metadata valid for
+        the tested date; this method deliberately does not guess historical rules.
+        Returns are in the instrument's quote currency, not EUR unless quote=EUR.
+        """
+        try:
+            since_value, until_value = float(since), float(until)
+            minimum_quantity = float(min_order_qty)
+            minimum_cost = float(min_order_cost_quote)
+        except (TypeError, ValueError):
+            return {"status": "INVALID_DATASET_PARAMETERS", "fills": [], "metrics": {}}
+        if (
+            not all(math.isfinite(v) for v in (
+                since_value, until_value, minimum_quantity, minimum_cost
+            ))
+            or since_value >= until_value or minimum_quantity < 0 or minimum_cost < 0
+        ):
+            return {"status": "INVALID_DATASET_PARAMETERS", "fills": [], "metrics": {}}
+
+        rows = db.query(
+            """SELECT captured_at,symbol,price,bid,ask,volume_24h,age_seconds,
+                      spread_bps,closes_json,depths_bid_json,depths_ask_json,
+                      funding_rate,open_interest,basis_bps,liquidation_pressure,
+                      features_json
+               FROM market_snapshots
+               WHERE symbol=? AND captured_at>=? AND captured_at<=?
+               ORDER BY captured_at,id""",
+            (str(symbol), since_value, until_value),
+        )
+        if len(rows) < 2:
+            return {
+                "status": "INSUFFICIENT_HISTORICAL_QUOTES",
+                "fills": [],
+                "metrics": {},
+                "symbol": symbol,
+                "snapshots": len(rows),
+            }
+
+        normalized: list[dict[str, Any]] = []
+        try:
+            for row in rows:
+                timestamp = float(row["captured_at"])
+                bid, ask = float(row["bid"]), float(row["ask"])
+                if not all(math.isfinite(v) for v in (timestamp, bid, ask)):
+                    raise ValueError("NON_FINITE_HISTORICAL_QUOTE")
+                if timestamp <= 0 or bid <= 0 or ask < bid:
+                    raise ValueError("INVALID_HISTORICAL_QUOTE")
+                raw_bid_depth = json.loads(row.get("depths_bid_json") or "[]")
+                raw_ask_depth = json.loads(row.get("depths_ask_json") or "[]")
+                bid_depth = sum(
+                    float(level[1]) for level in raw_bid_depth
+                    if isinstance(level, (list, tuple)) and len(level) >= 2
+                )
+                ask_depth = sum(
+                    float(level[1]) for level in raw_ask_depth
+                    if isinstance(level, (list, tuple)) and len(level) >= 2
+                )
+                features = json.loads(row.get("features_json") or "{}")
+                closes = json.loads(row.get("closes_json") or "[]")
+                if (
+                    not math.isfinite(bid_depth) or not math.isfinite(ask_depth)
+                    or bid_depth < 0 or ask_depth < 0
+                    or not isinstance(features, dict) or not isinstance(closes, list)
+                ):
+                    raise ValueError("INVALID_HISTORICAL_DEPTH_OR_FEATURES")
+                normalized.append({
+                    **row,
+                    "captured_at": timestamp,
+                    "bid": bid,
+                    "ask": ask,
+                    "price": float(row["price"]),
+                    "bid_depth_base": bid_depth,
+                    "ask_depth_base": ask_depth,
+                    "features": features,
+                    "closes": closes,
+                })
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, OverflowError):
+            return {
+                "status": "INVALID_HISTORICAL_SNAPSHOT",
+                "fills": [],
+                "metrics": {},
+                "symbol": symbol,
+            }
+
+        observations: list[dict[str, Any]] = []
+        try:
+            for index in range(len(normalized) - 1):
+                history = normalized[: index + 1]
+                signal = signal_provider(history)
+                decision_row = normalized[index]
+                execution_row = normalized[index + 1]
+                observations.append({
+                    "decision_timestamp": decision_row["captured_at"],
+                    "execution_timestamp": execution_row["captured_at"],
+                    "signal": signal,
+                    "bid": execution_row["bid"],
+                    "ask": execution_row["ask"],
+                    "bid_depth_base": execution_row["bid_depth_base"],
+                    "ask_depth_base": execution_row["ask_depth_base"],
+                    "min_order_qty": minimum_quantity,
+                    "min_order_cost_quote": minimum_cost,
+                })
+        except Exception as exc:
+            return {
+                "status": "SIGNAL_PROVIDER_FAILED",
+                "fills": [],
+                "metrics": {},
+                "symbol": symbol,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            }
+
+        kwargs = dict(run_kwargs)
+        kwargs.setdefault("max_quote_age_seconds", 300.0)
+        result = self.run(observations, **kwargs)
+        result["symbol"] = symbol
+        result["snapshot_count"] = len(normalized)
+        result["decision_count"] = len(observations)
+        result["dataset"] = {
+            "source": "market_snapshots",
+            "from_timestamp": normalized[0]["captured_at"],
+            "to_timestamp": normalized[-1]["captured_at"],
+            "instrument": symbol,
+            "automatic_promotion": False,
+        }
+        return result
 
     def run(
         self,
