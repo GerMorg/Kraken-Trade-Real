@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Callable
 
-from app.domain.models import digest_config, new_id
+from app.domain.models import MarketSnapshot, Signal, digest_config, new_id
 from app.risk.cycle import CycleExposureLedger
 from app.portfolio.reconcile import (
     minimum_orderable_spot_quantity,
@@ -18,7 +18,7 @@ from app.portfolio.reconcile import (
 )
 from app.portfolio.sizing import exchange_order_minimum_violation
 from app.domain.symbols import canonical_asset, resolve_instrument_symbol
-from app.domain.states import RuntimeStage
+from app.domain.states import Direction, ProductType, RuntimeStage
 from app.monitoring.audit import AuditLogger
 from app.runtime.watchdog import RuntimeWatchdog, WatchdogSnapshot
 from app.trading.cash_budget import spot_cash_required_quote
@@ -49,23 +49,26 @@ def _risk_diagnostic_context(
     gross_after = gross_before - abs(current) + abs(target)
     net_after = net_before - current + target
     daily_pnl = D(str(getattr(portfolio, "daily_pnl_eur", 0)))
-    daily_loss_limit = equity * D(str(config.risk_daily_loss_pct)) / D("100")
-    cash_reserve_min = equity * D(str(config.risk_cash_reserve_pct)) / D("100")
+    daily_loss_limit_pct = min(D(str(config.risk_daily_loss_pct)), D("3"))
+    daily_loss_limit = equity * daily_loss_limit_pct / D("100")
+    cash_reserve_pct = max(D(str(config.risk_cash_reserve_pct)), D("20"))
+    cash_reserve_min = equity * cash_reserve_pct / D("100")
     risk_profile = str(decision.rationale.get("risk_profile", "core")).lower()
-    position_limit_pct = D(str(config.risk_max_position_pct))
+    position_limit_pct = min(D(str(config.risk_max_position_pct)), D("15"))
     if risk_profile == "tactical":
         position_limit_pct = min(
-            D("100"),
+            D("15"),
             max(D("0.1"), D(str(decision.rationale.get("risk_position_limit_pct", "25")))),
         )
     # Tactical sizing limits are subordinate to the immutable global net cap.
-    net_limit_pct = D(str(config.risk_max_net_pct))
+    net_limit_pct = min(D(str(config.risk_max_net_pct)), D("50"))
 
     if equity > 0:
         projected_gross_pct = gross_after / equity * D("100")
         projected_net_pct = abs(net_after) / equity * D("100")
         target_position_pct = abs(target) / equity * D("100")
-        gross_limit_eur = equity * D(str(config.risk_max_gross_pct)) / D("100")
+        gross_limit_pct = min(D(str(config.risk_max_gross_pct)), D("80"))
+        gross_limit_eur = equity * gross_limit_pct / D("100")
         net_limit_eur = equity * net_limit_pct / D("100")
         position_limit_eur = equity * position_limit_pct / D("100")
     else:
@@ -76,15 +79,15 @@ def _risk_diagnostic_context(
         "equity_eur": str(equity),
         "cash_eur": str(getattr(portfolio, "cash_eur", 0)),
         "daily_pnl_eur": str(daily_pnl),
-        "daily_loss_limit_pct": str(config.risk_daily_loss_pct),
+        "daily_loss_limit_pct": str(daily_loss_limit_pct),
         "daily_loss_limit_eur": str(daily_loss_limit),
         "daily_loss_headroom_eur": str(daily_pnl + daily_loss_limit),
         "drawdown_pct": str(getattr(portfolio, "drawdown_pct", 0)),
-        "drawdown_limit_pct": str(config.risk_max_drawdown_pct),
+        "drawdown_limit_pct": str(min(D(str(config.risk_max_drawdown_pct)), D("8"))),
         "gross_before_eur": str(gross_before),
         "projected_gross_eur": str(gross_after),
         "projected_gross_pct": str(projected_gross_pct),
-        "gross_limit_pct": str(config.risk_max_gross_pct),
+        "gross_limit_pct": str(min(D(str(config.risk_max_gross_pct)), D("80"))),
         "gross_limit_eur": str(gross_limit_eur),
         "net_before_eur": str(net_before),
         "projected_net_eur": str(net_after),
@@ -94,12 +97,12 @@ def _risk_diagnostic_context(
         "target_position_pct": str(target_position_pct),
         "position_limit_pct": str(position_limit_pct),
         "position_limit_eur": str(position_limit_eur),
-        "cash_reserve_pct": str(config.risk_cash_reserve_pct),
+        "cash_reserve_pct": str(cash_reserve_pct),
         "cash_reserve_min_eur": str(cash_reserve_min),
         "open_positions_count": len(getattr(portfolio, "positions", {}) or {}),
-        "open_positions_limit": int(config.risk_max_open_positions),
+        "open_positions_limit": min(int(config.risk_max_open_positions), 3),
         "margin_used_eur": str(getattr(portfolio, "margin_used_eur", 0)),
-        "margin_limit_pct": str(config.risk_max_margin_pct),
+        "margin_limit_pct": str(min(D(str(config.risk_max_margin_pct)), D("35"))),
         "effective_leverage": str(getattr(risk, "effective_leverage", decision.leverage)),
         "confidence": str(decision.signal.confidence),
         "expected_return_bps": str(decision.signal.expected_return_bps),
@@ -237,11 +240,34 @@ class TradingRuntime:
                 active_position_limit_pct=str(config.tactical_position_limit_pct),
             )
         self._startup_instrument_operation = "IDLE"
+        self._latest_portfolio: Any | None = None
+        self._latest_portfolio_updated_at = 0.0
+        self._portfolio_snapshot_lock = threading.RLock()
+        self._protection_watch_stop = threading.Event()
+        self._protection_watch_thread: threading.Thread | None = None
+        self._protection_watch_last_error_at = 0.0
+        self._protection_watch_last_pending_log: dict[str, float] = {}
+        self._protection_watch_retry_after: dict[str, float] = {}
 
     def startup(self) -> bool:
         self.state.set(RuntimeStage.CONFIG_LOADED)
         self._watchdog_arm("", "STARTUP_CONFIG")
         self.audit.emit("STARTUP_CONFIG_LOADED","INFO",config_hash=self.config_hash)
+        self.audit.emit(
+            "RISK_ENVELOPE_ACTIVE", "INFO",
+            immutable=True,
+            configured_risk_envelope_clamped=bool(getattr(self.config, "risk_envelope_clamped", False)),
+            corrections=str(getattr(self.config, "risk_envelope_corrections", "")),
+            position_limit_pct=str(min(D(str(self.config.risk_max_position_pct)), D("15"))),
+            gross_limit_pct=str(min(D(str(self.config.risk_max_gross_pct)), D("80"))),
+            net_limit_pct=str(min(D(str(self.config.risk_max_net_pct)), D("50"))),
+            margin_limit_pct=str(min(D(str(self.config.risk_max_margin_pct)), D("35"))),
+            max_leverage=str(min(D(str(self.config.risk_max_leverage)), D("3"))),
+            open_positions_limit=min(int(self.config.risk_max_open_positions), 3),
+            daily_loss_limit_pct=str(min(D(str(self.config.risk_daily_loss_pct)), D("3"))),
+            drawdown_limit_pct=str(min(D(str(self.config.risk_max_drawdown_pct)), D("8"))),
+            minimum_cash_reserve_pct=str(max(D(str(self.config.risk_cash_reserve_pct)), D("20"))),
+        )
         self._publish_runtime_status()
         try:
             self._recover_stale_cycles()
@@ -417,6 +443,7 @@ class TradingRuntime:
                     error=f"{type(exc).__name__}:{str(exc)[:500]}",
                 )
             portfolio=self.portfolio.reconcile()
+            self._cache_protection_portfolio(portfolio)
             self.db.save_portfolio("startup",portfolio)
             reconcile_pending=getattr(self.authority,"reconcile_pending",None)
             if callable(reconcile_pending):
@@ -483,6 +510,7 @@ class TradingRuntime:
                     error_type=type(exc).__name__,
                     error=str(exc)[:500],
                 )
+        self._start_core_protection_watchdog()
         self._publish_runtime_status()
         return True
 
@@ -540,6 +568,7 @@ class TradingRuntime:
             self.portfolio.set_market_context(self.instruments,spot_payload,future_payload)
             self.fx.set_instruments(self.instruments)
             portfolio=self.portfolio.reconcile()
+            self._cache_protection_portfolio(portfolio)
             self.profit_protection.observe(portfolio, cycle_id)
             self.audit.emit(
                 "CYCLE_PORTFOLIO_RECONCILED",
@@ -1788,6 +1817,7 @@ class TradingRuntime:
                         # also refreshes BalanceEx holds before any new cash order.
                         self.portfolio.set_market_context(self.instruments,latest_spot_payload,latest_future_payload)
                         portfolio = self.portfolio.reconcile()
+                        self._cache_protection_portfolio(portfolio)
                         available_quote = available_spot_balance(instrument.quote)
                         if available_quote + D("0.00000001") < cash_budget_quote:
                             reason="FX_FUNDING_INSUFFICIENT_AFTER_FILL"
@@ -1917,6 +1947,7 @@ class TradingRuntime:
             self._watchdog_arm(cycle_id, stage)
             self.portfolio.set_market_context(self.instruments,latest_spot_payload,latest_future_payload)
             final_portfolio=self.portfolio.reconcile()
+            self._cache_protection_portfolio(final_portfolio)
             self.profit_protection.observe(final_portfolio, cycle_id)
             self.db.save_portfolio(cycle_id,final_portfolio)
             if self.tactical is not None:
@@ -2065,6 +2096,287 @@ class TradingRuntime:
                 ),
                 reason="PROCESS_RESTART_OR_WATCHDOG",
             )
+
+    def _cache_protection_portfolio(self, portfolio: Any) -> None:
+        """Publish the most recent reconciled snapshot to the independent stop watcher."""
+        with self._portfolio_snapshot_lock:
+            self._latest_portfolio = portfolio
+            self._latest_portfolio_updated_at = time.time()
+
+    @staticmethod
+    def _ticker_decimal(tickers: dict[str, Any], instrument: Any, field: str) -> D:
+        """Read a current Kraken Ticker field using instrument aliases safely."""
+        keys = (
+            str(getattr(instrument, "instrument_id", "")),
+            str(getattr(instrument, "altname", "")),
+            str(getattr(instrument, "symbol", "")),
+            str(getattr(instrument, "symbol", "")).replace("/", ""),
+        )
+        raw: Any = None
+        for key in keys:
+            if key and key in tickers and isinstance(tickers[key], dict):
+                raw = tickers[key]
+                break
+        if raw is None:
+            wanted = str(getattr(instrument, "symbol", "")).replace("/", "").upper()
+            for key, candidate in tickers.items():
+                if str(key).replace("/", "").upper() == wanted and isinstance(candidate, dict):
+                    raw = candidate
+                    break
+        if not isinstance(raw, dict):
+            return D("0")
+        value = raw.get(field)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        try:
+            parsed = D(str(value))
+            return parsed if parsed.is_finite() and parsed > 0 else D("0")
+        except (ArithmeticError, TypeError, ValueError):
+            return D("0")
+
+    def _start_core_protection_watchdog(self) -> None:
+        if self._protection_watch_thread is not None and self._protection_watch_thread.is_alive():
+            return
+        if not callable(getattr(self.gateway, "spot_public", None)):
+            self.audit.emit(
+                "CORE_FAST_PROTECTION_WATCHDOG_UNAVAILABLE", "WARNING",
+                reason="SPOT_PUBLIC_TICKER_ENDPOINT_UNAVAILABLE",
+            )
+            return
+        self._protection_watch_stop.clear()
+        self._protection_watch_thread = threading.Thread(
+            target=self._core_protection_watchdog_loop,
+            name="kraken-core-spot-protection",
+            daemon=True,
+        )
+        self._protection_watch_thread.start()
+        self.audit.emit(
+            "CORE_FAST_PROTECTION_WATCHDOG_STARTED", "INFO",
+            poll_interval_seconds=self._core_protection_poll_interval(),
+            stop_loss_pct=str(getattr(self.config, "strategy_stop_loss_pct", 2.0)),
+            source="FRESH_SPOT_TICKER_PLUS_LAST_VERIFIED_FIFO_INVENTORY",
+        )
+
+    def _core_protection_poll_interval(self) -> float:
+        try:
+            requested = float(getattr(self.config, "tactical_poll_seconds", 10))
+        except (TypeError, ValueError):
+            requested = 10.0
+        return max(5.0, min(15.0, requested))
+
+    def _core_protection_watchdog_loop(self) -> None:
+        interval = self._core_protection_poll_interval()
+        while not self._protection_watch_stop.is_set():
+            try:
+                self._core_protection_watchdog_tick()
+            except Exception as exc:
+                now = time.time()
+                if now - self._protection_watch_last_error_at >= 60:
+                    self._protection_watch_last_error_at = now
+                    self.audit.emit(
+                        "CORE_FAST_PROTECTION_WATCHDOG_FAILED", "WARNING",
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:500],
+                        action="FAIL_CLOSED_NO_ORDER",
+                    )
+            if self._protection_watch_stop.wait(interval):
+                break
+
+    def _core_protection_watchdog_tick(self) -> None:
+        # This fast path manages only fully reconciled app-owned cash-Spot lots.
+        # Margin/Futures continue through their venue-specific position managers.
+        with self._portfolio_snapshot_lock:
+            portfolio = self._latest_portfolio
+            portfolio_age = time.time() - self._latest_portfolio_updated_at
+        if portfolio is None or portfolio_age > max(
+            900.0, float(getattr(self.config, "market_scan_interval_seconds", 300)) * 3.0
+        ):
+            return
+        if not (
+            bool(getattr(portfolio, "spot_wallet_read_ok", False))
+            and bool(getattr(portfolio, "spot_open_positions_read_ok", False))
+        ):
+            return
+        managed_symbols = set(getattr(portfolio, "spot_cash_position_symbols", ()) or ())
+        if not managed_symbols:
+            return
+        instruments = {
+            instrument.symbol: instrument
+            for instrument in self.instruments
+            if instrument.venue == "spot" and instrument.product_type == ProductType.SPOT
+        }
+        active = [
+            (symbol, instruments[symbol])
+            for symbol in sorted(managed_symbols)
+            if symbol in instruments
+            and D(str(portfolio.position_quantity.get(symbol, 0) or 0)) > 0
+            and D(str(portfolio.position_basis_eur.get(symbol, 0) or 0)) > 0
+            and D(str(portfolio.positions.get(symbol, 0) or 0)) > 0
+        ]
+        if not active:
+            return
+        # Kraken's public Ticker returns all spot pairs in one public request.
+        # Do not reconcile private balances every 10 seconds; we use only the
+        # last verified FIFO quantity/basis and fresh executable bid prices.
+        tickers = self.gateway.spot_public("Ticker")
+        now = time.time()
+        for symbol, instrument in active:
+            retry_at = self._protection_watch_retry_after.get(symbol, 0.0)
+            if now < retry_at:
+                continue
+            pending = self.db.query(
+                "SELECT client_order_id,state,reduce_only FROM orders WHERE symbol=? "
+                "AND state IN ('SUBMITTING','ACKNOWLEDGED','LIVE','PARTIALLY_FILLED','UNKNOWN_RECONCILING')",
+                (symbol,),
+            )
+            if pending:
+                previous_log = self._protection_watch_last_pending_log.get(symbol, 0.0)
+                if now - previous_log >= 60.0:
+                    self._protection_watch_last_pending_log[symbol] = now
+                    self.audit.emit(
+                        "CORE_FAST_PROTECTION_SKIPPED_PENDING_ORDER", "WARNING",
+                        symbol=symbol,
+                        open_orders=[{
+                            "client_order_id": str(row.get("client_order_id") or ""),
+                            "state": str(row.get("state") or ""),
+                            "reduce_only": bool(row.get("reduce_only")),
+                        } for row in pending],
+                    )
+                continue
+            bid = self._ticker_decimal(tickers, instrument, "b")
+            ask = self._ticker_decimal(tickers, instrument, "a")
+            # A Spot long must be valued at the executable sell-side bid, not last trade.
+            if bid <= 0 or ask <= 0 or ask < bid:
+                continue
+            quote_rate = self.portfolio.quote_to_eur_rate(instrument.quote)
+            if quote_rate is None or D(str(quote_rate)) <= 0:
+                self.audit.emit(
+                    "CORE_FAST_PROTECTION_PRICE_UNAVAILABLE", "WARNING",
+                    symbol=symbol, reason="QUOTE_TO_EUR_RATE_UNAVAILABLE",
+                )
+                continue
+            rate = D(str(quote_rate))
+            quantity = D(str(portfolio.position_quantity.get(symbol, 0)))
+            basis = D(str(portfolio.position_basis_eur.get(symbol, 0)))
+            live_value = quantity * bid * rate
+            if live_value <= 0 or basis <= 0:
+                continue
+            current_value = D(str(portfolio.positions.get(symbol, 0)))
+            pnl_eur = live_value - basis
+            pnl_pct = pnl_eur / basis * D("100")
+            live_positions = dict(portfolio.positions)
+            live_positions[symbol] = live_value
+            live_pnl_eur = dict(portfolio.position_pnl_eur)
+            live_pnl_eur[symbol] = pnl_eur
+            live_pnl_pct = dict(portfolio.position_pnl_pct)
+            live_pnl_pct[symbol] = pnl_pct
+            live_equity = D(str(portfolio.equity_eur)) + (live_value - current_value)
+            live_gross = D(str(portfolio.gross_eur)) - abs(current_value) + abs(live_value)
+            live_net = D(str(portfolio.net_eur)) - current_value + live_value
+            watch_portfolio = __import__("dataclasses").replace(
+                portfolio,
+                equity_eur=live_equity,
+                gross_eur=live_gross,
+                net_eur=live_net,
+                positions=live_positions,
+                position_pnl_eur=live_pnl_eur,
+                position_pnl_pct=live_pnl_pct,
+                source_timestamp=now,
+            )
+            self.profit_protection.observe_live_price_mark(symbol, pnl_pct)
+            market = MarketSnapshot(
+                symbol=symbol, price=bid, bid=bid, ask=ask,
+                volume_24h=D("0"), timestamp=now, quote_asset=instrument.quote,
+            )
+            long_signal = Signal(
+                symbol, Direction.LONG, D("0"), D("0"), D("0"),
+                "PROTECTION_WATCH", D("0"), D("0"), {"volatility": D("0")},
+            )
+            short_signal = Signal(
+                symbol, Direction.SHORT, D("0"), D("0"), D("0"),
+                "PROTECTION_WATCH", D("0"), D("0"), {"volatility": D("0")},
+            )
+            decision = self.profit_protection.apply(
+                cycle_id=f"protection_watch_{int(now)}",
+                instrument=instrument,
+                portfolio=watch_portfolio,
+                decision=None,
+                long_signal=long_signal,
+                short_signal=short_signal,
+                model_version="core-fast-protection",
+                config_hash=self.config_hash,
+                min_cost_eur=D(str(instrument.min_cost or "0")),
+            )
+            if decision is None:
+                continue
+            risk_result = self.risk.evaluate(decision, watch_portfolio, market, None)
+            if not risk_result.allowed:
+                self.audit.emit(
+                    "CORE_FAST_PROTECTION_BLOCKED", "ERROR",
+                    symbol=symbol, reason=risk_result.reason,
+                    checks=risk_result.checks,
+                    action=str(decision.rationale.get("position_management_action") or ""),
+                )
+                self._protection_watch_retry_after[symbol] = now + 15.0
+                continue
+            # Preserve FIFO quantity identity when creating the market reduction.
+            fraction = abs(
+                D(str(decision.current_position_eur)) - D(str(decision.target_position_eur))
+            ) / abs(D(str(decision.current_position_eur)))
+            requested_quantity = quantity * fraction
+            available = getattr(self.portfolio, "available_cash_balances", {}).get(
+                __import__("app.domain.symbols", fromlist=["canonical_asset"]).canonical_asset(instrument.base)
+            )
+            if bool(getattr(self.portfolio, "available_balance_read_ok", False)) and available is not None:
+                requested_quantity = min(requested_quantity, D(str(available)))
+            if requested_quantity <= 0:
+                self.audit.emit(
+                    "CORE_FAST_PROTECTION_QUANTITY_UNAVAILABLE", "WARNING",
+                    symbol=symbol, managed_quantity=str(quantity),
+                    available_quantity=str(available or 0),
+                )
+                self._protection_watch_retry_after[symbol] = now + 30.0
+                continue
+            try:
+                self.db.save_decision(decision)
+                leverage = D("1")
+                intent = self.intents.build(
+                    decision, leverage, "market", requested_quantity, None,
+                    reduce_only=True, post_only=False,
+                )
+                result = self.authority.submit(intent, market)
+                self.learning.record_order_outcome(intent.client_order_id, result)
+                self.audit.emit(
+                    "CORE_FAST_PROTECTION_ORDER_RESULT", "WARNING",
+                    symbol=symbol,
+                    action=str(decision.rationale.get("position_management_action") or ""),
+                    current_profit_pct=str(pnl_pct),
+                    stop_loss_pct=str(getattr(self.config, "strategy_stop_loss_pct", 2.0)),
+                    requested_quantity=str(intent.quantity),
+                    order_state=str(result.get("state") or ""),
+                    reason=str(result.get("reason") or ""),
+                    client_order_id=intent.client_order_id,
+                )
+                if result.get("state") in {
+                    "ACKNOWLEDGED", "LIVE", "PARTIALLY_FILLED", "FILLED", "UNKNOWN_RECONCILING"
+                }:
+                    self._protection_watch_retry_after[symbol] = now + 60.0
+                    if decision.rationale.get("position_management_action") == "PARTIAL_TAKE_PROFIT":
+                        self.profit_protection.record_pending(
+                            symbol, intent.client_order_id, D(str(decision.current_position_eur))
+                        )
+                else:
+                    self._protection_watch_retry_after[symbol] = now + 15.0
+            except Exception as exc:
+                self._protection_watch_retry_after[symbol] = now + 15.0
+                self.audit.emit(
+                    "CORE_FAST_PROTECTION_SUBMISSION_FAILED", "ERROR",
+                    symbol=symbol,
+                    action=str(decision.rationale.get("position_management_action") or ""),
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:500],
+                    action_taken="FAIL_CLOSED_AND_RETRY_AFTER_COOLDOWN",
+                )
 
     def _publish_runtime_status(self) -> None:
         try:
