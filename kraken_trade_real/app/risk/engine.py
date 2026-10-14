@@ -100,8 +100,12 @@ class RiskEngine:
         position_limit_pct = min(D(str(self.config.risk_max_position_pct)), self.IMMUTABLE_MAX_POSITION_PCT)
         volatility_limit = D("30")
         if risk_profile == "tactical":
-            requested_position_limit = D(str(d.rationale.get("risk_position_limit_pct", "25")))
-            # Tactical has its own absolute capital cap and tighter trade-count gates;\n            # retain its configured percentage sizing while global gross/net caps remain immutable.\n            position_limit_pct = min(D("100"), max(D("0.1"), requested_position_limit))
+            # Tactical has its own absolute capital cap and tighter trade-count gates;
+            # retain its configured percentage sizing while global gross/net caps remain immutable.
+            position_limit_pct = min(
+                D("100"),
+                max(D("0.1"), D(str(d.rationale.get("risk_position_limit_pct", "25")))),
+            )
             volatility_limit = min(
                 D("60"),
                 max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
