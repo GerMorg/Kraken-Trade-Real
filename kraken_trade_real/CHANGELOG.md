@@ -8,6 +8,7 @@
 - Added richer return/drawdown/risk metrics and an offline execution simulator that models bid/ask, taker fees, slippage/impact, order-book depth caps, partial fills, minima, and financing. The simulator never places live orders or promotes strategies.
 - Added regression tests for stale/missing quotes, calibration inputs, chronology invariants and backtest cost/execution behavior.
 - Connected the offline simulator to persisted historical `market_snapshots` using a past-only signal callback and next-quote execution; added a follow-up implementation matrix separating tested code changes from still-unverified release gates.
+- Added same-window cash, buy-and-hold, momentum and trend baselines. The current simulator uses a conservative 80 bps taker-fee default and explicitly refuses short/margin signals until a product-aware collateral/liquidation model exists.
 
 ### Important limits
 - A simulator and walk-forward split do not prove that the assumed fill model matches Kraken or that a strategy is profitable.
