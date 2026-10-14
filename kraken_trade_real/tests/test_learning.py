@@ -246,3 +246,33 @@ def test_research_metrics_include_sortino_expectancy_win_rate_and_tail_loss():
     assert metrics["sortino"] < 0
     assert metrics["tail_loss_5pct"] == -0.03
     assert metrics["max_drawdown"] < 0
+
+
+def test_calibration_persists_log_loss_metric(db):
+    from app.learning import LearningEngine, CalibrationEngine, ModelRegistry, ResearchEngine
+
+    engine = LearningEngine(
+        db, CalibrationEngine(), ModelRegistry(db), ResearchEngine(db),
+        enabled=True, auto_promotion_enabled=False,
+    )
+    metrics = engine.calibrate([(0.8, True), (0.2, False)], "calibration-test")
+    row = db.one(
+        "SELECT sample_count,brier_score,ece,log_loss,bins_json FROM calibrations "
+        "WHERE model_version=? ORDER BY id DESC LIMIT 1",
+        ("calibration-test",),
+    )
+    assert row is not None
+    assert row["sample_count"] == 2
+    assert abs(row["log_loss"] - metrics["log_loss"]) < 1e-12
+
+
+def test_calibration_log_loss_column_migration_is_idempotent(db):
+    columns = {
+        row["name"] for row in db.query("PRAGMA table_info(calibrations)")
+    }
+    assert "log_loss" in columns
+    db._init_schema()
+    columns_after = {
+        row["name"] for row in db.query("PRAGMA table_info(calibrations)")
+    }
+    assert "log_loss" in columns_after
