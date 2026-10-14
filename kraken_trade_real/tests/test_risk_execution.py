@@ -100,7 +100,7 @@ def test_risk_engine_accepts_adaptive_core_edge_when_economics_clear(config, ins
 
     signal = Signal(
         instrument.symbol, Direction.LONG,
-        Decimal("150"), Decimal("130"), Decimal("0.85"),
+        Decimal("250"), Decimal("130"), Decimal("0.85"),
         "TREND_UP", Decimal("0"), Decimal("0"),
         {"volatility": Decimal("5")},
     )
@@ -211,7 +211,7 @@ def test_risk_engine_normalizes_float_leverage_from_legacy_decision(config, inst
     signal = Signal(
         instrument.symbol,
         Direction.LONG,
-        Decimal("100"),
+        Decimal("150"),
         Decimal("10"),
         Decimal("0.9"),
         "TEST",
