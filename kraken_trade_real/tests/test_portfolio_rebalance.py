@@ -351,6 +351,65 @@ def test_portfolio_reconciliation_keeps_cash_spot_positions_on_their_opening_pai
     assert "XBT/EUR" in portfolio.position_pnl_pct
 
 
+def test_zero_wallet_balance_with_stale_cash_spot_fifo_lot_blocks_reentry(db, fake_gateway, config):
+    from app.domain.symbols import canonical_asset
+
+    _add_open_cash_lot(
+        db, symbol="XBT/USD", lot_id="stale-zero-wallet-lot",
+        quantity="0.01", quote_asset="ZUSD", entry_price="59000",
+    )
+    fake_gateway.spot_balance = lambda: {"ZEUR": "500"}
+    fake_gateway.spot_private = lambda method, params=None: (
+        {"ZEUR": "500"}
+        if method == "Balance"
+        else {"eb": "500", "e": "500", "n": "0", "m": "0", "mf": "500", "ml": "9999"}
+        if method == "TradeBalance"
+        else {}
+    )
+    fake_gateway.spot_ledgers = lambda params: {"count": 0, "ledger": {}}
+
+    reconciler = PortfolioReconciler(fake_gateway, db)
+    reconciler.set_market_context(
+        [usd_instrument(), usd_eur_instrument()],
+        {
+            "XXBTZUSD": {"b": ["60000"], "a": ["60010"], "c": ["60005"]},
+            "ZUSDZEUR": {"b": ["0.899"], "a": ["0.901"], "c": ["0.9"]},
+        },
+    )
+    portfolio = reconciler.reconcile()
+
+    base = canonical_asset("XXBT")
+    assert base in portfolio.unreconciled_spot_inventory_bases
+    mismatch = db.one(
+        "SELECT payload_json FROM events WHERE code='PORTFOLIO_CASH_SPOT_LEDGER_MISMATCH' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    assert mismatch is not None
+    assert "LEDGER_INVENTORY_WITHOUT_WALLET_BALANCE" in mismatch["payload_json"]
+
+    # Zero wallet balance means no position key exists. The stale ledger alone
+    # must nevertheless prevent a new buy under the same or a different quote pair.
+    assert "XBT/USD" not in portfolio.positions
+    alternate = usd_instrument()
+    features = {"volatility": Decimal("2")}
+    long_signal = Signal(
+        alternate.symbol, Direction.LONG, Decimal("200"), Decimal("50"),
+        Decimal("0.9"), "TREND_UP", Decimal("0"), Decimal("0"), features,
+    )
+    short_signal = Signal(
+        alternate.symbol, Direction.SHORT, Decimal("0"), Decimal("100"),
+        Decimal("0.1"), "TREND_DOWN", Decimal("0"), Decimal("0"), features,
+    )
+    engine = DecisionEngine(config)
+    assert engine.choose(
+        alternate, long_signal, short_signal, portfolio, "model", "config", {},
+        Decimal("0.5"),
+    ) is None
+    assert engine.rejection_reason(
+        alternate, long_signal, short_signal, portfolio, {}, Decimal("0.5")
+    ) == "UNMANAGED_SPOT_POSITION_KEEP"
+
+
 def test_unmatched_cash_spot_wallet_inventory_is_not_signal_sold(config):
     from app.domain.models import Instrument, PortfolioState, Signal
     from app.domain.states import Direction, ProductType
