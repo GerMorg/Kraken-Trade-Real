@@ -2325,7 +2325,7 @@ class TradingRuntime:
             ) / abs(D(str(decision.current_position_eur)))
             requested_quantity = quantity * fraction
             available = getattr(self.portfolio, "available_cash_balances", {}).get(
-                __import__("app.domain.symbols", fromlist=["canonical_asset"]).canonical_asset(instrument.base)
+                canonical_asset(instrument.base)
             )
             if bool(getattr(self.portfolio, "available_balance_read_ok", False)) and available is not None:
                 requested_quantity = min(requested_quantity, D(str(available)))
