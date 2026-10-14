@@ -8,6 +8,7 @@ import hashlib
 import re
 import time
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from defusedxml import ElementTree as ET
@@ -131,7 +132,14 @@ class NewsEngine:
             )
         executor.shutdown(wait=False, cancel_futures=True)
 
-        result = sorted(out, key=lambda x: x.published_at, reverse=True)
+        ordered = sorted(out, key=lambda x: x.published_at, reverse=True)
+        result, duplicates_removed = self._deduplicate_items(ordered)
+        if duplicates_removed:
+            self.db.event(
+                "NEWS_DUPLICATES_REMOVED",
+                "INFO",
+                {"received": len(out), "kept": len(result), "duplicates_removed": duplicates_removed},
+            )
         if result:
             for item in result:
                 self.db.save_news(item)
@@ -156,6 +164,68 @@ class NewsEngine:
             },
         )
         return result
+
+    @staticmethod
+    def _canonical_url(value: str) -> str:
+        try:
+            parts = urlsplit(str(value).strip())
+            if not parts.scheme or not parts.netloc:
+                return ""
+            tracking_prefixes = ("utm_",)
+            tracking_names = {
+                "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"
+            }
+            query = [
+                (key, val)
+                for key, val in parse_qsl(parts.query, keep_blank_values=True)
+                if not key.lower().startswith(tracking_prefixes)
+                and key.lower() not in tracking_names
+            ]
+            return urlunsplit((
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip("/"),
+                urlencode(sorted(query)),
+                "",
+            ))
+        except (TypeError, ValueError):
+            return ""
+
+    @classmethod
+    def _deduplicate_items(
+        cls, items: list[NewsItem]
+    ) -> tuple[list[NewsItem], int]:
+        """Remove cross-feed exact duplicates before sentiment is aggregated.
+
+        URL tracking parameters are ignored. The normalized exact title is a
+        secondary duplicate key only within 24 hours. Input order is newest
+        first, so the newest copy wins and retains its source metadata.
+        """
+        kept: list[NewsItem] = []
+        seen_urls: set[str] = set()
+        seen_titles: dict[str, list[float]] = {}
+        duplicates = 0
+        for item in sorted(items, key=lambda row: row.published_at, reverse=True):
+            title_key = re.sub(r"[^a-z0-9]+", " ", str(item.title).lower()).strip()
+            url_key = cls._canonical_url(str(item.url or ""))
+            published = float(item.published_at)
+            same_url = bool(url_key and url_key in seen_urls)
+            same_title_recent = bool(
+                title_key
+                and any(
+                    abs(published - previous) <= 24 * 3600
+                    for previous in seen_titles.get(title_key, [])
+                )
+            )
+            if same_url or same_title_recent:
+                duplicates += 1
+                continue
+            kept.append(item)
+            if url_key:
+                seen_urls.add(url_key)
+            if title_key:
+                seen_titles.setdefault(title_key, []).append(published)
+        return kept, duplicates
 
     def _fetch(self, source: str, url: str, limit: int) -> list[RawNews]:
         with urlopen(
