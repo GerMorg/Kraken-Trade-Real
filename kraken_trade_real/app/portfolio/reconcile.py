@@ -1134,7 +1134,11 @@ class PortfolioReconciler:
             for base_key, ledger_quantity in cash_ledger_quantity_by_base.items():
                 wallet_quantity = wallet_quantity_by_base.get(base_key, D("0"))
                 tolerance = max(D("0.00000001"), max(wallet_quantity, ledger_quantity) * D("0.000001"))
-                if ledger_quantity <= tolerance or abs(wallet_quantity - ledger_quantity) <= tolerance:
+                if (
+                    ledger_quantity <= tolerance
+                    or abs(wallet_quantity - ledger_quantity) <= tolerance
+                    or base_key in unreconciled_spot_inventory_bases
+                ):
                     continue
                 unreconciled_spot_inventory_bases.add(base_key)
                 self.db.event(
