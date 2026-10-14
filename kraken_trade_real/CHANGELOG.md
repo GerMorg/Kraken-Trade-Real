@@ -1,3 +1,13 @@
+## 0.1.92 — 2026-10-14
+
+### Cash-Spot cross-quote order reservation guard
+- Block a new cash-Spot order when another unresolved cash-Spot order for the same canonical base asset exists under a different quote pair. This prevents locally known concurrent intents from independently consuming the same fungible wallet inventory.
+- The guard is intentionally conservative and does not conflate Spot Margin or Futures positions with cash-Spot inventory.
+- Add a regression test for an open XBT/USD order blocking a second XBT/EUR order.
+
+### Validation scope
+- This reduces a known cross-pair race class but is not a distributed atomic reservation across multiple app processes/hosts and does not replace exchange-side balance holds or post-restart reconciliation. See the audit report for remaining blockers.
+
 ## 0.1.91 — 2026-10-14
 
 ### Audit follow-up: fail-safe signal and outcome evaluation
