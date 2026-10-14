@@ -188,8 +188,8 @@ def test_verified_trade_metrics_excludes_prediction_labels_and_estimates(db):
         {"net_verified": True, "net_return_fraction": float("nan")},
     ])
     assert result["status"] == "OK"
-    assert result["verified_samples"] == 2
-    assert result["excluded_unverified_samples"] == 2
+    assert result["verified_samples"] == 1
+    assert result["excluded_unverified_samples"] == 3
     assert result["promotion_eligible"] is False
     assert result["limitation"] == "REALIZED_OUTCOME_SCORER_NOT_EXECUTION_BACKTEST"
 
