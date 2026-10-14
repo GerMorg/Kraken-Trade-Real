@@ -65,7 +65,7 @@ def make_snapshot():
     )
 
 
-def test_tactical_position_limit_can_use_25_percent_without_changing_core_limit():
+def test_tactical_position_limit_respects_immutable_15_percent_cap():
     cfg = make_config()
     engine = RiskEngine(
         cfg,
@@ -89,14 +89,14 @@ def test_tactical_position_limit_can_use_25_percent_without_changing_core_limit(
         "decision",
         instrument,
         signal,
-        D("12.5"),
+        D("7.5"),
         D("1"),
         {"risk_profile": "tactical", "risk_position_limit_pct": D("25"), "risk_volatility_max": D("55")},
         "tactical-volatility-v1",
         "tactical-v1",
         "",
         D("0"),
-        D("12.5"),
+        D("7.5"),
         Direction.LONG,
         False,
     )
@@ -141,7 +141,7 @@ def test_tactical_short_uses_absolute_margin_exposure():
         "decision-short-margin",
         instrument,
         signal,
-        D("-12.5"),
+        D("-7.5"),
         D("2"),
         {
             "risk_profile": "tactical",
@@ -153,7 +153,7 @@ def test_tactical_short_uses_absolute_margin_exposure():
         "tactical-v1",
         "",
         D("0"),
-        D("-12.5"),
+        D("-7.5"),
         Direction.SHORT,
         False,
     )
@@ -166,13 +166,13 @@ def test_tactical_short_uses_absolute_margin_exposure():
     )
     blocked = engine.evaluate(
         decision, portfolio, make_snapshot(),
-        {"free_margin": "5", "margin_level_pct": "500"},
+        {"free_margin": "2", "margin_level_pct": "500"},
     )
     assert blocked.allowed is False
     assert blocked.reason == "margin_free"
     allowed = engine.evaluate(
         decision, portfolio, make_snapshot(),
-        {"free_margin": "7", "margin_level_pct": "500"},
+        {"free_margin": "5", "margin_level_pct": "500"},
     )
     assert allowed.allowed is True
     assert allowed.checks["minimum_cost"] is True
@@ -202,7 +202,7 @@ def test_tactical_volatility_guard_still_blocks_extreme_market():
         "decision",
         make_instrument(),
         signal,
-        D("10"),
+        D("7.5"),
         D("1"),
         {"risk_profile": "tactical", "risk_position_limit_pct": D("25"), "risk_volatility_max": D("55")},
         "tactical-volatility-v1",
