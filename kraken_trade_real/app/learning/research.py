@@ -13,6 +13,8 @@ class ResearchEngine:
 
     @staticmethod
     def metrics(returns: list[float]) -> dict[str, float]:
+        if any(not math.isfinite(float(value)) or float(value) <= -1.0 for value in returns):
+            raise ValueError("returns must be finite fractional returns greater than -100%")
         if not returns:
             return {"samples": 0.0, "return": 0.0, "drawdown": 0.0, "sharpe": 0.0}
         equity = 1.0
@@ -26,6 +28,52 @@ class ResearchEngine:
         var = sum((value - mean) ** 2 for value in returns) / max(1, len(returns) - 1)
         sharpe = mean / math.sqrt(var) * math.sqrt(252) if var > 0 else 0.0
         return {"samples": float(len(returns)), "return": equity - 1, "drawdown": max_dd, "sharpe": sharpe}
+
+
+    @classmethod
+    def verified_trade_metrics(cls, trades: list[dict[str, Any]]) -> dict[str, Any]:
+        """Score only independently verified net trade outcomes.
+
+        Each included record must contain net_return_fraction after actual
+        fees/FX/funding and net_verified=True. Price-only prediction labels,
+        estimated fees, and unknown financing are intentionally excluded.
+        This is an outcome scorer, not a market-data execution backtest.
+        """
+        verified: list[float] = []
+        excluded = 0
+        for trade in trades:
+            if trade.get("net_verified") is not True:
+                excluded += 1
+                continue
+            # Explicitly estimated/incomplete cost ledgers override a mistaken
+            # caller-supplied boolean; verification must cover all cost legs.
+            incomplete_cost = any(
+                str(trade.get(key, "")).upper() in {
+                    "ESTIMATED", "UNKNOWN", "UNVERIFIED", "QUOTE_ESTIMATE_ONLY",
+                    "MISSING", "INCOMPLETE",
+                }
+                for key in ("fee_status", "fx_status", "funding_status")
+            )
+            if incomplete_cost:
+                excluded += 1
+                continue
+            try:
+                value = float(trade["net_return_fraction"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                excluded += 1
+                continue
+            if not math.isfinite(value) or value <= -1.0:
+                excluded += 1
+                continue
+            verified.append(value)
+        return {
+            "status": "OK" if verified else "NO_VERIFIED_NET_OUTCOMES",
+            "verified_samples": len(verified),
+            "excluded_unverified_samples": excluded,
+            "metrics": cls.metrics(verified) if verified else cls.metrics([]),
+            "promotion_eligible": False,
+            "limitation": "REALIZED_OUTCOME_SCORER_NOT_EXECUTION_BACKTEST",
+        }
 
     def walk_forward(
         self,
@@ -58,6 +106,8 @@ class ResearchEngine:
                 stable += 1
         return {
             "status": "OK",
+            "evaluation_only": True,
+            "limitation": "SCORER_EVALUATES_TEST_ROWS_ONLY; NOT_A_FITTED_WALK_FORWARD_BACKTEST",
             "windows": results,
             "stable_windows": stable,
             "stability": stable / len(results),

@@ -1,3 +1,14 @@
+## 0.1.91 — 2026-10-14
+
+### Audit follow-up: fail-safe signal and outcome evaluation
+- Disable unvalidated News/Gemini effects in the live Core signal path. Requested values remain diagnostic features; they do not change expected return, confidence, or the signal's applied external-effect fields. The application-owned gate cannot be overridden by a saved configuration value.
+- Add a strict realized-outcome scorer that excludes unverified labels and explicitly estimated, unknown, incomplete, or quote-estimate-only fee/FX/funding ledgers. The scorer explicitly cannot authorize model promotion and is not represented as a full execution backtest.
+- Reject non-finite fractional returns and returns at or below -100% in research metrics.
+- Clarify that the existing generic window scorer is evaluation-only and is not a fitted walk-forward trading backtest.
+
+### Validation scope
+- This is a staged safety improvement, not completion of the full audit. Exchange-side protection, full order-race and restart invariants, fee/FX/funding reconstruction, realistic execution simulation, independent out-of-sample validation, and shadow-forward testing remain release blockers for unattended leveraged trading.
+
 ## 0.1.90 — 2026-10-14
 
 ### Safety hotfix
