@@ -157,11 +157,15 @@ class RiskEngine:
                 )
             ),
             "daily_loss": valid_reduction or p.daily_pnl_eur >= -(
-                eq * D(str(self.config.risk_daily_loss_pct)) / 100
+                eq * min(D(str(self.config.risk_daily_loss_pct)), self.IMMUTABLE_MAX_DAILY_LOSS_PCT) / 100
             ),
-            "drawdown": valid_reduction or p.drawdown_pct <= D(str(self.config.risk_max_drawdown_pct)),
+            "drawdown": valid_reduction or p.drawdown_pct <= min(
+                D(str(self.config.risk_max_drawdown_pct)), self.IMMUTABLE_MAX_DRAWDOWN_PCT
+            ),
             "position_limit": valid_reduction or pos_pct <= position_limit_pct,
-            "gross_limit": valid_reduction or gross_pct <= D(str(self.config.risk_max_gross_pct)),
+            "gross_limit": valid_reduction or gross_pct <= min(
+                D(str(self.config.risk_max_gross_pct)), self.IMMUTABLE_MAX_GROSS_PCT
+            ),
             "net_limit": valid_reduction or net_pct <= net_limit_pct,
             "open_positions_limit": (
                 not is_new_position
