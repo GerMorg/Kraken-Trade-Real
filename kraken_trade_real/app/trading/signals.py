@@ -11,7 +11,15 @@ D = Decimal
 
 
 class SignalEngine:
-    """Cost-aware core signal model using multiple market horizons."""
+    """Cost-aware core signal model using multiple market horizons.
+
+    External news/LLM effects are deliberately non-operative for live decisions
+    until an independent, cost-aware out-of-sample ablation test is approved.
+    Their raw values remain diagnostic only; a config option cannot override this
+    application-owned safety gate.
+    """
+
+    EXTERNAL_SIGNAL_LIVE_ENABLED = False
 
     def __init__(self, config: Any | None = None) -> None:
         self.config = config
@@ -55,8 +63,12 @@ class SignalEngine:
             + momentum_60 * D("6")
             + momentum_240 * D("3")
         )
-        long_raw = directional_raw + news_bps + gemini_bps
-        short_raw = -directional_raw - news_bps - gemini_bps
+        requested_news_bps = news_bps
+        requested_gemini_bps = gemini_bps
+        effective_news_bps = news_bps if self.EXTERNAL_SIGNAL_LIVE_ENABLED else D("0")
+        effective_gemini_bps = gemini_bps if self.EXTERNAL_SIGNAL_LIVE_ENABLED else D("0")
+        long_raw = directional_raw + effective_news_bps + effective_gemini_bps
+        short_raw = -directional_raw - effective_news_bps - effective_gemini_bps
         long_return = max(D("0"), long_raw) * quality
         short_return = max(D("0"), short_raw) * quality
 
@@ -90,6 +102,9 @@ class SignalEngine:
                 "return_60": momentum_60,
                 "return_240": momentum_240,
                 "volatility_cost_bps": volatility_cost_bps,
+                "diagnostic_requested_news_bps": requested_news_bps,
+                "diagnostic_requested_gemini_bps": requested_gemini_bps,
+                "external_signal_live_enabled": D("1") if self.EXTERNAL_SIGNAL_LIVE_ENABLED else D("0"),
             }
         )
         return (
@@ -100,8 +115,8 @@ class SignalEngine:
                 cost,
                 long_conf,
                 regime,
-                news_bps,
-                gemini_bps,
+                effective_news_bps,
+                effective_gemini_bps,
                 shared_features,
             ),
             Signal(
@@ -111,8 +126,8 @@ class SignalEngine:
                 cost,
                 short_conf,
                 regime,
-                -news_bps,
-                -gemini_bps,
+                -effective_news_bps,
+                -effective_gemini_bps,
                 shared_features,
             ),
         )
