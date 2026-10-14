@@ -6,6 +6,8 @@
 - Add an independent 5–15 second cash-Spot protection watcher that marks fully reconciled managed inventory at the executable bid, updates the persisted profit peak, and sends only validated, order-aware reduce-only stop/profit orders through TradingAuthority.
 - Require Core's positive expected net edge to clear at least half the configured stop distance, independent of adaptive learning. This blocks entries whose forecast edge is negligible compared with stop risk.
 - Add regression coverage for legacy risk-option clamps, immutable live risk gates, Kraken leverage serialization, Core entry reward/risk and fast-watch high-water tracking.
+- Detect orphaned cash-Spot FIFO lots even when Kraken omits a zero wallet balance; mark the base asset unreconciled and block new entries across quote pairs rather than immediately rebuilding a mismatched position.
+- Add regression coverage for zero-wallet stale FIFO inventory and cross-quote re-entry blocking.
 
 ## 0.1.88
 
