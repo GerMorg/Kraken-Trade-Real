@@ -187,3 +187,46 @@ def test_default_taker_fee_is_conservative_spot_taker_assumption():
     )
     assert result["status"] == "OK"
     assert result["metrics"]["fees_quote"] > 0.7
+
+
+def test_standard_baseline_comparison_uses_same_database_quote_window():
+    import json
+
+    class FakeDB:
+        def query(self, sql, params):
+            assert params == ("BTC/USD", 90.0, 900.0)
+            return [
+                {
+                    "captured_at": 100.0 + 30.0 * i,
+                    "symbol": "BTC/USD",
+                    "price": str(100 + i),
+                    "bid": str(99.9 + i),
+                    "ask": str(100.1 + i),
+                    "volume_24h": "1000",
+                    "age_seconds": 0,
+                    "spread_bps": "20",
+                    "closes_json": json.dumps([str(100 + k) for k in range(i + 1)]),
+                    "depths_bid_json": json.dumps([[str(99.9 + i), "100"]]),
+                    "depths_ask_json": json.dumps([[str(100.1 + i), "100"]]),
+                    "funding_rate": None,
+                    "open_interest": None,
+                    "basis_bps": None,
+                    "liquidation_pressure": None,
+                    "features_json": "{}",
+                }
+                for i in range(25)
+            ]
+
+    result = BacktestEngine().compare_standard_baselines_from_database(
+        FakeDB(), "BTC/USD", since=90, until=900, min_order_qty=0.001,
+        min_order_cost_quote=1, initial_equity_quote=1000,
+        target_notional_quote=100,
+    )
+    assert result["status"] == "OK"
+    assert set(result["baseline_results"]) == {
+        "CASH", "BUY_AND_HOLD", "MOMENTUM_12_OBS_25_BPS", "TREND_FAST5_SLOW20"
+    }
+    assert result["baseline_results"]["CASH"]["status"] == "NO_EXECUTABLE_FILLS"
+    assert result["comparison_contract"]["same_symbol_and_time_range"] is True
+    assert result["comparison_contract"]["automatic_promotion"] is False
+    assert result["comparison_contract"]["automatic_winner_selection"] is False
