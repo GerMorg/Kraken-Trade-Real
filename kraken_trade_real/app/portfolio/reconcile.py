@@ -596,6 +596,7 @@ class PortfolioReconciler:
         wallet_quantity_by_base: dict[str, D] = {}
         wallet_instrument_by_base: dict[str, Instrument] = {}
         spot_cash_position_symbols: set[str] = set()
+        unreconciled_spot_inventory_bases: set[str] = set()
         self.position_leverages = {}
         self.cash_balances = {}
         self.available_cash_balances = {}
@@ -899,6 +900,44 @@ class PortfolioReconciler:
                     for symbol in spot_margin_position_symbols
                     if symbol in instrument_by_symbol
                 }
+                cash_ledger_quantity_by_base: dict[str, D] = {}
+                cash_ledger_symbols_by_base: dict[str, set[str]] = {}
+                # Build a separate quantity total for verified, unleveraged cash-Spot
+                # longs. A wallet can legitimately omit zero-balance currencies, so
+                # comparing only wallet-present assets misses stale FIFO residuals.
+                for base_key, lots in lots_by_base.items():
+                    if not base_key or base_key in margin_bases:
+                        continue
+                    for lot in lots:
+                        try:
+                            lot_symbol = str(lot.get("symbol") or "")
+                            lot_instrument = instrument_by_symbol.get(lot_symbol)
+                            if lot_instrument is None:
+                                resolved = resolve_instrument_symbol(lot_symbol, known_spot)
+                                lot_instrument = resolved if isinstance(resolved, Instrument) else None
+                            detail = json.loads(lot.get("detail_json") or "{}")
+                            if not isinstance(detail, dict):
+                                detail = {}
+                            lot_quantity = dec(lot.get("remaining_quantity"))
+                            lot_leverage = dec(detail.get("leverage") or "1")
+                            if (
+                                lot_instrument is None
+                                or lot_instrument.venue != "spot"
+                                or canonical_asset(lot_instrument.base) != base_key
+                                or str(lot.get("direction") or "").upper() != "LONG"
+                                or bool(detail.get("margin", False))
+                                or lot_leverage != D("1")
+                                or not lot_quantity.is_finite()
+                                or lot_quantity <= 0
+                            ):
+                                continue
+                            cash_ledger_quantity_by_base[base_key] = (
+                                cash_ledger_quantity_by_base.get(base_key, D("0")) + lot_quantity
+                            )
+                            cash_ledger_symbols_by_base.setdefault(base_key, set()).add(lot_symbol)
+                        except (ArithmeticError, TypeError, ValueError, json.JSONDecodeError):
+                            # Invalid provenance is already reported by normal ledger reconciliation.
+                            continue
                 for base_key, wallet_quantity in wallet_quantity_by_base.items():
                     valuation_instrument = wallet_instrument_by_base.get(base_key)
                     if (
@@ -991,6 +1030,7 @@ class PortfolioReconciler:
                             for group in groups.values()
                         )
                     ):
+                        unreconciled_spot_inventory_bases.add(base_key)
                         self.db.event(
                             "PORTFOLIO_CASH_SPOT_LEDGER_MISMATCH", "WARNING",
                             {
@@ -1086,6 +1126,31 @@ class PortfolioReconciler:
                     "PORTFOLIO_CASH_SPOT_LEDGER_MATCH_FAILED",
                     "WARNING",
                     {"error_type": type(exc).__name__, "error": str(exc)[:300]},
+                )
+
+            # Explicitly detect FIFO lots for assets absent from the wallet read.
+            # This is the important full-exit edge case: Balance/BalanceEx normally
+            # omits zero balances, so the earlier wallet-driven loop never sees it.
+            for base_key, ledger_quantity in cash_ledger_quantity_by_base.items():
+                wallet_quantity = wallet_quantity_by_base.get(base_key, D("0"))
+                tolerance = max(D("0.00000001"), max(wallet_quantity, ledger_quantity) * D("0.000001"))
+                if ledger_quantity <= tolerance or abs(wallet_quantity - ledger_quantity) <= tolerance:
+                    continue
+                unreconciled_spot_inventory_bases.add(base_key)
+                self.db.event(
+                    "PORTFOLIO_CASH_SPOT_LEDGER_MISMATCH", "WARNING",
+                    {
+                        "base_asset": base_key,
+                        "wallet_quantity": str(wallet_quantity),
+                        "ledger_quantity": str(ledger_quantity),
+                        "symbols": sorted(cash_ledger_symbols_by_base.get(base_key, set())),
+                        "reason": (
+                            "LEDGER_INVENTORY_WITHOUT_WALLET_BALANCE"
+                            if wallet_quantity <= tolerance
+                            else "WALLET_QUANTITY_DIFFERS_FROM_CASH_LEDGER"
+                        ),
+                        "action": "BLOCK_NEW_ENTRIES_FOR_BASE_UNTIL_RECONCILED",
+                    },
                 )
 
         if getattr(self.gateway, "futures_enabled", False):
@@ -1396,6 +1461,7 @@ class PortfolioReconciler:
             spot_open_positions_read_ok=spot_open_positions_read_ok,
             spot_wallet_read_ok=spot_wallet_read_ok,
             spot_cash_position_symbols=tuple(sorted(spot_cash_position_symbols)),
+            unreconciled_spot_inventory_bases=tuple(sorted(unreconciled_spot_inventory_bases)),
             spot_margin_position_symbols=tuple(sorted(spot_margin_position_symbols)),
             spot_margin_open_order_ids={
                 symbol: tuple(sorted(order_ids))
