@@ -102,8 +102,10 @@ class RiskEngine:
         if risk_profile == "tactical":
             # Tactical has its own absolute capital cap and tighter trade-count gates;
             # retain its configured percentage sizing while global gross/net caps remain immutable.
+            # Tactical-specific sizing is subordinate to the immutable global
+            # single-position cap; profiles/config must never relax the safety envelope.
             position_limit_pct = min(
-                D("100"),
+                self.IMMUTABLE_MAX_POSITION_PCT,
                 max(D("0.1"), D(str(d.rationale.get("risk_position_limit_pct", "25")))),
             )
             volatility_limit = min(
