@@ -1558,7 +1558,10 @@ def resolve_spot_cash_reduction_quantity(
     if available < minimum:
         if managed >= minimum:
             return None, "SPOT_BASE_BALANCE_BELOW_MINIMUM_OR_HELD"
-        return available, "DUST_POSITION"
+        # This is a dust diagnostic, not an executable whole-position quantity.
+        # Preserve the requested delta for the caller's log while keeping the
+        # non-empty DUST_POSITION status as a hard no-order outcome.
+        return requested_quantity, "DUST_POSITION"
 
     if requested_quantity is None:
         requested = None
