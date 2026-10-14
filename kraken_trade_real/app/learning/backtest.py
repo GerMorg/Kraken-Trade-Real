@@ -15,6 +15,58 @@ class BacktestEngine:
     explicit inputs. This simulator is a research baseline, not proof of fills.
     """
 
+    def compare_standard_baselines_from_database(
+        self,
+        db: Any,
+        symbol: str,
+        *,
+        since: float,
+        until: float,
+        min_order_qty: float,
+        min_order_cost_quote: float = 0.0,
+        **run_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Run fixed cash, buy-and-hold, momentum and trend baselines on identical quotes.
+
+        This comparison is long-only/cash-Spot. It intentionally excludes Core,
+        Tactical, Spot Margin shorts and Futures unless a separately reviewed,
+        product-aware provider/simulator is supplied. It never ranks a winner,
+        tunes parameters or promotes a strategy.
+        """
+        from app.learning.baselines import standard_baselines
+
+        results: dict[str, Any] = {}
+        for name, provider in standard_baselines().items():
+            results[name] = self.run_from_database(
+                db,
+                symbol,
+                since=since,
+                until=until,
+                signal_provider=provider,
+                min_order_qty=min_order_qty,
+                min_order_cost_quote=min_order_cost_quote,
+                **run_kwargs,
+            )
+        expected_statuses = {"OK", "NO_EXECUTABLE_FILLS"}
+        failed = {
+            name: str(result.get("status") or "UNKNOWN")
+            for name, result in results.items()
+            if result.get("status") not in expected_statuses
+        }
+        return {
+            "status": "OK" if not failed else "INCOMPLETE_DATA_OR_EXECUTION",
+            "symbol": symbol,
+            "baseline_results": results,
+            "failed_baselines": failed,
+            "comparison_contract": {
+                "same_symbol_and_time_range": True,
+                "same_execution_and_cost_assumptions": True,
+                "product_scope": "CASH_SPOT_LONG_ONLY",
+                "automatic_promotion": False,
+                "automatic_winner_selection": False,
+            },
+        }
+
     def run_from_database(
         self,
         db: Any,
