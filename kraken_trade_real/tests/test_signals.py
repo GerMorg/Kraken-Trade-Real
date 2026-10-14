@@ -65,3 +65,27 @@ def test_core_signal_cost_includes_realistic_round_trip_fee_assumption():
     )
     assert long_signal.expected_cost_bps >= Decimal("128")
     assert short_signal.expected_cost_bps == long_signal.expected_cost_bps
+
+
+
+def test_unvalidated_news_and_gemini_effects_are_diagnostic_only():
+    closes = tuple(Decimal("100") + Decimal(i) / Decimal("10") for i in range(250))
+    snap = MarketSnapshot(
+        "XBT/EUR", Decimal("124.9"), Decimal("124.8"), Decimal("125.0"),
+        Decimal("100000"), 1.0, closes,
+    )
+    features = FeatureEngine().calculate(snap)
+    engine = SignalEngine()
+    baseline = engine.evaluate(make_instrument(), snap, features, "TREND_UP")
+    with_external = engine.evaluate(
+        make_instrument(), snap, features, "TREND_UP",
+        news_bps=Decimal("500"), gemini_bps=Decimal("900"),
+    )
+    assert with_external[0].expected_return_bps == baseline[0].expected_return_bps
+    assert with_external[1].expected_return_bps == baseline[1].expected_return_bps
+    assert with_external[0].confidence == baseline[0].confidence
+    assert with_external[0].news_effect_bps == Decimal("0")
+    assert with_external[0].gemini_effect_bps == Decimal("0")
+    assert with_external[0].features["diagnostic_requested_news_bps"] == Decimal("500")
+    assert with_external[0].features["diagnostic_requested_gemini_bps"] == Decimal("900")
+    assert with_external[0].features["external_signal_live_enabled"] == Decimal("0")
