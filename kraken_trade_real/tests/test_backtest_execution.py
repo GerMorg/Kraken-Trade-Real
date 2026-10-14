@@ -52,7 +52,12 @@ def test_backtest_caps_fill_to_visible_depth_and_retries_remaining_delta_later()
 def test_backtest_skips_stale_quote_and_minimum_order_and_reports_reason():
     rows = [
         {**observation(0, 1), "execution_timestamp": 5000.0},
-        {**observation(1, 1), "min_order_qty": 1_000_000},
+        {
+            **observation(1, 1),
+            "decision_timestamp": 5040.0,
+            "execution_timestamp": 5041.0,
+            "min_order_qty": 1_000_000,
+        },
     ]
     result = BacktestEngine().run(
         rows, initial_equity_quote=1000, target_notional_quote=100,
