@@ -617,3 +617,108 @@ def test_closed_zero_fill_order_is_not_misreported_as_filled():
     assert ExecutionReconciler().state_from_exchange({
         "status": "closed", "vol": "2.0", "vol_exec": "0",
     }) == OrderState.CANCELED
+
+
+
+def test_duplicate_submit_with_same_client_order_id_is_idempotent(
+    config, db, instrument
+):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    class Gateway:
+        def __init__(self):
+            self.calls = []
+
+        def submit_spot_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"txid": ["O-IDEMPOTENT"]}
+
+    gateway = Gateway()
+    live_config = replace(config, live_enabled=True, kill_switch=False)
+    authority = TradingAuthority(
+        live_config, gateway, db, AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    authority._preflight = lambda intent, market: {"allowed": True, "reason": "TEST_OK"}
+    intent = OrderIntent(
+        "intent-idempotent", "f18fa3c1-3eb5-4b0e-b5ca-63c28fc7f2bb",
+        "decision-idempotent", instrument, Direction.LONG, "buy", "limit",
+        Decimal("0.01"), Decimal("60000"), Decimal("2"), True, False,
+        Decimal("30"), Decimal("40"), 45, post_only=False,
+        state=OrderState.INTENT_CREATED,
+    )
+    market = SimpleNamespace(symbol=instrument.symbol, spread_bps=Decimal("5"))
+    first = authority.submit(intent, market)
+    replay = authority.submit(intent, market)
+
+    assert first["state"] == OrderState.ACKNOWLEDGED.value
+    assert replay["state"] == OrderState.ACKNOWLEDGED.value
+    assert replay["reason"] == "IDEMPOTENT_REPLAY_NO_RESUBMIT"
+    assert replay["idempotent_replay"] is True
+    assert len(gateway.calls) == 1
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM orders WHERE client_order_id=?",
+        (intent.client_order_id,),
+    )["n"] == 1
+
+
+def test_client_order_id_cannot_be_reused_for_a_different_intent(
+    config, db, instrument
+):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from app.execution import ExecutionPolicy, ExecutionReconciler
+    from app.monitoring import AuditLogger
+    from app.trading.authority import TradingAuthority
+
+    class Gateway:
+        def __init__(self):
+            self.calls = []
+
+        def submit_spot_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"txid": ["O-ID-REUSE"]}
+
+    gateway = Gateway()
+    live_config = replace(config, live_enabled=True, kill_switch=False)
+    authority = TradingAuthority(
+        live_config, gateway, db, AuditLogger(False),
+        ExecutionPolicy(config.execution_max_slippage_bps, config.execution_max_reprices),
+        ExecutionReconciler(),
+    )
+    authority._preflight = lambda intent, market: {"allowed": True, "reason": "TEST_OK"}
+    client_id = "7a6401bb-5b61-4475-b39f-6488d5c31005"
+    first = OrderIntent(
+        "intent-original", client_id, "decision-original", instrument,
+        Direction.LONG, "buy", "limit", Decimal("0.01"), Decimal("60000"),
+        Decimal("2"), True, False, Decimal("30"), Decimal("40"), 45,
+        post_only=False, state=OrderState.INTENT_CREATED,
+    )
+    conflicting = OrderIntent(
+        "intent-conflict", client_id, "decision-conflict", instrument,
+        Direction.LONG, "buy", "limit", Decimal("0.02"), Decimal("60000"),
+        Decimal("2"), True, False, Decimal("30"), Decimal("40"), 45,
+        post_only=False, state=OrderState.INTENT_CREATED,
+    )
+    market = SimpleNamespace(symbol=instrument.symbol, spread_bps=Decimal("5"))
+    result = authority.submit(first, market)
+    conflict_result = authority.submit(conflicting, market)
+
+    assert result["state"] == OrderState.ACKNOWLEDGED.value
+    assert conflict_result["state"] == OrderState.REJECTED.value
+    assert conflict_result["reason"] == "CLIENT_ORDER_ID_REUSED"
+    assert len(gateway.calls) == 1
+    stored = db.one(
+        "SELECT intent_id,quantity,state FROM orders WHERE client_order_id=?",
+        (client_id,),
+    )
+    assert stored["intent_id"] == "intent-original"
+    assert stored["quantity"] == "0.01"
+    assert stored["state"] == OrderState.ACKNOWLEDGED.value
