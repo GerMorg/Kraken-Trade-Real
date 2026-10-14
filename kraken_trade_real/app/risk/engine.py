@@ -18,7 +18,16 @@ class RiskResult:
 
 
 class RiskEngine:
-    IMMUTABLE_MAX_LEVERAGE = D(5)
+    # These ceilings must not be relaxable by saved HA options or model output.
+    IMMUTABLE_MAX_LEVERAGE = D("3")
+    IMMUTABLE_MAX_POSITION_PCT = D("15")
+    IMMUTABLE_MAX_GROSS_PCT = D("80")
+    IMMUTABLE_MAX_NET_PCT = D("50")
+    IMMUTABLE_MAX_MARGIN_PCT = D("35")
+    IMMUTABLE_MAX_OPEN_POSITIONS = 3
+    IMMUTABLE_MAX_DAILY_LOSS_PCT = D("3")
+    IMMUTABLE_MAX_DRAWDOWN_PCT = D("8")
+    IMMUTABLE_MIN_CASH_RESERVE_PCT = D("20")
     IMMUTABLE_MIN_MARGIN_LEVEL = D(200)
 
     def __init__(self, config: Any, margin_engine: Any, leverage_engine: Any, cost_model: Any) -> None:
@@ -88,11 +97,11 @@ class RiskEngine:
         is_new_position = current == 0 and desired != 0
         min_cost_eur = D(str(d.rationale.get("min_cost_eur", "0")))
         risk_profile = str(d.rationale.get("risk_profile", "core"))
-        position_limit_pct = D(str(self.config.risk_max_position_pct))
+        position_limit_pct = min(D(str(self.config.risk_max_position_pct)), self.IMMUTABLE_MAX_POSITION_PCT)
         volatility_limit = D("30")
         if risk_profile == "tactical":
             requested_position_limit = D(str(d.rationale.get("risk_position_limit_pct", "25")))
-            position_limit_pct = min(D("100"), max(D("0.1"), requested_position_limit))
+            position_limit_pct = min(self.IMMUTABLE_MAX_POSITION_PCT, max(D("0.1"), requested_position_limit))
             volatility_limit = min(
                 D("60"),
                 max(D("30"), D(str(d.rationale.get("risk_volatility_max", "55")))),
@@ -114,7 +123,7 @@ class RiskEngine:
         # Strategy-specific position sizing must never widen the portfolio-wide
         # net-exposure envelope. Tactical position limits may be looser than Core,
         # but the immutable global net cap remains authoritative for every entry.
-        net_limit_pct = D(str(self.config.risk_max_net_pct))
+        net_limit_pct = min(D(str(self.config.risk_max_net_pct)), self.IMMUTABLE_MAX_NET_PCT)
 
         risk_edge_threshold = D(str(self.config.strategy_min_edge_bps))
         economic_cost_ratio = D("1")
@@ -134,7 +143,8 @@ class RiskEngine:
         incremental_notional = max(D("0"), desired_abs - current_abs) if same_side else desired_abs
         increases_exposure = incremental_notional > 0
         incremental_capital = incremental_notional / leverage if leverage > 1 else incremental_notional
-        cash_reserve_min = eq * D(str(self.config.risk_cash_reserve_pct)) / 100
+        cash_reserve_pct = max(self.IMMUTABLE_MIN_CASH_RESERVE_PCT, D(str(self.config.risk_cash_reserve_pct)))
+        cash_reserve_min = eq * cash_reserve_pct / 100
         projected_cash = p.cash_eur - incremental_capital
 
         checks = {
@@ -155,7 +165,7 @@ class RiskEngine:
             "net_limit": valid_reduction or net_pct <= net_limit_pct,
             "open_positions_limit": (
                 not is_new_position
-                or len(p.positions) < self.config.risk_max_open_positions
+                or len(p.positions) < min(int(self.config.risk_max_open_positions), self.IMMUTABLE_MAX_OPEN_POSITIONS)
             ),
             "cash_reserve": (
                 valid_reduction or not increases_exposure or projected_cash >= cash_reserve_min
@@ -208,8 +218,8 @@ class RiskEngine:
                 used = (
                     p.margin_used_eur + requested_margin
                 ) / eq * 100
-                checks["margin_budget"] = used <= D(
-                    str(self.config.risk_max_margin_pct)
+                checks["margin_budget"] = used <= min(
+                    D(str(self.config.risk_max_margin_pct)), self.IMMUTABLE_MAX_MARGIN_PCT
                 )
 
         failed = next((key for key, value in checks.items() if not value), None)
