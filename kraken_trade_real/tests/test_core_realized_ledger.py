@@ -244,6 +244,10 @@ def test_fifo_ledger_quarantines_unmatched_close_and_opposite_entry(db):
     leg = db.one("SELECT * FROM core_realized_legs")
     assert leg is not None
     assert Decimal(leg["gross_pnl_quote"]) == Decimal("10")
+    # A close larger than the locally reconstructed FIFO inventory quarantines
+    # even the matched slice from decision-level labels and model promotion.
+    assert result["verified_net_outcomes"] == 0
+    assert db.one("SELECT COUNT(*) AS n FROM core_realized_outcomes")["n"] == 0
 
 def test_verified_non_margin_spot_fees_produce_separate_verified_net_outcome(db):
     _add_order(
