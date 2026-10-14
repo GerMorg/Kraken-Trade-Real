@@ -31,7 +31,6 @@ class ResearchEngine:
         equity = 1.0
         peak = 1.0
         max_dd = 0.0
-        peak_index = 0
         longest_recovery = 0
         last_peak_index = 0
         for index, value in enumerate(clean, start=1):
