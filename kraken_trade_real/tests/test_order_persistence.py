@@ -666,5 +666,5 @@ def test_cash_spot_open_order_blocks_same_base_asset_on_other_quote_pair(config,
     check = authority._preflight(candidate, market)
     assert check["allowed"] is False
     assert check["reason"] == "CASH_SPOT_BASE_ASSET_ORDER_CONFLICT"
-    assert check["detail"]["base_asset"] == "XBT"
+    assert check["detail"]["base_asset"] == "BTC"
     assert check["detail"]["conflicting_orders"][0]["symbol"] == "XBT/USD"
