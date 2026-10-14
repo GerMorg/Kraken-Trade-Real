@@ -171,3 +171,19 @@ def test_backtest_database_adapter_fails_closed_on_invalid_historical_book():
     )
     assert result["status"] == "INVALID_HISTORICAL_SNAPSHOT"
     assert result["fills"] == []
+
+
+def test_backtest_refuses_short_signals_without_margin_and_liquidation_model():
+    result = BacktestEngine().run([observation(0, -1)])
+    assert result["status"] == "UNSUPPORTED_SHORT_OR_MARGIN_PRODUCT"
+    assert result["fills"] == []
+
+
+def test_default_taker_fee_is_conservative_spot_taker_assumption():
+    result = BacktestEngine().run(
+        [observation(0, 1)],
+        initial_equity_quote=1000,
+        target_notional_quote=100,
+    )
+    assert result["status"] == "OK"
+    assert result["metrics"]["fees_quote"] > 0.7
