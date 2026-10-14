@@ -75,6 +75,9 @@ class PortfolioState:
     # Cash-Spot holdings are listed only when the entire wallet quantity is
     # reconciled against unleveraged, app-managed FIFO inventory lots.
     spot_cash_position_symbols:tuple[str,...]=()
+    # Base assets whose verified wallet quantity no longer matches app-owned cash-Spot FIFO lots.
+    # Core must not open another quote pair until this inventory has been reconciled.
+    unreconciled_spot_inventory_bases:tuple[str,...]=()
     spot_margin_position_symbols:tuple[str,...]=()
     # Exchange open-position identities keep the Normal exit-learning path tied
     # to the exact live margin position epoch; aggregates may contain wallet inventory.
