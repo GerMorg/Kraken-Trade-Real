@@ -177,3 +177,54 @@ def test_core_entry_with_positive_but_weak_net_edge_is_rejected():
     assert result.allowed is False
     assert result.reason == "edge_positive"
     assert result.checks["edge_positive"] is False
+
+
+
+def test_tactical_profile_cannot_override_immutable_single_position_cap():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("100"),
+        positions={},
+        gross_eur=D("0"),
+        net_eur=D("0"),
+        daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"),
+    )
+    decision = _decision(instrument, target=D("20"))
+    decision.rationale.update({
+        "risk_profile": "tactical",
+        "risk_position_limit_pct": "75",
+        "risk_max_leverage": "5",
+    })
+    engine = RiskEngine(_config(), _Margin(), object(), object())
+
+    result = engine.evaluate(decision, portfolio, None)
+
+    assert result.allowed is False
+    assert result.checks["position_limit"] is False
+    assert result.diagnostics["position_limit_pct"] == "15"
+
+
+def test_tactical_profile_cannot_raise_single_position_limit_through_learned_parameter():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("100"),
+        positions={},
+        gross_eur=D("0"),
+        net_eur=D("0"),
+        daily_pnl_eur=D("0"),
+        drawdown_pct=D("0"),
+    )
+    decision = _decision(instrument, target=D("14"))
+    decision.rationale.update({
+        "risk_profile": "tactical",
+        "risk_position_limit_pct": "99",
+    })
+    result = RiskEngine(_config(), _Margin(), object(), object()).evaluate(
+        decision, portfolio, None
+    )
+
+    assert result.checks["position_limit"] is True
+    assert result.diagnostics["position_limit_pct"] == "15"
