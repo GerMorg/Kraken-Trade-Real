@@ -139,6 +139,21 @@ class RiskEngine:
                 getattr(self.config, "strategy_adaptive_cost_ratio", 1.10)
             ))
 
+        # A positive net edge alone is not sufficient when the gross forecast
+        # is tiny relative to the strategy's stop distance. Require the expected
+        # net edge to cover at least half the stop risk, regardless of learned
+        # thresholds. Adaptive promotion may make this stricter, never weaker.
+        if risk_profile != "tactical":
+            try:
+                stop_loss_pct = D(str(getattr(self.config, "strategy_stop_loss_pct", 2.0)))
+                if stop_loss_pct.is_finite() and stop_loss_pct > 0:
+                    risk_edge_threshold = max(
+                        risk_edge_threshold,
+                        stop_loss_pct * D("50"),
+                    )
+            except (ArithmeticError, TypeError, ValueError):
+                risk_edge_threshold = max(risk_edge_threshold, D("100"))
+
         same_side = current == 0 or desired == 0 or current * desired > 0
         incremental_notional = max(D("0"), desired_abs - current_abs) if same_side else desired_abs
         increases_exposure = incremental_notional > 0
