@@ -128,3 +128,52 @@ def test_reduce_only_exit_is_not_blocked_by_hard_risk_envelope():
 
     assert result.allowed is True
     assert result.checks["reduce_only_semantics"] is True
+
+
+def test_core_entry_with_positive_but_weak_net_edge_is_rejected():
+    instrument = _instrument()
+    portfolio = PortfolioState(
+        equity_eur=D("100"),
+        cash_eur=D("100"),
+        positions={},
+        gross_eur=D("0"),
+        net_eur=D("0"),
+    )
+    config = _config()
+    config.strategy_min_edge_bps = 15
+    config.strategy_stop_loss_pct = 2.0
+    engine = RiskEngine(config, _Margin(), object(), object())
+    weak_edge = _decision(instrument)
+    weak_signal = Signal(
+        instrument.symbol,
+        Direction.LONG,
+        D("249"),
+        D("208"),
+        D("0.95"),
+        "TREND",
+        D("0"),
+        D("0"),
+        {"volatility": D("5")},
+    )
+    weak_edge = Decision(
+        decision_id=weak_edge.decision_id,
+        instrument=instrument,
+        signal=weak_signal,
+        target_notional_eur=D("10"),
+        leverage=D("1"),
+        rationale={"risk_profile": "core", "edge_tier": "ADAPTIVE",
+                   "min_cost_eur": "1"},
+        strategy_version="test",
+        model_version="test",
+        config_hash="test",
+        current_position_eur=D("0"),
+        target_position_eur=D("10"),
+        execution_direction=Direction.LONG,
+        reduce_only=False,
+    )
+
+    result = engine.evaluate(weak_edge, portfolio, None)
+
+    assert result.allowed is False
+    assert result.reason == "edge_positive"
+    assert result.checks["edge_positive"] is False
