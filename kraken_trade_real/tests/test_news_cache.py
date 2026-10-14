@@ -48,7 +48,7 @@ def test_news_collection_deduplicates_cross_source_items_before_effects_are_summ
     assert result[0].title == "Exchange outage resolved"
     assert result[0].source == "Kraken Blog"
     assert any(item.title == "Different policy news" for item in result)
-    assert any(event[0] == "NEWS_DUPLICATES_REMOVED" for event in db.events)
+    assert db.one("SELECT COUNT(*) AS n FROM events WHERE code=?", ("NEWS_DUPLICATES_REMOVED",))["n"] >= 1
 
 
 def test_news_deduplication_keeps_same_title_more_than_24_hours_apart():
